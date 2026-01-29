@@ -59,9 +59,12 @@ function createWindow() {
             contextIsolation: true,
         },
     });
-    mainWindow.loadURL(electron_1.app.isPackaged
-        ? "file://".concat(path_1.default.join(__dirname, 'dist/index.html'))
-        : 'http://localhost:5173/');
+    if (electron_1.app.isPackaged) {
+        mainWindow.loadFile(path_1.default.join(__dirname, 'dist', 'index.html'));
+    }
+    else {
+        mainWindow.loadURL('http://localhost:5173/');
+    }
 }
 electron_1.app.whenReady().then(function () {
     createWindow();
