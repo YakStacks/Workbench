@@ -3,6 +3,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import Store from 'electron-store';
+import axios from 'axios';
 
 
 const store = new Store();
@@ -15,7 +16,7 @@ function createWindow() {
     width: 1000,
     height: 700,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
     },
@@ -79,30 +80,23 @@ ipcMain.handle('tools:run', async (_e, name, input) => {
   return await tool.run(input);
 });
 
-// Task runner
-import fetch from 'node-fetch';
-ipcMain.handle('task:run', async (_e, { taskType, prompt }) => {
+// Minimal task runner: hardcoded model, no roles
+ipcMain.handle('task:run', async (_e, prompt: string) => {
   const config = store.store;
-  const router = config.router as Record<string, { provider: string; model: string }> || {};
-  const role = router[taskType];
-  if (!role) throw new Error('No model mapped for this taskType');
-  const { provider, model } = role;
-  if (provider === 'openrouter') {
-    const apiKey = config.openrouterApiKey;
-    if (!apiKey) throw new Error('No OpenRouter API key');
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-    const data = await res.json();
-    return data;
-  }
-  throw new Error('Unknown provider');
+  const model = 'openai/gpt-3.5-turbo'; // hardcoded for now
+  const apiKey = config.openrouterApiKey;
+  if (!apiKey) throw new Error('No OpenRouter API key');
+  console.log('[task:run] Using model:', model);
+  // (Token counting is not implemented, just log fake value)
+  console.log('[task:run] Prompt tokens: (fake)');
+  const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+    model,
+    messages: [{ role: 'user', content: prompt }],
+  }, {
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  return res.data;
 });

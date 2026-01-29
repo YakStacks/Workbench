@@ -9,18 +9,20 @@ A minimal Electron + Vite + React + TypeScript desktop app for task running, mod
 
 ## Getting Started
 
-1. Install dependencies:
-   ```
-   npm install
-   ```
-2. Start Vite dev server:
-   ```
-   npm run dev
-   ```
-3. In another terminal, start Electron:
-   ```
-   npm start
-   ```
+
+## Usage
+
+- **Dev mode:**
+  ```
+  npm run dev
+  ```
+  (Starts both Vite and Electron for live development)
+
+- **Production build:**
+  ```
+  npm run build && npm run start
+  ```
+  (Builds static assets and launches Electron with production bundle)
 
 ## Plugin Example
 See ./plugins/asamPromptBuilder for a sample plugin.
