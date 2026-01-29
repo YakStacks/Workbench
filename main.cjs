@@ -122,18 +122,22 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
         }
     });
 }); });
-// Minimal task runner: hardcoded model, no roles
-electron_1.ipcMain.handle('task:run', function (_e, prompt) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, model, apiKey, res;
+// Task runner with role-based model selection
+electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return __awaiter(void 0, void 0, void 0, function () {
+    var config, router, roleConfig, model, apiKey, res;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 config = store.store;
-                model = 'openai/gpt-3.5-turbo';
+                router = config.router || {};
+                roleConfig = router[taskType];
+                if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model))
+                    throw new Error("No model configured for task type: ".concat(taskType));
+                model = roleConfig.model;
                 apiKey = config.openrouterApiKey;
                 if (!apiKey)
                     throw new Error('No OpenRouter API key');
-                console.log('[task:run] Using model:', model);
+                console.log('[task:run] Task type:', taskType, 'Model:', model);
                 // (Token counting is not implemented, just log fake value)
                 console.log('[task:run] Prompt tokens: (fake)');
                 return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {

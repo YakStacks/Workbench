@@ -80,13 +80,16 @@ ipcMain.handle('tools:run', async (_e, name, input) => {
   return await tool.run(input);
 });
 
-// Minimal task runner: hardcoded model, no roles
-ipcMain.handle('task:run', async (_e, prompt: string) => {
+// Task runner with role-based model selection
+ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
   const config = store.store;
-  const model = 'openai/gpt-3.5-turbo'; // hardcoded for now
+  const router = config.router || {};
+  const roleConfig = router[taskType];
+  if (!roleConfig?.model) throw new Error(`No model configured for task type: ${taskType}`);
+  const model = roleConfig.model;
   const apiKey = config.openrouterApiKey;
   if (!apiKey) throw new Error('No OpenRouter API key');
-  console.log('[task:run] Using model:', model);
+  console.log('[task:run] Task type:', taskType, 'Model:', model);
   // (Token counting is not implemented, just log fake value)
   console.log('[task:run] Prompt tokens: (fake)');
   const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {

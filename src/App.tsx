@@ -32,17 +32,26 @@ export default function App() {
 
 function TasksTab() {
   const [prompt, setPrompt] = useState('');
+  const [taskType, setTaskType] = useState('writer_cheap');
   const [output, setOutput] = useState('');
   const [loading, setLoading] = useState(false);
   return (
     <div>
+      <div>
+        Task Type: <select value={taskType} onChange={(e: ChangeEvent<HTMLSelectElement>) => setTaskType(e.target.value)}>
+          <option value="writer_cheap">writer_cheap</option>
+          <option value="structurer">structurer</option>
+          <option value="coder_cheap">coder_cheap</option>
+          <option value="reviewer">reviewer</option>
+        </select>
+      </div>
       <textarea value={prompt} onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setPrompt(e.target.value)} rows={4} style={{ width: 400 }} />
       <br />
       <button onClick={async () => {
         setLoading(true);
         setOutput('');
         try {
-          const res = await window.workbench.runTask(prompt);
+          const res = await window.workbench.runTask(taskType, prompt);
           setOutput(JSON.stringify(res, null, 2));
         } catch (e: any) {
           setOutput(e.message);
