@@ -75,11 +75,15 @@ function loadPlugins() {
     plugins = [];
     tools = [];
     var pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
-    if (!pluginsDir || typeof pluginsDir !== 'string' || !fs_1.default.existsSync(pluginsDir))
+    console.log('[loadPlugins] Looking for plugins in:', pluginsDir);
+    if (!pluginsDir || typeof pluginsDir !== 'string' || !fs_1.default.existsSync(pluginsDir)) {
+        console.log('[loadPlugins] Plugins directory not found');
         return;
+    }
     var folders = fs_1.default.readdirSync(pluginsDir, { withFileTypes: true })
         .filter(function (dirent) { return dirent.isDirectory(); })
         .map(function (dirent) { return dirent.name; });
+    console.log('[loadPlugins] Found folders:', folders);
     folders.forEach(function (folder) {
         var pluginPath = path_1.default.join(pluginsDir, folder, 'index.js');
         if (fs_1.default.existsSync(pluginPath)) {
@@ -88,13 +92,19 @@ function loadPlugins() {
                 var plugin = require(pluginPath);
                 if (plugin && typeof plugin.register === 'function') {
                     plugin.register({
-                        registerTool: function (tool) { return tools.push(tool); },
+                        registerTool: function (tool) {
+                            console.log('[loadPlugins] Registered tool:', tool.name);
+                            tools.push(tool);
+                        },
                     });
                 }
             }
             catch (e) {
-                // Ignore plugin errors
+                console.error('[loadPlugins] Error loading plugin:', folder, e);
             }
+        }
+        else {
+            console.log('[loadPlugins] Plugin index.js not found:', pluginPath);
         }
     });
 }

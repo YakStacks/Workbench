@@ -41,10 +41,15 @@ function loadPlugins() {
   plugins = [];
   tools = [];
   const pluginsDir = store.get('pluginsDir') as string || path.join(__dirname, 'plugins');
-  if (!pluginsDir || typeof pluginsDir !== 'string' || !fs.existsSync(pluginsDir)) return;
+  console.log('[loadPlugins] Looking for plugins in:', pluginsDir);
+  if (!pluginsDir || typeof pluginsDir !== 'string' || !fs.existsSync(pluginsDir)) {
+    console.log('[loadPlugins] Plugins directory not found');
+    return;
+  }
   const folders = fs.readdirSync(pluginsDir, { withFileTypes: true })
     .filter(dirent => dirent.isDirectory())
     .map(dirent => dirent.name);
+  console.log('[loadPlugins] Found folders:', folders);
   folders.forEach((folder) => {
     const pluginPath = path.join(pluginsDir, folder, 'index.js');
     if (fs.existsSync(pluginPath)) {
@@ -53,12 +58,17 @@ function loadPlugins() {
         const plugin = require(pluginPath);
         if (plugin && typeof plugin.register === 'function') {
           plugin.register({
-            registerTool: (tool: any) => tools.push(tool),
+            registerTool: (tool: any) => {
+              console.log('[loadPlugins] Registered tool:', tool.name);
+              tools.push(tool);
+            },
           });
         }
       } catch (e) {
-        // Ignore plugin errors
+        console.error('[loadPlugins] Error loading plugin:', folder, e);
       }
+    } else {
+      console.log('[loadPlugins] Plugin index.js not found:', pluginPath);
     }
   });
 }
