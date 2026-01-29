@@ -137,9 +137,10 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
 }); });
 // Task runner with role-based model selection
 electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, model, apiKey, res;
-    return __generator(this, function (_a) {
-        switch (_a.label) {
+    var config, router, roleConfig, model, apiKey, res, data, content;
+    var _a, _b, _c;
+    return __generator(this, function (_d) {
+        switch (_d.label) {
             case 0:
                 config = store.store;
                 router = config.router || {};
@@ -163,8 +164,10 @@ electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return _
                         },
                     })];
             case 1:
-                res = _a.sent();
-                return [2 /*return*/, res.data];
+                res = _d.sent();
+                data = res.data;
+                content = ((_c = (_b = (_a = data.choices) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.message) === null || _c === void 0 ? void 0 : _c.content) || '';
+                return [2 /*return*/, { content: content, usage: data.usage, model: data.model }];
         }
     });
 }); });

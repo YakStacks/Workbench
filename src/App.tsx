@@ -52,7 +52,7 @@ function TasksTab() {
         setOutput('');
         try {
           const res = await window.workbench.runTask(taskType, prompt);
-          setOutput(JSON.stringify(res, null, 2));
+          setOutput(res.content || JSON.stringify(res, null, 2));
         } catch (e: any) {
           setOutput(e.message);
         }

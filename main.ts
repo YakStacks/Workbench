@@ -111,5 +111,8 @@ ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
       'Content-Type': 'application/json',
     },
   });
-  return res.data;
+  const data = res.data;
+  // Extract message content from response
+  const content = data.choices?.[0]?.message?.content || '';
+  return { content, usage: data.usage, model: data.model };
 });
