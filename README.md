@@ -24,6 +24,17 @@ A minimal Electron + Vite + React + TypeScript desktop app for task running, mod
   ```
   (Builds static assets and launches Electron with production bundle)
 
+- **Package for distribution:**
+  ```
+  npm run package
+  ```
+  (Creates Windows installer in ./release directory)
+  
+  For all platforms:
+  ```
+  npm run package:all
+  ```
+
 ## Plugin Example
 See ./plugins/asamPromptBuilder for a sample plugin.
 
