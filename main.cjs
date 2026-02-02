@@ -68,8 +68,11 @@ var electron_store_1 = __importDefault(require("electron-store"));
 var axios_1 = __importDefault(require("axios"));
 var store = new electron_store_1.default();
 var mainWindow = null;
+var tray = null;
 var plugins = [];
 var tools = new Map();
+// Add isQuitting flag to app
+var isQuitting = false;
 // Normalize tool output to standard format
 function normalizeToolOutput(output) {
     // Already in correct format
@@ -96,24 +99,80 @@ function normalizeToolOutput(output) {
 }
 var mcpServers = new Map();
 function createWindow() {
-    mainWindow = new electron_1.BrowserWindow({
-        width: 1200,
-        height: 800,
-        webPreferences: {
+    var iconPath;
+    if (electron_1.app.isPackaged) {
+        iconPath = path_1.default.join(process.resourcesPath, 'build', 'icon.png');
+    }
+    else {
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'build', 'icon.png');
+    }
+    // Fallback if icon not found
+    if (!fs_1.default.existsSync(iconPath)) {
+        console.log('[createWindow] Icon not found at:', iconPath);
+        iconPath = '';
+    }
+    mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800 }, (iconPath && { icon: iconPath })), { webPreferences: {
             preload: path_1.default.join(__dirname, 'preload.cjs'),
             nodeIntegration: false,
             contextIsolation: true,
-        },
-    });
+        } }));
     if (electron_1.app.isPackaged) {
         mainWindow.loadFile(path_1.default.join(__dirname, 'dist', 'index.html'));
     }
     else {
         mainWindow.loadURL('http://localhost:5173/');
     }
+    // Minimize to tray instead of closing
+    mainWindow.on('close', function (event) {
+        if (!isQuitting) {
+            event.preventDefault();
+            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.hide();
+        }
+    });
+}
+function createTray() {
+    var iconPath;
+    if (electron_1.app.isPackaged) {
+        iconPath = path_1.default.join(process.resourcesPath, 'build', 'icon.png');
+    }
+    else {
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'build', 'icon.png');
+    }
+    if (!fs_1.default.existsSync(iconPath)) {
+        console.log('[createTray] Icon not found at:', iconPath);
+        return; // Don't create tray if icon missing
+    }
+    // Create native image from icon
+    var icon = electron_1.nativeImage.createFromPath(iconPath);
+    tray = new electron_1.Tray(icon.resize({ width: 16, height: 16 }));
+    var contextMenu = electron_1.Menu.buildFromTemplate([
+        {
+            label: 'Show Workbench',
+            click: function () {
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.show();
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
+            }
+        },
+        { type: 'separator' },
+        {
+            label: 'Quit',
+            click: function () {
+                isQuitting = true;
+                electron_1.app.quit();
+            }
+        }
+    ]);
+    tray.setToolTip('Workbench');
+    tray.setContextMenu(contextMenu);
+    // Double-click to show window
+    tray.on('double-click', function () {
+        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.show();
+        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
+    });
 }
 electron_1.app.whenReady().then(function () {
     createWindow();
+    createTray();
     loadPlugins();
     registerBuiltinTools();
     loadMCPServers();

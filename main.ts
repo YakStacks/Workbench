@@ -6,18 +6,14 @@ import { spawn, ChildProcess } from 'child_process';
 import Store from 'electron-store';
 import axios from 'axios';
 
-// Extend app with isQuitting flag
-declare module 'electron' {
-  interface App {
-    isQuitting?: boolean;
-  }
-}
-
 const store = new Store();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
 let tools: Map<string, any> = new Map();
+
+// Add isQuitting flag to app
+let isQuitting = false;
 
 // Standard tool response format
 interface ToolResponse {
@@ -66,14 +62,23 @@ interface MCPServer {
 let mcpServers: Map<string, MCPServer> = new Map();
 
 function createWindow() {
-  const iconPath = app.isPackaged 
-    ? path.join(process.resourcesPath, 'build', 'icon.png')
-    : path.join(__dirname, 'build', 'icon.png');
+  let iconPath: string;
+  if (app.isPackaged) {
+    iconPath = path.join(process.resourcesPath, 'build', 'icon.png');
+  } else {
+    iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
+  }
+  
+  // Fallback if icon not found
+  if (!fs.existsSync(iconPath)) {
+    console.log('[createWindow] Icon not found at:', iconPath);
+    iconPath = '';
+  }
   
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: iconPath,
+    ...(iconPath && { icon: iconPath }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -88,7 +93,7 @@ function createWindow() {
   
   // Minimize to tray instead of closing
   mainWindow.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
     }
@@ -96,9 +101,17 @@ function createWindow() {
 }
 
 function createTray() {
-  const iconPath = app.isPackaged 
-    ? path.join(process.resourcesPath, 'build', 'icon.png')
-    : path.join(__dirname, 'build', 'icon.png');
+  let iconPath: string;
+  if (app.isPackaged) {
+    iconPath = path.join(process.resourcesPath, 'build', 'icon.png');
+  } else {
+    iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
+  }
+  
+  if (!fs.existsSync(iconPath)) {
+    console.log('[createTray] Icon not found at:', iconPath);
+    return; // Don't create tray if icon missing
+  }
   
   // Create native image from icon
   const icon = nativeImage.createFromPath(iconPath);
@@ -116,7 +129,7 @@ function createTray() {
     { 
       label: 'Quit', 
       click: () => {
-        app.isQuitting = true;
+        isQuitting = true;
         app.quit();
       }
     }
