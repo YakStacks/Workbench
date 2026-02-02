@@ -51,12 +51,26 @@ A local-first AI task runner with messenger-style chat, AI-powered artifact gene
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### For End Users (Windows)
+
+**Download the installer:**
+1. Go to [Releases](https://github.com/YakStacks/Workbench/releases)
+2. Download `Workbench Setup X.X.X.exe`
+3. Run the installer
+4. Launch Workbench from Start Menu or Desktop
+
+**Or build from source below ↓**
+
+### For Developers
+
+**1. Clone and Install**
 ```bash
+git clone https://github.com/YakStacks/Workbench.git
+cd Workbench
 npm install
 ```
 
-### 2. Configure API
+**2. Configure API**
 1. Get an API key:
    - **OpenRouter**: https://openrouter.ai (access to 200+ models)
    - **OpenAI**: https://platform.openai.com (GPT models)
@@ -73,7 +87,7 @@ npm install
 7. Assign models to each role (Writer, Structurer, Coder, Reviewer)
 8. Click Save
 
-### 3. Build Your First Tool
+**3. Build Your First Tool**
 Go to the **Chat** tab and say:
 ```
 Build a tool that gives me the temperature
