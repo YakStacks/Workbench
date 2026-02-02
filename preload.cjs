@@ -52,4 +52,13 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         remove: function (name) { return electron_1.ipcRenderer.invoke('mcp:remove', name); },
         reconnect: function (name) { return electron_1.ipcRenderer.invoke('mcp:reconnect', name); },
     },
+    // Cost tracking
+    costs: {
+        get: function () { return electron_1.ipcRenderer.invoke('costs:get'); },
+        reset: function () { return electron_1.ipcRenderer.invoke('costs:reset'); },
+    },
+    // Models
+    models: {
+        list: function () { return electron_1.ipcRenderer.invoke('models:list'); },
+    },
 });

@@ -161,6 +161,7 @@ function registerBuiltinTools() {
             var safePath, content;
             return __generator(this, function (_a) {
                 safePath = resolveSafePath(input.path);
+                assertPathSafe(safePath);
                 content = fs_1.default.readFileSync(safePath, { encoding: (input.encoding || 'utf-8') });
                 return [2 /*return*/, { content: content, path: safePath, size: content.length }];
             });
@@ -182,6 +183,7 @@ function registerBuiltinTools() {
             var safePath, dir;
             return __generator(this, function (_a) {
                 safePath = resolveSafePath(input.path);
+                assertPathSafe(safePath);
                 dir = path_1.default.dirname(safePath);
                 if (!fs_1.default.existsSync(dir)) {
                     fs_1.default.mkdirSync(dir, { recursive: true });
@@ -211,6 +213,7 @@ function registerBuiltinTools() {
             var safePath, entries;
             return __generator(this, function (_a) {
                 safePath = resolveSafePath(input.path);
+                assertPathSafe(safePath);
                 entries = listDirRecursive(safePath, input.recursive || false, 0, 3);
                 return [2 /*return*/, { path: safePath, entries: entries }];
             });
@@ -320,6 +323,26 @@ function resolveSafePath(inputPath) {
     }
     var workingDir = store.get('workingDir') || electron_1.app.getPath('home');
     return path_1.default.resolve(workingDir, inputPath);
+}
+function isPathSafe(targetPath) {
+    var safePaths = store.get('safePaths') || [];
+    var workingDir = store.get('workingDir');
+    // If no safe paths configured, allow workingDir and home
+    if (safePaths.length === 0) {
+        var allowedRoots = [workingDir, electron_1.app.getPath('home')].filter(Boolean);
+        return allowedRoots.some(function (root) { return targetPath.startsWith(root); });
+    }
+    // Check if path is within any safe path
+    var resolved = path_1.default.resolve(targetPath);
+    return safePaths.some(function (safePath) {
+        var resolvedSafe = path_1.default.resolve(safePath);
+        return resolved.startsWith(resolvedSafe);
+    });
+}
+function assertPathSafe(targetPath) {
+    if (!isPathSafe(targetPath)) {
+        throw new Error("Access denied: ".concat(targetPath, " is outside allowed directories"));
+    }
 }
 function listDirRecursive(dirPath, recursive, depth, maxDepth) {
     if (depth > maxDepth)
@@ -644,12 +667,14 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
         }
     });
 }); });
+// Cost tracking
+var sessionCosts = { total: 0, requests: 0 };
 // Task runner (non-streaming)
 electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, apiKey, res;
-    var _a, _b, _c;
-    return __generator(this, function (_d) {
-        switch (_d.label) {
+    var config, router, roleConfig, apiKey, res, usage;
+    var _a, _b, _c, _d;
+    return __generator(this, function (_f) {
+        switch (_f.label) {
             case 0:
                 config = store.store;
                 router = config.router || {};
@@ -669,18 +694,77 @@ electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return _
                         },
                     })];
             case 1:
-                res = _d.sent();
+                res = _f.sent();
+                usage = res.data.usage;
+                if (usage) {
+                    sessionCosts.requests++;
+                    // OpenRouter includes cost in generation response
+                    if ((_a = res.data.usage) === null || _a === void 0 ? void 0 : _a.total_cost) {
+                        sessionCosts.total += res.data.usage.total_cost;
+                    }
+                }
                 return [2 /*return*/, {
-                        content: ((_c = (_b = (_a = res.data.choices) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.message) === null || _c === void 0 ? void 0 : _c.content) || '',
+                        content: ((_d = (_c = (_b = res.data.choices) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.message) === null || _d === void 0 ? void 0 : _d.content) || '',
                         usage: res.data.usage,
-                        model: res.data.model
+                        model: res.data.model,
+                        sessionCosts: __assign({}, sessionCosts)
                     }];
+        }
+    });
+}); });
+// Get session costs
+electron_1.ipcMain.handle('costs:get', function () { return sessionCosts; });
+electron_1.ipcMain.handle('costs:reset', function () { sessionCosts = { total: 0, requests: 0 }; return sessionCosts; });
+// List available models from OpenRouter
+electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, void 0, void 0, function () {
+    var config, apiKey, res, models, e_3;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                config = store.store;
+                apiKey = config.openrouterApiKey;
+                if (!apiKey) {
+                    throw new Error('No OpenRouter API key configured');
+                }
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, axios_1.default.get('https://openrouter.ai/api/v1/models', {
+                        headers: {
+                            'Authorization': "Bearer ".concat(apiKey),
+                        },
+                    })];
+            case 2:
+                res = _a.sent();
+                models = res.data.data.map(function (m) {
+                    var _a, _b, _c, _d;
+                    return ({
+                        id: m.id,
+                        name: m.name,
+                        description: m.description,
+                        context_length: m.context_length,
+                        pricing: {
+                            prompt: ((_a = m.pricing) === null || _a === void 0 ? void 0 : _a.prompt) ? parseFloat(m.pricing.prompt) : 0,
+                            completion: ((_b = m.pricing) === null || _b === void 0 ? void 0 : _b.completion) ? parseFloat(m.pricing.completion) : 0,
+                        },
+                        top_provider: m.top_provider,
+                        per_million_prompt: ((_c = m.pricing) === null || _c === void 0 ? void 0 : _c.prompt) ? (parseFloat(m.pricing.prompt) * 1000000).toFixed(2) : '0',
+                        per_million_completion: ((_d = m.pricing) === null || _d === void 0 ? void 0 : _d.completion) ? (parseFloat(m.pricing.completion) * 1000000).toFixed(2) : '0',
+                    });
+                });
+                // Sort by prompt price
+                models.sort(function (a, b) { return a.pricing.prompt - b.pricing.prompt; });
+                return [2 /*return*/, models];
+            case 3:
+                e_3 = _a.sent();
+                throw new Error("Failed to fetch models: ".concat(e_3.message));
+            case 4: return [2 /*return*/];
         }
     });
 }); });
 // Streaming task runner
 electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, apiKey, res, fullContent_1, e_3;
+    var config, router, roleConfig, apiKey, res, fullContent_1, e_4;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -740,8 +824,8 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
-                e_3 = _a.sent();
-                throw new Error("Stream failed: ".concat(e_3.message));
+                e_4 = _a.sent();
+                throw new Error("Stream failed: ".concat(e_4.message));
             case 4: return [2 /*return*/];
         }
     });
@@ -816,7 +900,7 @@ electron_1.ipcMain.handle('mcp:list', function () {
     });
 });
 electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
-    var servers, client, e_4;
+    var servers, client, e_5;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -844,8 +928,8 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
-                e_4 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_4.message }];
+                e_5 = _a.sent();
+                return [2 /*return*/, { success: false, error: e_5.message }];
             case 4: return [2 /*return*/];
         }
     });
@@ -870,7 +954,7 @@ electron_1.ipcMain.handle('mcp:remove', function (_e, name) { return __awaiter(v
     });
 }); });
 electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
-    var client, e_5;
+    var client, e_6;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -897,8 +981,8 @@ electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaite
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
-                e_5 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_5.message }];
+                e_6 = _a.sent();
+                return [2 /*return*/, { success: false, error: e_6.message }];
             case 4: return [2 /*return*/];
         }
     });
