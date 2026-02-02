@@ -857,7 +857,9 @@ ipcMain.handle('task:run', async (_e, taskType: string, prompt: string, includeT
   if (!roleConfig?.model) throw new Error(`No model configured for task type: ${taskType}`);
   
   const apiKey = config.openrouterApiKey;
-  if (!apiKey) throw new Error('No OpenRouter API key');
+  if (!apiKey) throw new Error('No API key configured');
+  
+  const apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
   
   const messages: any[] = [];
   
@@ -891,7 +893,7 @@ Be action-oriented. Do things, don't just explain how to do them.`;
   
   messages.push({ role: 'user', content: prompt });
   
-  const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+  const res = await axios.post(`${apiEndpoint}/chat/completions`, {
     model: roleConfig.model,
     messages,
   }, {
@@ -988,11 +990,13 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
   
   const apiKey = config.openrouterApiKey;
   if (!apiKey) {
-    const error = 'No OpenRouter API key configured. Please add your API key in Settings tab.';
+    const error = 'No API key configured. Please add your API key in Settings tab.';
     console.error('[task:runStream]', error);
     mainWindow?.webContents.send('stream:error', { requestId, error });
     throw new Error(error);
   }
+  
+  const apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
   
   console.log(`[task:runStream] Model: ${roleConfig.model}, TaskType: ${taskType}`);
   
@@ -1000,7 +1004,7 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
   const processedPrompt = processTemplateVariables(prompt);
   
   try {
-    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+    const res = await axios.post(`${apiEndpoint}/chat/completions`, {
       model: roleConfig.model,
       messages: [
         { 

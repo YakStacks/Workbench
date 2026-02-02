@@ -1617,6 +1617,7 @@ type Model = {
 
 function SettingsTab() {
   const [apiKey, setApiKey] = useState('');
+  const [apiEndpoint, setApiEndpoint] = useState('');
   const [router, setRouter] = useState<Record<string, { model: string }>>({});
   const [workingDir, setWorkingDir] = useState('');
   const [pluginsDir, setPluginsDir] = useState('');
@@ -1633,6 +1634,7 @@ function SettingsTab() {
   useEffect(() => {
     window.workbench.getConfig().then((cfg: any) => {
       setApiKey(cfg.openrouterApiKey || '');
+      setApiEndpoint(cfg.apiEndpoint || 'https://openrouter.ai/api/v1');
       setRouter(cfg.router || {});
       setWorkingDir(cfg.workingDir || '');
       setPluginsDir(cfg.pluginsDir || '');
@@ -1661,6 +1663,7 @@ function SettingsTab() {
   const save = async () => {
     await window.workbench.setConfig({
       openrouterApiKey: apiKey,
+      apiEndpoint,
       router,
       workingDir,
       pluginsDir,
@@ -1691,8 +1694,21 @@ function SettingsTab() {
         <div>
           <div style={styles.card}>
             <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>API Configuration</h3>
-            <label style={styles.label}>OpenRouter API Key</label>
-            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} style={styles.input} placeholder="sk-or-..." />
+            <label style={styles.label}>API Key</label>
+            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} style={styles.input} placeholder="sk-or-... or sk-..." />
+            
+            <label style={{ ...styles.label, marginTop: 12 }}>API Endpoint</label>
+            <input 
+              type="text" 
+              value={apiEndpoint} 
+              onChange={e => setApiEndpoint(e.target.value)} 
+              style={styles.input} 
+              placeholder="https://openrouter.ai/api/v1" 
+            />
+            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+              OpenRouter: https://openrouter.ai/api/v1 | OpenAI: https://api.openai.com/v1 | Azure: https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT
+            </div>
+            
             <div style={{ marginTop: 8 }}>
               <button 
                 onClick={loadModels} 

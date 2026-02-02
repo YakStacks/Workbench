@@ -933,7 +933,7 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
         args_1[_i - 3] = arguments[_i];
     }
     return __awaiter(void 0, __spreadArray([_e_1, taskType_1, prompt_1], args_1, true), void 0, function (_e, taskType, prompt, includeTools) {
-        var config, router, roleConfig, apiKey, messages, toolsList, systemPrompt, res, usage;
+        var config, router, roleConfig, apiKey, apiEndpoint, messages, toolsList, systemPrompt, res, usage;
         var _a, _b, _c, _d;
         if (includeTools === void 0) { includeTools = false; }
         return __generator(this, function (_f) {
@@ -946,7 +946,8 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
                         throw new Error("No model configured for task type: ".concat(taskType));
                     apiKey = config.openrouterApiKey;
                     if (!apiKey)
-                        throw new Error('No OpenRouter API key');
+                        throw new Error('No API key configured');
+                    apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
                     messages = [];
                     // Add system prompt with tools if requested
                     if (includeTools) {
@@ -958,7 +959,7 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
                         messages.push({ role: 'system', content: systemPrompt });
                     }
                     messages.push({ role: 'user', content: prompt });
-                    return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {
+                    return [4 /*yield*/, axios_1.default.post("".concat(apiEndpoint, "/chat/completions"), {
                             model: roleConfig.model,
                             messages: messages,
                         }, {
@@ -1047,7 +1048,7 @@ function processTemplateVariables(text) {
 }
 // Streaming task runner
 electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, error, apiKey, error, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_4, errorDetails, errorMessage;
+    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_4, errorDetails, errorMessage;
     var _a, _b, _c, _d, _f, _g, _h, _j;
     return __generator(this, function (_k) {
         switch (_k.label) {
@@ -1064,17 +1065,18 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 }
                 apiKey = config.openrouterApiKey;
                 if (!apiKey) {
-                    error = 'No OpenRouter API key configured. Please add your API key in Settings tab.';
+                    error = 'No API key configured. Please add your API key in Settings tab.';
                     console.error('[task:runStream]', error);
                     mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: error });
                     throw new Error(error);
                 }
+                apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
                 console.log("[task:runStream] Model: ".concat(roleConfig.model, ", TaskType: ").concat(taskType));
                 processedPrompt = processTemplateVariables(prompt);
                 _k.label = 1;
             case 1:
                 _k.trys.push([1, 3, , 4]);
-                return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {
+                return [4 /*yield*/, axios_1.default.post("".concat(apiEndpoint, "/chat/completions"), {
                         model: roleConfig.model,
                         messages: [
                             {

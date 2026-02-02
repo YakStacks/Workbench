@@ -56,14 +56,22 @@ A local-first AI task runner with messenger-style chat, AI-powered artifact gene
 npm install
 ```
 
-### 2. Configure API Key
-1. Get an OpenRouter API key from https://openrouter.ai
+### 2. Configure API
+1. Get an API key:
+   - **OpenRouter**: https://openrouter.ai (access to 200+ models)
+   - **OpenAI**: https://platform.openai.com (GPT models)
+   - **Azure OpenAI**: Your Azure portal
 2. Run the app: `npm run dev`
 3. Go to **Settings** tab
-4. Enter your API key
-5. Click "Load Available Models"
-6. Assign models to each role (Writer, Structurer, Coder, Reviewer)
-7. Click Save
+4. Enter your **API Key**
+5. Enter your **API Endpoint**:
+   - OpenRouter: `https://openrouter.ai/api/v1` (default)
+   - OpenAI: `https://api.openai.com/v1`
+   - Azure: `https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT`
+   - Local/Other: Any OpenAI-compatible endpoint
+6. Click "Load Available Models" (OpenRouter only)
+7. Assign models to each role (Writer, Structurer, Coder, Reviewer)
+8. Click Save
 
 ### 3. Build Your First Tool
 Go to the **Chat** tab and say:
@@ -193,8 +201,9 @@ npx -y @modelcontextprotocol/server-memory
 **Configure everything:**
 
 **API Configuration:**
-- OpenRouter API key
-- Load available models button
+- API key (OpenRouter, OpenAI, Azure, etc.)
+- API endpoint (supports any OpenAI-compatible API)
+- Load available models button (OpenRouter only)
 
 **Model Routing:**
 - **writer_cheap** - General chat, content generation
