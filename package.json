@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Desktop app for task running with AI models and plugin tools",
   "author": "Your Name",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YakStacks/Workbench.git"
+  },
   "main": "main.cjs",
   "type": "module",
   "scripts": {
