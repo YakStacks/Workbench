@@ -832,13 +832,21 @@ electron_1.ipcMain.handle('plugins:reload', function () {
     return true;
 });
 electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { return __awaiter(void 0, void 0, void 0, function () {
-    var pluginsDir, safeName, pluginPath, cleanCode, fenceMatch;
+    var pluginsDir, safeName, pluginPath, stat, cleanCode, fenceMatch;
     return __generator(this, function (_a) {
         pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
         safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
         if (!safeName)
             throw new Error('Invalid plugin name');
         pluginPath = path_1.default.join(pluginsDir, safeName);
+        // Check if path exists as a file and remove it
+        if (fs_1.default.existsSync(pluginPath)) {
+            stat = fs_1.default.statSync(pluginPath);
+            if (stat.isFile()) {
+                fs_1.default.unlinkSync(pluginPath);
+            }
+        }
+        // Create directory if it doesn't exist
         if (!fs_1.default.existsSync(pluginPath)) {
             fs_1.default.mkdirSync(pluginPath, { recursive: true });
         }

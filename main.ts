@@ -754,6 +754,16 @@ ipcMain.handle('plugins:save', async (_e, pluginName: string, code: string) => {
   if (!safeName) throw new Error('Invalid plugin name');
   
   const pluginPath = path.join(pluginsDir, safeName);
+  
+  // Check if path exists as a file and remove it
+  if (fs.existsSync(pluginPath)) {
+    const stat = fs.statSync(pluginPath);
+    if (stat.isFile()) {
+      fs.unlinkSync(pluginPath);
+    }
+  }
+  
+  // Create directory if it doesn't exist
   if (!fs.existsSync(pluginPath)) {
     fs.mkdirSync(pluginPath, { recursive: true });
   }
