@@ -19,7 +19,7 @@ A local-first AI task runner with messenger-style chat, AI-powered artifact gene
 - **Template variables** - Use `{{today}}`, `{{time}}`, `{{user}}`, `{{clipboard}}` in prompts
 
 ### 🔧 Tools System  
-- **Browse all tools** - Categorized by type (BUILTIN, WEATHER, CLINICAL, WORKBENCH, etc.)
+- **Browse all tools** - Automatically categorized by prefix (BUILTIN, your custom categories, WORKBENCH, etc.)
 - **Run tools manually** - Fill parameters, run, see output
 - **Refresh button** - Reload plugins without restarting the app
 - **In-app editor** - Edit tool code directly in Tools tab, save and refresh
@@ -118,9 +118,8 @@ npm run package:all    # Windows, Mac, Linux
 **Purpose**: Browse and run all available tools manually
 
 **Categories:**
-- **BUILTIN** - File operations, clipboard, shell, system info
-- **WEATHER** - Your custom weather tools
-- **CLINICAL** - Domain-specific tools (ASAM, etc.)
+- **BUILTIN** - Core file operations, clipboard, shell, system info
+- **Custom categories** - Any tools you create appear here, organized by prefix (e.g., weather.*, data.*, finance.*)
 - **WORKBENCH** - Meta tools like convertArtifact
 
 **How to run a tool:**
