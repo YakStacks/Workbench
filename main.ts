@@ -108,13 +108,22 @@ function createTray() {
     iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
   }
   
+  console.log('[createTray] Looking for icon at:', iconPath);
+  
   if (!fs.existsSync(iconPath)) {
-    console.log('[createTray] Icon not found at:', iconPath);
+    console.log('[createTray] Icon not found, skipping tray');
     return; // Don't create tray if icon missing
   }
   
   // Create native image from icon
   const icon = nativeImage.createFromPath(iconPath);
+  
+  if (icon.isEmpty()) {
+    console.log('[createTray] Icon is empty, skipping tray');
+    return;
+  }
+  
+  console.log('[createTray] Icon size:', icon.getSize());
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
   
   const contextMenu = Menu.buildFromTemplate([
