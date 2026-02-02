@@ -28,6 +28,7 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
     // Plugins
     reloadPlugins: function () { return electron_1.ipcRenderer.invoke('plugins:reload'); },
     savePlugin: function (pluginName, code) { return electron_1.ipcRenderer.invoke('plugins:save', pluginName, code); },
+    deletePlugin: function (toolName) { return electron_1.ipcRenderer.invoke('plugins:delete', toolName); },
     // Tools
     listTools: function () { return electron_1.ipcRenderer.invoke('tools:list'); },
     runTool: function (name, input) { return electron_1.ipcRenderer.invoke('tools:run', name, input); },

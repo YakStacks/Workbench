@@ -315,6 +315,179 @@ function registerBuiltinTools() {
         }); }
     });
     console.log('[registerBuiltinTools] Registered builtin tools');
+    // System Info Tools
+    tools.set('builtin.systemInfo', {
+        name: 'builtin.systemInfo',
+        description: 'Get system information (OS, CPU, memory, etc.)',
+        inputSchema: { type: 'object', properties: {} },
+        run: function () { return __awaiter(_this, void 0, void 0, function () {
+            var os;
+            return __generator(this, function (_a) {
+                os = require('os');
+                return [2 /*return*/, {
+                        platform: os.platform(),
+                        release: os.release(),
+                        arch: os.arch(),
+                        hostname: os.hostname(),
+                        uptime: os.uptime(),
+                        cpus: os.cpus().map(function (cpu) { return ({ model: cpu.model, speed: cpu.speed }); }),
+                        totalMemory: os.totalmem(),
+                        freeMemory: os.freemem(),
+                        usedMemory: os.totalmem() - os.freemem(),
+                        memoryUsagePercent: ((os.totalmem() - os.freemem()) / os.totalmem() * 100).toFixed(1),
+                        homeDir: os.homedir(),
+                        tempDir: os.tmpdir(),
+                        userInfo: os.userInfo(),
+                    }];
+            });
+        }); }
+    });
+    tools.set('builtin.processes', {
+        name: 'builtin.processes',
+        description: 'List running processes',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                limit: { type: 'number', description: 'Max processes to return (default 20)', default: 20 }
+            }
+        },
+        run: function (input) { return __awaiter(_this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, new Promise(function (resolve) {
+                        var _a;
+                        var limit = input.limit || 20;
+                        var isWindows = process.platform === 'win32';
+                        var cmd = isWindows ? 'tasklist' : 'ps aux';
+                        var proc = (0, child_process_1.spawn)(isWindows ? 'cmd.exe' : '/bin/sh', [isWindows ? '/c' : '-c', cmd], {
+                            timeout: 10000
+                        });
+                        var output = '';
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
+                        proc.on('close', function () {
+                            var lines = output.trim().split('\n');
+                            resolve({
+                                count: lines.length - 1,
+                                processes: lines.slice(1, limit + 1),
+                                raw: lines.slice(0, limit + 1).join('\n')
+                            });
+                        });
+                        proc.on('error', function (err) {
+                            resolve({ error: err.message });
+                        });
+                    })];
+            });
+        }); }
+    });
+    tools.set('builtin.diskSpace', {
+        name: 'builtin.diskSpace',
+        description: 'Check disk space usage',
+        inputSchema: { type: 'object', properties: {} },
+        run: function () { return __awaiter(_this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, new Promise(function (resolve) {
+                        var _a;
+                        var isWindows = process.platform === 'win32';
+                        var cmd = isWindows ? 'wmic logicaldisk get size,freespace,caption' : 'df -h';
+                        var proc = (0, child_process_1.spawn)(isWindows ? 'cmd.exe' : '/bin/sh', [isWindows ? '/c' : '-c', cmd], {
+                            timeout: 10000
+                        });
+                        var output = '';
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
+                        proc.on('close', function () {
+                            resolve({ raw: output.trim() });
+                        });
+                        proc.on('error', function (err) {
+                            resolve({ error: err.message });
+                        });
+                    })];
+            });
+        }); }
+    });
+    tools.set('builtin.networkInfo', {
+        name: 'builtin.networkInfo',
+        description: 'Get network interface information',
+        inputSchema: { type: 'object', properties: {} },
+        run: function () { return __awaiter(_this, void 0, void 0, function () {
+            var os, interfaces, result, _i, _a, _b, name_1, addrs;
+            return __generator(this, function (_c) {
+                os = require('os');
+                interfaces = os.networkInterfaces();
+                result = {};
+                for (_i = 0, _a = Object.entries(interfaces); _i < _a.length; _i++) {
+                    _b = _a[_i], name_1 = _b[0], addrs = _b[1];
+                    result[name_1] = addrs.map(function (addr) { return ({
+                        address: addr.address,
+                        family: addr.family,
+                        internal: addr.internal,
+                        mac: addr.mac,
+                    }); });
+                }
+                return [2 /*return*/, result];
+            });
+        }); }
+    });
+    tools.set('builtin.envVars', {
+        name: 'builtin.envVars',
+        description: 'List environment variables (filtered for safety)',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                filter: { type: 'string', description: 'Filter by variable name (case-insensitive)' }
+            }
+        },
+        run: function (input) { return __awaiter(_this, void 0, void 0, function () {
+            var env, safeKeys, result;
+            return __generator(this, function (_a) {
+                env = process.env;
+                safeKeys = Object.keys(env).filter(function (key) {
+                    // Filter out sensitive-looking keys
+                    var lower = key.toLowerCase();
+                    if (lower.includes('key') || lower.includes('secret') || lower.includes('password') ||
+                        lower.includes('token') || lower.includes('credential')) {
+                        return false;
+                    }
+                    if (input.filter) {
+                        return lower.includes(input.filter.toLowerCase());
+                    }
+                    return true;
+                });
+                result = {};
+                safeKeys.forEach(function (key) {
+                    result[key] = env[key] || '';
+                });
+                return [2 /*return*/, { count: safeKeys.length, variables: result }];
+            });
+        }); }
+    });
+    tools.set('builtin.installedApps', {
+        name: 'builtin.installedApps',
+        description: 'List installed applications (Windows only)',
+        inputSchema: { type: 'object', properties: {} },
+        run: function () { return __awaiter(_this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                if (process.platform !== 'win32') {
+                    return [2 /*return*/, { error: 'This tool only works on Windows' }];
+                }
+                return [2 /*return*/, new Promise(function (resolve) {
+                        var _a;
+                        var cmd = 'wmic product get name,version';
+                        var proc = (0, child_process_1.spawn)('cmd.exe', ['/c', cmd], { timeout: 30000 });
+                        var output = '';
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
+                        proc.on('close', function () {
+                            var lines = output.trim().split('\n').slice(1).filter(function (l) { return l.trim(); });
+                            resolve({
+                                count: lines.length,
+                                apps: lines.slice(0, 50).map(function (l) { return l.trim(); })
+                            });
+                        });
+                        proc.on('error', function (err) {
+                            resolve({ error: err.message });
+                        });
+                    })];
+            });
+        }); }
+    });
 }
 function resolveSafePath(inputPath) {
     // Allow absolute paths or resolve relative to user's home
@@ -643,6 +816,54 @@ electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { retu
         fs_1.default.writeFileSync(path_1.default.join(pluginPath, 'package.json'), '{\n  "type": "commonjs"\n}\n', 'utf-8');
         loadPlugins();
         return [2 /*return*/, { success: true, path: pluginPath, name: safeName }];
+    });
+}); });
+// Delete a plugin
+electron_1.ipcMain.handle('plugins:delete', function (_e, toolName) { return __awaiter(void 0, void 0, void 0, function () {
+    var pluginsDir, parts, possibleNames, deleted, _i, possibleNames_1, name_2, pluginPath, folders, _a, folders_1, folder, indexPath, content;
+    return __generator(this, function (_b) {
+        pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
+        parts = toolName.split('.');
+        possibleNames = [
+            parts[parts.length - 1], // Last part
+            parts.join('_'), // Joined with underscore
+            toolName.replace(/\./g, '_'), // Replace dots with underscores
+        ];
+        deleted = false;
+        for (_i = 0, possibleNames_1 = possibleNames; _i < possibleNames_1.length; _i++) {
+            name_2 = possibleNames_1[_i];
+            pluginPath = path_1.default.join(pluginsDir, name_2);
+            if (fs_1.default.existsSync(pluginPath)) {
+                // Remove the directory
+                fs_1.default.rmSync(pluginPath, { recursive: true, force: true });
+                console.log('[plugins:delete] Deleted plugin:', pluginPath);
+                deleted = true;
+                break;
+            }
+        }
+        if (!deleted) {
+            folders = fs_1.default.readdirSync(pluginsDir, { withFileTypes: true })
+                .filter(function (d) { return d.isDirectory(); })
+                .map(function (d) { return d.name; });
+            for (_a = 0, folders_1 = folders; _a < folders_1.length; _a++) {
+                folder = folders_1[_a];
+                indexPath = path_1.default.join(pluginsDir, folder, 'index.js');
+                if (fs_1.default.existsSync(indexPath)) {
+                    content = fs_1.default.readFileSync(indexPath, 'utf-8');
+                    if (content.includes("name: '".concat(toolName, "'")) || content.includes("name: \"".concat(toolName, "\""))) {
+                        fs_1.default.rmSync(path_1.default.join(pluginsDir, folder), { recursive: true, force: true });
+                        console.log('[plugins:delete] Deleted plugin folder:', folder);
+                        deleted = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!deleted) {
+            throw new Error("Could not find plugin for tool: ".concat(toolName));
+        }
+        loadPlugins();
+        return [2 /*return*/, { success: true }];
     });
 }); });
 // Tools
