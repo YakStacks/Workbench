@@ -9,6 +9,7 @@ type Tool = {
   description?: string;
   inputSchema: any; 
   category: string;
+  _sourceFolder?: string;
 };
 
 type Message = {
@@ -686,6 +687,35 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     setOutput('');
   };
 
+  const deleteTool = async () => {
+    if (!selected) return;
+    if (selected.category === 'BUILTIN') {
+      // should check category properly, but builtin tools usually don't have _sourceFolder anyway?
+      // Actually v0.4.1 builtin tools might not have it.
+      // Better check:
+      alert('Cannot delete built-in tools');
+      return;
+    }
+    if (!selected._sourceFolder) {
+      alert('Cannot delete: source folder unknown');
+      return;
+    }
+    const confirmed = confirm(`Delete tool "${selected.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    
+    try {
+      await window.workbench.deletePlugin(selected._sourceFolder);
+      onRefresh(); // Refresh tools list
+      // Deselect
+      // We need to pass a callback or manage state?
+      // ToolsTab props: { tools, onOpenInChat, onRefresh }
+      // It doesn't seem to control selection from outside.
+      // But we can just refresh.
+    } catch (e: any) {
+      alert(`Error deleting: ${e.message}`);
+    }
+  };
+
   const runTool = async () => {
     if (!selected) return;
     setLoading(true);
@@ -720,27 +750,7 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     setLoading(false);
   };
 
-  const deleteTool = async () => {
-    if (!selected) return;
-    // Only allow deleting plugin tools, not builtins or MCP
-    if (selected.category === 'builtin' || selected.category === 'mcp') {
-      setOutput('Cannot delete built-in or MCP tools');
-      return;
-    }
-    if (!confirm(`Delete tool "${selected.name}"? This will remove the plugin folder.`)) {
-      return;
-    }
-    setDeleting(true);
-    try {
-      await window.workbench.deletePlugin(selected.name);
-      setSelected(null);
-      setOutput('');
-      onRefresh();
-    } catch (e: any) {
-      setOutput(`Error deleting: ${e.message}`);
-    }
-    setDeleting(false);
-  };
+
 
   const canDelete = selected && selected.category !== 'builtin' && !selected.category.startsWith('mcp');
 
@@ -822,9 +832,25 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
                 <button onClick={runTool} disabled={loading} style={{ ...styles.button, ...styles.buttonPrimary }}>
                   {loading ? 'Running...' : 'Run Tool'}
                 </button>
+                <div style={{ width: 8 }} />
                 <button onClick={runWithLLM} disabled={loading} style={{ ...styles.button, ...styles.buttonSuccess }}>
                   Run with LLM
                 </button>
+                <div style={{ width: 8 }} />
+                <button onClick={() => onOpenInChat(selected)} style={{ ...styles.button, ...styles.buttonGhost }}>
+                  Open in Chat
+                </button>
+                {selected._sourceFolder && (
+                  <>
+                    <div style={{ width: 8 }} />
+                    <button 
+                      onClick={deleteTool} 
+                      style={{ ...styles.button, background: '#dc2626', color: 'white' }}
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 

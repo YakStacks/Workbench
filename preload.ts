@@ -31,7 +31,7 @@ contextBridge.exposeInMainWorld('workbench', {
   // Plugins
   reloadPlugins: () => ipcRenderer.invoke('plugins:reload'),
   savePlugin: (pluginName: string, code: string) => ipcRenderer.invoke('plugins:save', pluginName, code),
-  deletePlugin: (toolName: string) => ipcRenderer.invoke('plugins:delete', toolName),
+  deletePlugin: (pluginName: string) => ipcRenderer.invoke('plugins:delete', pluginName),
 
   // Tools
   listTools: () => ipcRenderer.invoke('tools:list'),

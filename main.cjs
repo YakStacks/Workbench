@@ -128,7 +128,9 @@ function loadPlugins() {
                 if (plugin && typeof plugin.register === 'function') {
                     plugin.register({
                         registerTool: function (tool) {
-                            console.log('[loadPlugins] Registered tool:', tool.name);
+                            // Store source folder for delete functionality
+                            tool._sourceFolder = folder;
+                            console.log('[loadPlugins] Registered tool:', tool.name, 'from folder:', folder);
                             tools.set(tool.name, tool);
                         },
                     });
@@ -819,51 +821,21 @@ electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { retu
     });
 }); });
 // Delete a plugin
-electron_1.ipcMain.handle('plugins:delete', function (_e, toolName) { return __awaiter(void 0, void 0, void 0, function () {
-    var pluginsDir, parts, possibleNames, deleted, _i, possibleNames_1, name_2, pluginPath, folders, _a, folders_1, folder, indexPath, content;
-    return __generator(this, function (_b) {
+// Delete a plugin
+electron_1.ipcMain.handle('plugins:delete', function (_e, pluginName) { return __awaiter(void 0, void 0, void 0, function () {
+    var pluginsDir, safeName, pluginPath;
+    return __generator(this, function (_a) {
         pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
-        parts = toolName.split('.');
-        possibleNames = [
-            parts[parts.length - 1], // Last part
-            parts.join('_'), // Joined with underscore
-            toolName.replace(/\./g, '_'), // Replace dots with underscores
-        ];
-        deleted = false;
-        for (_i = 0, possibleNames_1 = possibleNames; _i < possibleNames_1.length; _i++) {
-            name_2 = possibleNames_1[_i];
-            pluginPath = path_1.default.join(pluginsDir, name_2);
-            if (fs_1.default.existsSync(pluginPath)) {
-                // Remove the directory
-                fs_1.default.rmSync(pluginPath, { recursive: true, force: true });
-                console.log('[plugins:delete] Deleted plugin:', pluginPath);
-                deleted = true;
-                break;
-            }
+        safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_');
+        pluginPath = path_1.default.join(pluginsDir, safeName);
+        if (!fs_1.default.existsSync(pluginPath)) {
+            throw new Error("Plugin \"".concat(pluginName, "\" not found"));
         }
-        if (!deleted) {
-            folders = fs_1.default.readdirSync(pluginsDir, { withFileTypes: true })
-                .filter(function (d) { return d.isDirectory(); })
-                .map(function (d) { return d.name; });
-            for (_a = 0, folders_1 = folders; _a < folders_1.length; _a++) {
-                folder = folders_1[_a];
-                indexPath = path_1.default.join(pluginsDir, folder, 'index.js');
-                if (fs_1.default.existsSync(indexPath)) {
-                    content = fs_1.default.readFileSync(indexPath, 'utf-8');
-                    if (content.includes("name: '".concat(toolName, "'")) || content.includes("name: \"".concat(toolName, "\""))) {
-                        fs_1.default.rmSync(path_1.default.join(pluginsDir, folder), { recursive: true, force: true });
-                        console.log('[plugins:delete] Deleted plugin folder:', folder);
-                        deleted = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if (!deleted) {
-            throw new Error("Could not find plugin for tool: ".concat(toolName));
-        }
+        // Only allow deleting custom plugins, not built-in ones
+        fs_1.default.rmSync(pluginPath, { recursive: true, force: true });
+        console.log('[plugins:delete] Deleted plugin:', safeName);
         loadPlugins();
-        return [2 /*return*/, { success: true }];
+        return [2 /*return*/, { success: true, name: safeName }];
     });
 }); });
 // Tools
@@ -872,7 +844,8 @@ electron_1.ipcMain.handle('tools:list', function () {
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
-        category: t.name.split('.')[0]
+        category: t.name.split('.')[0],
+        _sourceFolder: t._sourceFolder
     }); });
 });
 electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {

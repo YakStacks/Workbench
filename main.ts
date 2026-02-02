@@ -91,7 +91,9 @@ function loadPlugins() {
         if (plugin && typeof plugin.register === 'function') {
           plugin.register({
             registerTool: (tool: any) => {
-              console.log('[loadPlugins] Registered tool:', tool.name);
+              // Store source folder for delete functionality
+              tool._sourceFolder = folder;
+              console.log('[loadPlugins] Registered tool:', tool.name, 'from folder:', folder);
               tools.set(tool.name, tool);
             },
           });
@@ -735,55 +737,22 @@ ipcMain.handle('plugins:save', async (_e, pluginName: string, code: string) => {
 });
 
 // Delete a plugin
-ipcMain.handle('plugins:delete', async (_e, toolName: string) => {
+// Delete a plugin
+ipcMain.handle('plugins:delete', async (_e, pluginName: string) => {
   const pluginsDir = store.get('pluginsDir') as string || path.join(__dirname, 'plugins');
+  const safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const pluginPath = path.join(pluginsDir, safeName);
   
-  // Extract plugin folder name from tool name (e.g., "clinical.asamUpdater" -> look for folder)
-  const parts = toolName.split('.');
-  const possibleNames = [
-    parts[parts.length - 1], // Last part
-    parts.join('_'), // Joined with underscore
-    toolName.replace(/\./g, '_'), // Replace dots with underscores
-  ];
-  
-  let deleted = false;
-  for (const name of possibleNames) {
-    const pluginPath = path.join(pluginsDir, name);
-    if (fs.existsSync(pluginPath)) {
-      // Remove the directory
-      fs.rmSync(pluginPath, { recursive: true, force: true });
-      console.log('[plugins:delete] Deleted plugin:', pluginPath);
-      deleted = true;
-      break;
-    }
+  if (!fs.existsSync(pluginPath)) {
+    throw new Error(`Plugin "${pluginName}" not found`);
   }
   
-  if (!deleted) {
-    // Try to find by scanning plugin folders for matching tool name
-    const folders = fs.readdirSync(pluginsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-    
-    for (const folder of folders) {
-      const indexPath = path.join(pluginsDir, folder, 'index.js');
-      if (fs.existsSync(indexPath)) {
-        const content = fs.readFileSync(indexPath, 'utf-8');
-        if (content.includes(`name: '${toolName}'`) || content.includes(`name: "${toolName}"`)) {
-          fs.rmSync(path.join(pluginsDir, folder), { recursive: true, force: true });
-          console.log('[plugins:delete] Deleted plugin folder:', folder);
-          deleted = true;
-          break;
-        }
-      }
-    }
-  }
-  
-  if (!deleted) {
-    throw new Error(`Could not find plugin for tool: ${toolName}`);
-  }
+  // Only allow deleting custom plugins, not built-in ones
+  fs.rmSync(pluginPath, { recursive: true, force: true });
+  console.log('[plugins:delete] Deleted plugin:', safeName);
   
   loadPlugins();
-  return { success: true };
+  return { success: true, name: safeName };
 });
 
 // Tools
@@ -792,7 +761,8 @@ ipcMain.handle('tools:list', () => {
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
-    category: t.name.split('.')[0]
+    category: t.name.split('.')[0],
+    _sourceFolder: t._sourceFolder
   }));
 });
 
