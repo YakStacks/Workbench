@@ -1,13 +1,21 @@
 // Electron main process - Enhanced with streaming, file system, clipboard, tool chaining, MCP
-import { app, BrowserWindow, ipcMain, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, clipboard, Tray, Menu, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 import Store from 'electron-store';
 import axios from 'axios';
 
+// Extend app with isQuitting flag
+declare module 'electron' {
+  interface App {
+    isQuitting?: boolean;
+  }
+}
+
 const store = new Store();
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let plugins: any[] = [];
 let tools: Map<string, any> = new Map();
 
@@ -58,9 +66,14 @@ interface MCPServer {
 let mcpServers: Map<string, MCPServer> = new Map();
 
 function createWindow() {
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'build', 'icon.png')
+    : path.join(__dirname, 'build', 'icon.png');
+  
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -72,10 +85,56 @@ function createWindow() {
   } else {
     mainWindow.loadURL('http://localhost:5173/');
   }
+  
+  // Minimize to tray instead of closing
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+}
+
+function createTray() {
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'build', 'icon.png')
+    : path.join(__dirname, 'build', 'icon.png');
+  
+  // Create native image from icon
+  const icon = nativeImage.createFromPath(iconPath);
+  tray = new Tray(icon.resize({ width: 16, height: 16 }));
+  
+  const contextMenu = Menu.buildFromTemplate([
+    { 
+      label: 'Show Workbench', 
+      click: () => {
+        mainWindow?.show();
+        mainWindow?.focus();
+      }
+    },
+    { type: 'separator' },
+    { 
+      label: 'Quit', 
+      click: () => {
+        app.isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+  
+  tray.setToolTip('Workbench');
+  tray.setContextMenu(contextMenu);
+  
+  // Double-click to show window
+  tray.on('double-click', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
 }
 
 app.whenReady().then(() => {
   createWindow();
+  createTray();
   loadPlugins();
   registerBuiltinTools();
   loadMCPServers();
