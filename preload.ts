@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('workbench', {
   reloadPlugins: () => ipcRenderer.invoke('plugins:reload'),
   listTools: () => ipcRenderer.invoke('tools:list'),
   runTool: (name: string, input: any) => ipcRenderer.invoke('tools:run', name, input),
+  savePlugin: (pluginName: string, code: string) => ipcRenderer.invoke('plugins:save', pluginName, code),
 });

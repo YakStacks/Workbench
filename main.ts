@@ -116,3 +116,39 @@ ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
   const content = data.choices?.[0]?.message?.content || '';
   return { content, usage: data.usage, model: data.model };
 });
+
+// Save a generated plugin to disk
+ipcMain.handle('plugins:save', async (_e, pluginName: string, code: string) => {
+  const pluginsDir = store.get('pluginsDir') as string || path.join(__dirname, 'plugins');
+  // Sanitize plugin name to be filesystem-safe
+  const safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+  if (!safeName) throw new Error('Invalid plugin name');
+  
+  const pluginPath = path.join(pluginsDir, safeName);
+  
+  // Create plugin directory
+  if (!fs.existsSync(pluginPath)) {
+    fs.mkdirSync(pluginPath, { recursive: true });
+  }
+  
+  // Extract code from markdown fences if present
+  let cleanCode = code;
+  const fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
+  if (fenceMatch) {
+    cleanCode = fenceMatch[1].trim();
+  }
+  
+  // Write index.js
+  fs.writeFileSync(path.join(pluginPath, 'index.js'), cleanCode, 'utf-8');
+  
+  // Write package.json
+  fs.writeFileSync(path.join(pluginPath, 'package.json'), '{\n  "type": "commonjs"\n}\n', 'utf-8');
+  
+  console.log('[plugins:save] Saved plugin:', safeName);
+  
+  // Reload plugins to pick up the new one
+  loadPlugins();
+  
+  return { success: true, path: pluginPath, name: safeName };
+});
+

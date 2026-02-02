@@ -171,3 +171,31 @@ electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return _
         }
     });
 }); });
+// Save a generated plugin to disk
+electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { return __awaiter(void 0, void 0, void 0, function () {
+    var pluginsDir, safeName, pluginPath, cleanCode, fenceMatch;
+    return __generator(this, function (_a) {
+        pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
+        safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+        if (!safeName)
+            throw new Error('Invalid plugin name');
+        pluginPath = path_1.default.join(pluginsDir, safeName);
+        // Create plugin directory
+        if (!fs_1.default.existsSync(pluginPath)) {
+            fs_1.default.mkdirSync(pluginPath, { recursive: true });
+        }
+        cleanCode = code;
+        fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
+        if (fenceMatch) {
+            cleanCode = fenceMatch[1].trim();
+        }
+        // Write index.js
+        fs_1.default.writeFileSync(path_1.default.join(pluginPath, 'index.js'), cleanCode, 'utf-8');
+        // Write package.json
+        fs_1.default.writeFileSync(path_1.default.join(pluginPath, 'package.json'), '{\n  "type": "commonjs"\n}\n', 'utf-8');
+        console.log('[plugins:save] Saved plugin:', safeName);
+        // Reload plugins to pick up the new one
+        loadPlugins();
+        return [2 /*return*/, { success: true, path: pluginPath, name: safeName }];
+    });
+}); });

@@ -9,4 +9,5 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
     reloadPlugins: function () { return electron_1.ipcRenderer.invoke('plugins:reload'); },
     listTools: function () { return electron_1.ipcRenderer.invoke('tools:list'); },
     runTool: function (name, input) { return electron_1.ipcRenderer.invoke('tools:run', name, input); },
+    savePlugin: function (pluginName, code) { return electron_1.ipcRenderer.invoke('plugins:save', pluginName, code); },
 });
