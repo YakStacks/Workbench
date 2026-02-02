@@ -181,7 +181,7 @@ export default function App() {
             setPendingTool={setPendingTool}
           />
         )}
-        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.listTools().then(setTools)} />}
+        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} />}
         {tab === 'Files' && <FilesTab />}
         {tab === 'Chains' && <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />}
         {tab === 'MCP' && <MCPTab onToolsChanged={() => window.workbench.listTools().then(setTools)} />}
@@ -213,8 +213,19 @@ function ChatTab({
   const [taskType, setTaskType] = useState('writer_cheap');
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [toolFilter, setToolFilter] = useState('');
+  const [sessionCost, setSessionCost] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Load costs on mount and update periodically
+  useEffect(() => {
+    const loadCosts = () => {
+      window.workbench.costs.get().then(setSessionCost);
+    };
+    loadCosts();
+    const interval = setInterval(loadCosts, 5000); // Update every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -279,22 +290,80 @@ function ChatTab({
     };
     setHistory(prev => [...prev, assistantMsg]);
 
+    let fullResponse = '';
+    
     try {
       await window.workbench.runTaskStream(taskType, messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), {
         onChunk: (data: any) => {
+          fullResponse = data.content;
           setHistory(prev => prev.map(m => 
             m.id === assistantMsgId ? { ...m, content: data.content } : m
           ));
         },
-        onDone: (data: any) => {
+        onDone: async (data: any) => {
+          fullResponse = data.content;
+          
           setHistory(prev => prev.map(m => 
             m.id === assistantMsgId ? { ...m, content: data.content, isStreaming: false } : m
           ));
+          
+          // Auto-detect and offer to save plugin code
+          const codeMatch = fullResponse.match(/```javascript\s*([\s\S]*?module\.exports\.register[\s\S]*?)```/);
+          
+          if (codeMatch) {
+            const pluginCode = codeMatch[1].trim();
+            const nameMatch = pluginCode.match(/name:\s*['"]([^'"]+)['"]/);
+            
+            if (nameMatch) {
+              const toolName = nameMatch[1];
+              const pluginFolder = toolName.replace(/\./g, '_');
+              
+              // Show auto-save suggestion
+              const saveMsg: Message = {
+                id: `msg_${Date.now()}_save`,
+                role: 'system',
+                content: `💾 Plugin code detected! Automatically saving to plugins/${pluginFolder}/index.js...`,
+                timestamp: new Date(),
+              };
+              setHistory(prev => [...prev, saveMsg]);
+              
+              try {
+                // Save the plugin
+                await window.workbench.savePlugin(pluginFolder, pluginCode);
+                
+                // Update message
+                setHistory(prev => prev.map(m => 
+                  m.id === saveMsg.id 
+                    ? { ...m, content: `✅ Plugin saved! Restart the app to load "${toolName}".` }
+                    : m
+                ));
+              } catch (error: any) {
+                setHistory(prev => prev.map(m => 
+                  m.id === saveMsg.id 
+                    ? { ...m, content: `❌ Failed to save: ${error.message}` }
+                    : m
+                ));
+              }
+            }
+          }
+          
           setIsStreaming(false);
         },
         onError: (data: any) => {
+          const errorMessage = data.error || 'Unknown error';
+          let userFriendlyError = errorMessage;
+          
+          // Make errors more user-friendly
+          if (errorMessage.includes('No model configured')) {
+            userFriendlyError = '⚠️ No model configured. Please go to Settings tab and configure a model for the selected role.';
+          } else if (errorMessage.includes('No OpenRouter API key')) {
+            userFriendlyError = '⚠️ No API key configured. Please go to Settings tab and add your OpenRouter API key.';
+          } else if (errorMessage.includes('status code 400') || errorMessage.includes('status code 404')) {
+            userFriendlyError = '⚠️ Invalid model or API request. Please check your Settings and ensure the model ID is correct.';
+          }
+          
           setHistory(prev => prev.map(m => 
-            m.id === assistantMsgId ? { ...m, content: `Error: ${data.error}`, isStreaming: false } : m
+            m.id === assistantMsgId ? { ...m, content: userFriendlyError, isStreaming: false } : m
           ));
           setIsStreaming(false);
         }
@@ -321,52 +390,72 @@ function ChatTab({
     try {
       const result = await window.workbench.runTool(tool.name, toolInput);
       
-      // Check if this is a prompt-generating tool (returns { prompt, metadata })
-      if (result && result.prompt && typeof result.prompt === 'string') {
-        // Update status
-        setHistory(prev => prev.map(m => 
-          m.id === runningMsgId ? { ...m, content: `${tool.name} → sending to LLM...` } : m
-        ));
+      // Result is now standardized: { content, metadata?, error? }
+      setHistory(prev => prev.filter(m => m.id !== runningMsgId));
+      
+      // Check if this tool returns a prompt that should be sent to LLM
+      const hasPromptFlag = result.metadata?.suggestedRole || result.metadata?.note?.includes('LLM');
+      const isPromptTool = hasPromptFlag || result.prompt;
+      
+      if (isPromptTool && !result.error) {
+        // This is a prompt-based tool (like ASAM) - send to LLM automatically
+        const promptText = result.prompt || (typeof result.content === 'string' ? result.content : null);
         
-        // Send to LLM
-        const llmResult = await window.workbench.runTask(
-          result.metadata?.suggestedRole || 'writer_cheap',
-          result.prompt
-        );
-        
-        // Remove running message and add tool result with LLM output
-        setHistory(prev => prev.filter(m => m.id !== runningMsgId));
-        
-        const toolMsg: Message = {
-          id: `msg_${Date.now()}`,
-          role: 'tool',
-          content: llmResult.content,
-          toolName: tool.name,
-          toolInput: toolInput,
-          toolOutput: llmResult,
-          timestamp: new Date(),
-        };
-        setHistory(prev => [...prev, toolMsg]);
-        
-      } else {
-        // Direct result tool - show the data as-is
-        setHistory(prev => prev.filter(m => m.id !== runningMsgId));
-        
-        const displayContent = typeof result === 'string' 
-          ? result 
-          : JSON.stringify(result, null, 2);
-        
-        const toolMsg: Message = {
-          id: `msg_${Date.now()}`,
-          role: 'tool',
-          content: displayContent,
-          toolName: tool.name,
-          toolInput: toolInput,
-          toolOutput: result,
-          timestamp: new Date(),
-        };
-        setHistory(prev => [...prev, toolMsg]);
+        if (promptText) {
+          // Update status message
+          setHistory(prev => [...prev, {
+            id: `msg_${Date.now()}_llm`,
+            role: 'system',
+            content: `Processing through LLM (${result.metadata?.suggestedRole || 'writer_cheap'})...`,
+            timestamp: new Date(),
+          }]);
+          
+          // Send to LLM
+          const llmResult = await window.workbench.runTask(
+            result.metadata?.suggestedRole || 'writer_cheap',
+            promptText
+          );
+          
+          // Remove status and add final result
+          setHistory(prev => prev.filter(m => !m.id.includes('_llm')));
+          
+          const toolMsg: Message = {
+            id: `msg_${Date.now()}`,
+            role: 'tool',
+            content: llmResult.content,
+            toolName: tool.name,
+            toolInput: toolInput,
+            toolOutput: llmResult,
+            timestamp: new Date(),
+          };
+          setHistory(prev => [...prev, toolMsg]);
+          return;
+        }
       }
+      
+      // Standard tool output (not a prompt)
+      let displayContent = '';
+      if (typeof result.content === 'string') {
+        displayContent = result.content;
+      } else if (Array.isArray(result.content)) {
+        displayContent = result.content.map((c: any) => c.text || JSON.stringify(c)).join('\n');
+      }
+      
+      // Check if there's an error
+      if (result.error) {
+        displayContent = `❌ Error: ${displayContent}`;
+      }
+      
+      const toolMsg: Message = {
+        id: `msg_${Date.now()}`,
+        role: 'tool',
+        content: displayContent,
+        toolName: tool.name,
+        toolInput: toolInput,
+        toolOutput: result,
+        timestamp: new Date(),
+      };
+      setHistory(prev => [...prev, toolMsg]);
       
     } catch (e: any) {
       setHistory(prev => prev.map(m => 
@@ -502,7 +591,7 @@ function ChatTab({
 
       {/* Input area */}
       <div style={{ padding: 16, borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
           <select 
             value={taskType} 
             onChange={e => setTaskType(e.target.value)}
@@ -513,6 +602,11 @@ function ChatTab({
             <option value="coder_cheap">Coder</option>
             <option value="reviewer">Reviewer</option>
           </select>
+          {sessionCost && (
+            <div style={{ fontSize: 12, color: colors.textMuted, marginLeft: 'auto', marginRight: 8 }}>
+              💰 ${sessionCost.total.toFixed(4)} ({sessionCost.requests} reqs)
+            </div>
+          )}
           <button onClick={clearChat} style={{ ...styles.button, ...styles.buttonGhost }}>Clear</button>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -673,6 +767,10 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+  const [toolCode, setToolCode] = useState('');
+  const [savingCode, setSavingCode] = useState(false);
+  const [testMode, setTestMode] = useState(false);
 
   const filteredTools = tools.filter(t => 
     t.name.toLowerCase().includes(filter.toLowerCase()) ||
@@ -685,6 +783,44 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     setSelected(tool);
     setFormValues({});
     setOutput('');
+    setShowEditor(false);
+    setToolCode('');
+  };
+
+  const loadToolCode = async (tool: Tool) => {
+    if (!tool._sourceFolder) {
+      setToolCode('// Built-in tool - source code not available');
+      return;
+    }
+    try {
+      const fs = await window.workbench.runTool('builtin.readFile', { 
+        path: `plugins/${tool._sourceFolder}/index.js` 
+      });
+      if (fs.content) {
+        setToolCode(fs.content);
+      } else {
+        setToolCode('// Failed to load tool code');
+      }
+    } catch (e: any) {
+      setToolCode(`// Error loading code: ${e.message}`);
+    }
+  };
+
+  const saveToolCode = async () => {
+    if (!selected?._sourceFolder || !toolCode) return;
+    setSavingCode(true);
+    try {
+      await window.workbench.runTool('builtin.writeFile', {
+        path: `plugins/${selected._sourceFolder}/index.js`,
+        content: toolCode
+      });
+      setShowEditor(false);
+      onRefresh(); // Reload tools
+    } catch (e: any) {
+      alert(`Failed to save: ${e.message}`);
+    } finally {
+      setSavingCode(false);
+    }
   };
 
   const deleteTool = async () => {
@@ -720,8 +856,20 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     if (!selected) return;
     setLoading(true);
     try {
-      const result = await window.workbench.runTool(selected.name, formValues);
-      setOutput(JSON.stringify(result, null, 2));
+      if (testMode) {
+        // Dry run - show what would be executed without actually running
+        const dryRunOutput = {
+          mode: 'TEST MODE (Dry Run)',
+          tool: selected.name,
+          input: formValues,
+          note: 'Tool was NOT executed. This shows what would be sent.',
+          inputSchema: selected.inputSchema
+        };
+        setOutput(JSON.stringify(dryRunOutput, null, 2));
+      } else {
+        const result = await window.workbench.runTool(selected.name, formValues);
+        setOutput(JSON.stringify(result, null, 2));
+      }
     } catch (e: any) {
       setOutput(`Error: ${e.message}`);
     }
@@ -734,13 +882,17 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     setOutput('Running tool...');
     try {
       const toolResult = await window.workbench.runTool(selected.name, formValues);
-      if (!toolResult.prompt) {
-        setOutput('Tool did not return a prompt.\n\n' + JSON.stringify(toolResult, null, 2));
+      
+      // Check if tool returns a prompt (either in old 'prompt' field or new 'content' field)
+      const promptText = toolResult.prompt || (typeof toolResult.content === 'string' ? toolResult.content : null);
+      
+      if (!promptText) {
+        setOutput('Tool did not return a prompt suitable for LLM processing.\n\n' + JSON.stringify(toolResult, null, 2));
       } else {
         setOutput('Sending to LLM...');
         const llmResult = await window.workbench.runTask(
           toolResult.metadata?.suggestedRole || 'writer_cheap',
-          toolResult.prompt
+          promptText
         );
         setOutput(llmResult.content);
       }
@@ -813,21 +965,82 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
                     💬 Chat
                   </button>
                   {canDelete && (
-                    <button 
-                      onClick={deleteTool} 
-                      disabled={deleting}
-                      style={{ ...styles.button, ...styles.buttonDanger }}
-                    >
-                      {deleting ? '...' : '🗑 Delete'}
-                    </button>
+                    <>
+                      <button 
+                        onClick={() => {
+                          setShowEditor(!showEditor);
+                          if (!showEditor && !toolCode) loadToolCode(selected);
+                        }}
+                        style={{ ...styles.button, ...styles.buttonGhost }}
+                      >
+                        ✏️ Edit Code
+                      </button>
+                      <button 
+                        onClick={deleteTool} 
+                        disabled={deleting}
+                        style={{ ...styles.button, ...styles.buttonDanger }}
+                      >
+                        {deleting ? '...' : '🗑 Delete'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
             </div>
 
+            {showEditor && (
+              <div style={styles.card}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>Edit Tool Code</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button 
+                      onClick={saveToolCode} 
+                      disabled={savingCode || !selected?._sourceFolder}
+                      style={{ ...styles.button, ...styles.buttonSuccess }}
+                    >
+                      {savingCode ? 'Saving...' : '💾 Save'}
+                    </button>
+                    <button onClick={() => setShowEditor(false)} style={{ ...styles.button, ...styles.buttonGhost }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={toolCode}
+                  onChange={e => setToolCode(e.target.value)}
+                  style={{
+                    ...styles.input,
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    minHeight: 400,
+                    width: '100%',
+                  }}
+                  placeholder="Loading code..."
+                />
+                {!selected?._sourceFolder && (
+                  <div style={{ marginTop: 8, color: colors.warning, fontSize: 12 }}>
+                    ⚠️ Built-in tools cannot be edited
+                  </div>
+                )}
+              </div>
+            )}
+
             <div style={styles.card}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Parameters</h3>
               <ToolInputForm tool={selected} values={formValues} onChange={setFormValues} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, padding: 8, background: testMode ? colors.warning + '22' : 'transparent', borderRadius: 6 }}>
+                <input 
+                  type="checkbox" 
+                  checked={testMode} 
+                  onChange={e => setTestMode(e.target.checked)}
+                  id="testMode"
+                  style={{ cursor: 'pointer' }}
+                />
+                <label htmlFor="testMode" style={{ cursor: 'pointer', fontSize: 13, color: testMode ? colors.warning : colors.textMuted }}>
+                  🧪 Test Mode (dry run - don't actually execute)
+                </label>
+              </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                 <button onClick={runTool} disabled={loading} style={{ ...styles.button, ...styles.buttonPrimary }}>
                   {loading ? 'Running...' : 'Run Tool'}
@@ -1459,6 +1672,13 @@ function SettingsTab() {
 
   const roles = ['writer_cheap', 'structurer', 'coder_cheap', 'reviewer'];
 
+  const roleDescriptions: Record<string, string> = {
+    writer_cheap: 'General writing and chat responses. Used for conversational interactions and content generation.',
+    structurer: 'Organizes and structures data. Used for formatting, categorizing, and creating structured outputs.',
+    coder_cheap: 'Code generation and technical tasks. Used when generating plugin code or technical implementations.',
+    reviewer: 'Reviews and validates content. Used for quality checks, code reviews, and verification tasks.'
+  };
+
   const filteredModels = models.filter(m => 
     m.id.toLowerCase().includes(modelFilter.toLowerCase()) ||
     m.name.toLowerCase().includes(modelFilter.toLowerCase())
@@ -1486,9 +1706,26 @@ function SettingsTab() {
 
           <div style={styles.card}>
             <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Model Routing</h3>
-            <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
+            <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>
               Click a role to select from available models, or type a model ID directly.
             </p>
+            
+            <div style={{ 
+              background: colors.bgTertiary, 
+              padding: 12, 
+              borderRadius: 6, 
+              marginBottom: 16,
+              border: `1px solid ${colors.border}`
+            }}>
+              <h4 style={{ margin: '0 0 8px', fontSize: 13, color: colors.primary }}>Role Explanations:</h4>
+              {roles.map(role => (
+                <div key={`desc-${role}`} style={{ marginBottom: 8, fontSize: 12 }}>
+                  <strong style={{ color: colors.text }}>{role}:</strong>{' '}
+                  <span style={{ color: colors.textMuted }}>{roleDescriptions[role]}</span>
+                </div>
+              ))}
+            </div>
+            
             {roles.map(role => (
               <div key={role} style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

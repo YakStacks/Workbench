@@ -53,11 +53,14 @@ ${input.previousASAM}
 
 Generate the updated ASAM dimensions now, with each dimension as a single paragraph:`;
 
+      // Return prompt for LLM processing with suggested role
       return {
-        prompt,
+        content: prompt,
         metadata: {
           inputType: input.updateType,
-          careLevel: input.levelOfCare
+          careLevel: input.levelOfCare,
+          suggestedRole: 'writer_cheap',
+          note: 'This prompt should be sent to an LLM. Use "Run with LLM" button or process in Chat.'
         }
       };
     }

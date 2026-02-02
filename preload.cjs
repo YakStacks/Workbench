@@ -31,6 +31,7 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
     deletePlugin: function (pluginName) { return electron_1.ipcRenderer.invoke('plugins:delete', pluginName); },
     // Tools
     listTools: function () { return electron_1.ipcRenderer.invoke('tools:list'); },
+    refreshTools: function () { return electron_1.ipcRenderer.invoke('tools:refresh'); },
     runTool: function (name, input) { return electron_1.ipcRenderer.invoke('tools:run', name, input); },
     // Task runner (non-streaming)
     runTask: function (taskType, prompt) { return electron_1.ipcRenderer.invoke('task:run', taskType, prompt); },

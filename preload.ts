@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('workbench', {
 
   // Tools
   listTools: () => ipcRenderer.invoke('tools:list'),
+  refreshTools: () => ipcRenderer.invoke('tools:refresh'),
   runTool: (name: string, input: any) => ipcRenderer.invoke('tools:run', name, input),
 
   // Task runner (non-streaming)

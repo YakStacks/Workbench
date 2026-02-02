@@ -11,6 +11,41 @@ let mainWindow: BrowserWindow | null = null;
 let plugins: any[] = [];
 let tools: Map<string, any> = new Map();
 
+// Standard tool response format
+interface ToolResponse {
+  content: string | Array<{ type: string; text: string }>;
+  metadata?: Record<string, any>;
+  error?: string;
+}
+
+// Normalize tool output to standard format
+function normalizeToolOutput(output: any): ToolResponse {
+  // Already in correct format
+  if (output && typeof output === 'object' && 'content' in output) {
+    return output as ToolResponse;
+  }
+  
+  // Plain string
+  if (typeof output === 'string') {
+    return { content: output };
+  }
+  
+  // Error object
+  if (output && output.error) {
+    return {
+      content: output.message || output.error,
+      error: output.error,
+      metadata: output
+    };
+  }
+  
+  // Any other object - serialize it
+  return {
+    content: JSON.stringify(output, null, 2),
+    metadata: output
+  };
+}
+
 // MCP Server connections
 interface MCPServer {
   name: string;
@@ -766,17 +801,56 @@ ipcMain.handle('tools:list', () => {
   }));
 });
 
+ipcMain.handle('tools:refresh', () => {
+  console.log('[IPC] Refreshing tools...');
+  loadPlugins();
+  return Array.from(tools.values()).map(t => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.inputSchema,
+    category: t.name.split('.')[0],
+    _sourceFolder: t._sourceFolder
+  }));
+});
+
 ipcMain.handle('tools:run', async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
-  return await tool.run(input);
+  const rawOutput = await tool.run(input);
+  return normalizeToolOutput(rawOutput);
 });
 
 // Cost tracking
-let sessionCosts = { total: 0, requests: 0 };
+interface CostData {
+  total: number;
+  requests: number;
+  byModel: Record<string, { cost: number; requests: number; tokens: { prompt: number; completion: number } }>;
+}
+let sessionCosts: CostData = { total: 0, requests: 0, byModel: {} };
+
+// Cost calculation based on OpenRouter pricing
+function calculateCost(model: string, promptTokens: number, completionTokens: number): number {
+  // Approximate pricing per 1M tokens (adjust based on actual OpenRouter pricing)
+  const pricing: Record<string, { prompt: number; completion: number }> = {
+    'anthropic/claude-3.5-sonnet': { prompt: 3, completion: 15 },
+    'anthropic/claude-3-haiku': { prompt: 0.25, completion: 1.25 },
+    'openai/gpt-4o': { prompt: 2.5, completion: 10 },
+    'openai/gpt-4o-mini': { prompt: 0.15, completion: 0.6 },
+    'default': { prompt: 1, completion: 2 }
+  };
+  
+  const rates = pricing[model] || pricing['default'];
+  return (promptTokens * rates.prompt / 1_000_000) + (completionTokens * rates.completion / 1_000_000);
+}
+
+ipcMain.handle('costs:get', () => sessionCosts);
+ipcMain.handle('costs:reset', () => {
+  sessionCosts = { total: 0, requests: 0, byModel: {} };
+  return sessionCosts;
+});
 
 // Task runner (non-streaming)
-ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
+ipcMain.handle('task:run', async (_e, taskType: string, prompt: string, includeTools = false) => {
   const config = store.store as any;
   const router = config.router || {};
   const roleConfig = router[taskType];
@@ -785,9 +859,41 @@ ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
   const apiKey = config.openrouterApiKey;
   if (!apiKey) throw new Error('No OpenRouter API key');
   
+  const messages: any[] = [];
+  
+  // Add system prompt with tools if requested
+  if (includeTools) {
+    const toolsList = Array.from(tools.values())
+      .filter(t => !t.name.startsWith('builtin.'))
+      .map(t => `- ${t.name}: ${t.description || 'No description'}`)
+      .join('\n');
+    
+    const systemPrompt = `You are a helpful AI assistant with access to tools that can perform actions.
+
+Available tools:
+${toolsList}
+
+When a user asks you to create, build, or do something, you should USE THE APPROPRIATE TOOL instead of just providing instructions.
+
+For example:
+- If asked to "create an artifact to connect Google Calendar", use the workbench.convertArtifact tool
+- If asked to "build a tool for X", use the workbench.convertArtifact tool
+- If asked to create/generate code or plugins, use the appropriate tool
+
+Your response should indicate which tool you would use and with what parameters. Format like:
+TOOL: tool.name
+INPUT: { "param": "value" }
+
+Be action-oriented. Do things, don't just explain how to do them.`;
+    
+    messages.push({ role: 'system', content: systemPrompt });
+  }
+  
+  messages.push({ role: 'user', content: prompt });
+  
   const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
     model: roleConfig.model,
-    messages: [{ role: 'user', content: prompt }],
+    messages,
   }, {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -812,10 +918,6 @@ ipcMain.handle('task:run', async (_e, taskType: string, prompt: string) => {
     sessionCosts: { ...sessionCosts }
   };
 });
-
-// Get session costs
-ipcMain.handle('costs:get', () => sessionCosts);
-ipcMain.handle('costs:reset', () => { sessionCosts = { total: 0, requests: 0 }; return sessionCosts; });
 
 // List available models from OpenRouter
 ipcMain.handle('models:list', async () => {
@@ -857,20 +959,115 @@ ipcMain.handle('models:list', async () => {
   }
 });
 
+// Template variable replacement
+function processTemplateVariables(text: string): string {
+  const now = new Date();
+  const user = require('os').userInfo().username;
+  
+  return text
+    .replace(/\{\{today\}\}/g, now.toLocaleDateString())
+    .replace(/\{\{time\}\}/g, now.toLocaleTimeString())
+    .replace(/\{\{datetime\}\}/g, now.toLocaleString())
+    .replace(/\{\{user\}\}/g, user)
+    .replace(/\{\{clipboard\}\}/g, clipboard.readText());
+}
+
 // Streaming task runner
 ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, requestId: string) => {
   const config = store.store as any;
   const router = config.router || {};
   const roleConfig = router[taskType];
-  if (!roleConfig?.model) throw new Error(`No model configured for task type: ${taskType}`);
+  
+  // Check if model is configured
+  if (!roleConfig?.model) {
+    const error = `No model configured for "${taskType}". Please configure a model in Settings tab.`;
+    console.error('[task:runStream]', error);
+    mainWindow?.webContents.send('stream:error', { requestId, error });
+    throw new Error(error);
+  }
   
   const apiKey = config.openrouterApiKey;
-  if (!apiKey) throw new Error('No OpenRouter API key');
+  if (!apiKey) {
+    const error = 'No OpenRouter API key configured. Please add your API key in Settings tab.';
+    console.error('[task:runStream]', error);
+    mainWindow?.webContents.send('stream:error', { requestId, error });
+    throw new Error(error);
+  }
+  
+  console.log(`[task:runStream] Model: ${roleConfig.model}, TaskType: ${taskType}`);
+  
+  // Process template variables in prompt
+  const processedPrompt = processTemplateVariables(prompt);
   
   try {
     const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
       model: roleConfig.model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { 
+          role: 'system', 
+          content: `You are a helpful AI assistant integrated into Workbench - a desktop application with tools.
+
+CRITICAL: When users say "build", "create a tool", or "make an artifact", you should IMMEDIATELY generate the complete code for a Workbench plugin. Don't ask for confirmation or details - just build it based on their request.
+
+Workbench Plugin Format:
+\`\`\`javascript
+module.exports.register = (api) => {
+  api.registerTool({
+    name: 'category.toolName',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        // input parameters
+      },
+      required: []
+    },
+    run: async (input) => {
+      // Tool logic here
+      // For API calls, return the data or result
+      return { result: 'data' };
+    }
+  });
+};
+\`\`\`
+
+When user asks you to build something:
+1. Generate the COMPLETE plugin code immediately
+2. Explain what it does briefly
+3. Tell them to save it in the plugins folder
+
+Example:
+User: "Build a tool that tells me the temperature"
+You: "Here's a weather temperature tool for Workbench:
+
+\`\`\`javascript
+module.exports.register = (api) => {
+  api.registerTool({
+    name: 'weather.temperature',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        city: { type: 'string', description: 'City name' }
+      },
+      required: ['city']
+    },
+    run: async (input) => {
+      // In production, you'd call a real weather API
+      return { 
+        temperature: 72,
+        city: input.city,
+        message: \`Temperature in \${input.city} is 72°F\`
+      };
+    }
+  });
+};
+\`\`\`
+
+This tool fetches temperature data. Save this as \`plugins/weather_temperature/index.js\` and restart Workbench to use it."
+
+BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.` 
+        },
+        { role: 'user', content: processedPrompt }
+      ],
       stream: true
     }, {
       headers: {
@@ -881,6 +1078,8 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
     });
 
     let fullContent = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
     
     res.data.on('data', (chunk: Buffer) => {
       const lines = chunk.toString().split('\n').filter(line => line.trim().startsWith('data:'));
@@ -888,7 +1087,19 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
       for (const line of lines) {
         const data = line.replace('data:', '').trim();
         if (data === '[DONE]') {
-          mainWindow?.webContents.send('stream:done', { requestId, content: fullContent });
+          // Track costs
+          const cost = calculateCost(roleConfig.model, promptTokens, completionTokens);
+          sessionCosts.total += cost;
+          sessionCosts.requests += 1;
+          if (!sessionCosts.byModel[roleConfig.model]) {
+            sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+          }
+          sessionCosts.byModel[roleConfig.model].cost += cost;
+          sessionCosts.byModel[roleConfig.model].requests += 1;
+          sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
+          sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens;
+          
+          mainWindow?.webContents.send('stream:done', { requestId, content: fullContent, cost, tokens: { prompt: promptTokens, completion: completionTokens } });
           return;
         }
         
@@ -899,6 +1110,11 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
             fullContent += delta;
             mainWindow?.webContents.send('stream:chunk', { requestId, chunk: delta, content: fullContent });
           }
+          // Track usage if available
+          if (parsed.usage) {
+            promptTokens = parsed.usage.prompt_tokens || 0;
+            completionTokens = parsed.usage.completion_tokens || 0;
+          }
         } catch (e) {
           // Skip malformed chunks
         }
@@ -906,7 +1122,20 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
     });
 
     res.data.on('end', () => {
-      mainWindow?.webContents.send('stream:done', { requestId, content: fullContent });
+      // Track costs even if no [DONE] received
+      if (promptTokens > 0 || completionTokens > 0) {
+        const cost = calculateCost(roleConfig.model, promptTokens, completionTokens);
+        sessionCosts.total += cost;
+        sessionCosts.requests += 1;
+        if (!sessionCosts.byModel[roleConfig.model]) {
+          sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+        }
+        sessionCosts.byModel[roleConfig.model].cost += cost;
+        sessionCosts.byModel[roleConfig.model].requests += 1;
+        sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
+        sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens;
+      }
+      mainWindow?.webContents.send('stream:done', { requestId, content: fullContent, cost: sessionCosts.total, tokens: { prompt: promptTokens, completion: completionTokens } });
     });
 
     res.data.on('error', (err: Error) => {
@@ -915,7 +1144,25 @@ ipcMain.handle('task:runStream', async (_e, taskType: string, prompt: string, re
 
     return { started: true, requestId };
   } catch (e: any) {
-    throw new Error(`Stream failed: ${e.message}`);
+    const errorDetails = {
+      status: e.response?.status,
+      statusText: e.response?.statusText,
+      data: e.response?.data,
+      message: e.message
+    };
+    console.error('[task:runStream] Full error:', JSON.stringify(errorDetails, null, 2));
+    
+    let errorMessage = 'Request failed';
+    if (e.response?.data?.error?.message) {
+      errorMessage = e.response.data.error.message;
+    } else if (e.response?.status === 404) {
+      errorMessage = `Model not found: ${roleConfig.model}. Please check the model ID in Settings.`;
+    } else if (e.response?.status === 400) {
+      errorMessage = `Bad request. The model "${roleConfig.model}" may not support this request format.`;
+    }
+    
+    mainWindow?.webContents.send('stream:error', { requestId, error: errorMessage });
+    throw new Error(errorMessage);
   }
 });
 

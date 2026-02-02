@@ -72,10 +72,12 @@ ${input.previousASAM}
 Generate the updated ASAM dimensions now, with each dimension as a single paragraph:`;
 
       return {
-        prompt,
+        content: prompt,
         metadata: {
           inputParameters: input,
-          toolName: 'ASAM Dimension Updater'
+          toolName: 'ASAM Dimension Updater',
+          suggestedRole: 'writer_cheap',
+          note: 'This prompt should be sent to an LLM. Use "Run with LLM" button.'
         }
       };
     }

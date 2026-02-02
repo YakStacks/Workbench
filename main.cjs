@@ -46,6 +46,15 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -61,6 +70,30 @@ var store = new electron_store_1.default();
 var mainWindow = null;
 var plugins = [];
 var tools = new Map();
+// Normalize tool output to standard format
+function normalizeToolOutput(output) {
+    // Already in correct format
+    if (output && typeof output === 'object' && 'content' in output) {
+        return output;
+    }
+    // Plain string
+    if (typeof output === 'string') {
+        return { content: output };
+    }
+    // Error object
+    if (output && output.error) {
+        return {
+            content: output.message || output.error,
+            error: output.error,
+            metadata: output
+        };
+    }
+    // Any other object - serialize it
+    return {
+        content: JSON.stringify(output, null, 2),
+        metadata: output
+    };
+}
 var mcpServers = new Map();
 function createWindow() {
     mainWindow = new electron_1.BrowserWindow({
@@ -848,8 +881,19 @@ electron_1.ipcMain.handle('tools:list', function () {
         _sourceFolder: t._sourceFolder
     }); });
 });
+electron_1.ipcMain.handle('tools:refresh', function () {
+    console.log('[IPC] Refreshing tools...');
+    loadPlugins();
+    return Array.from(tools.values()).map(function (t) { return ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        category: t.name.split('.')[0],
+        _sourceFolder: t._sourceFolder
+    }); });
+});
 electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool;
+    var tool, rawOutput;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -857,58 +901,92 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
                 return [4 /*yield*/, tool.run(input)];
-            case 1: return [2 /*return*/, _a.sent()];
-        }
-    });
-}); });
-// Cost tracking
-var sessionCosts = { total: 0, requests: 0 };
-// Task runner (non-streaming)
-electron_1.ipcMain.handle('task:run', function (_e, taskType, prompt) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, apiKey, res, usage;
-    var _a, _b, _c, _d;
-    return __generator(this, function (_f) {
-        switch (_f.label) {
-            case 0:
-                config = store.store;
-                router = config.router || {};
-                roleConfig = router[taskType];
-                if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model))
-                    throw new Error("No model configured for task type: ".concat(taskType));
-                apiKey = config.openrouterApiKey;
-                if (!apiKey)
-                    throw new Error('No OpenRouter API key');
-                return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {
-                        model: roleConfig.model,
-                        messages: [{ role: 'user', content: prompt }],
-                    }, {
-                        headers: {
-                            'Authorization': "Bearer ".concat(apiKey),
-                            'Content-Type': 'application/json',
-                        },
-                    })];
             case 1:
-                res = _f.sent();
-                usage = res.data.usage;
-                if (usage) {
-                    sessionCosts.requests++;
-                    // OpenRouter includes cost in generation response
-                    if ((_a = res.data.usage) === null || _a === void 0 ? void 0 : _a.total_cost) {
-                        sessionCosts.total += res.data.usage.total_cost;
-                    }
-                }
-                return [2 /*return*/, {
-                        content: ((_d = (_c = (_b = res.data.choices) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.message) === null || _d === void 0 ? void 0 : _d.content) || '',
-                        usage: res.data.usage,
-                        model: res.data.model,
-                        sessionCosts: __assign({}, sessionCosts)
-                    }];
+                rawOutput = _a.sent();
+                return [2 /*return*/, normalizeToolOutput(rawOutput)];
         }
     });
 }); });
-// Get session costs
+var sessionCosts = { total: 0, requests: 0, byModel: {} };
+// Cost calculation based on OpenRouter pricing
+function calculateCost(model, promptTokens, completionTokens) {
+    // Approximate pricing per 1M tokens (adjust based on actual OpenRouter pricing)
+    var pricing = {
+        'anthropic/claude-3.5-sonnet': { prompt: 3, completion: 15 },
+        'anthropic/claude-3-haiku': { prompt: 0.25, completion: 1.25 },
+        'openai/gpt-4o': { prompt: 2.5, completion: 10 },
+        'openai/gpt-4o-mini': { prompt: 0.15, completion: 0.6 },
+        'default': { prompt: 1, completion: 2 }
+    };
+    var rates = pricing[model] || pricing['default'];
+    return (promptTokens * rates.prompt / 1000000) + (completionTokens * rates.completion / 1000000);
+}
 electron_1.ipcMain.handle('costs:get', function () { return sessionCosts; });
-electron_1.ipcMain.handle('costs:reset', function () { sessionCosts = { total: 0, requests: 0 }; return sessionCosts; });
+electron_1.ipcMain.handle('costs:reset', function () {
+    sessionCosts = { total: 0, requests: 0, byModel: {} };
+    return sessionCosts;
+});
+// Task runner (non-streaming)
+electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
+    var args_1 = [];
+    for (var _i = 3; _i < arguments.length; _i++) {
+        args_1[_i - 3] = arguments[_i];
+    }
+    return __awaiter(void 0, __spreadArray([_e_1, taskType_1, prompt_1], args_1, true), void 0, function (_e, taskType, prompt, includeTools) {
+        var config, router, roleConfig, apiKey, messages, toolsList, systemPrompt, res, usage;
+        var _a, _b, _c, _d;
+        if (includeTools === void 0) { includeTools = false; }
+        return __generator(this, function (_f) {
+            switch (_f.label) {
+                case 0:
+                    config = store.store;
+                    router = config.router || {};
+                    roleConfig = router[taskType];
+                    if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model))
+                        throw new Error("No model configured for task type: ".concat(taskType));
+                    apiKey = config.openrouterApiKey;
+                    if (!apiKey)
+                        throw new Error('No OpenRouter API key');
+                    messages = [];
+                    // Add system prompt with tools if requested
+                    if (includeTools) {
+                        toolsList = Array.from(tools.values())
+                            .filter(function (t) { return !t.name.startsWith('builtin.'); })
+                            .map(function (t) { return "- ".concat(t.name, ": ").concat(t.description || 'No description'); })
+                            .join('\n');
+                        systemPrompt = "You are a helpful AI assistant with access to tools that can perform actions.\n\nAvailable tools:\n".concat(toolsList, "\n\nWhen a user asks you to create, build, or do something, you should USE THE APPROPRIATE TOOL instead of just providing instructions.\n\nFor example:\n- If asked to \"create an artifact to connect Google Calendar\", use the workbench.convertArtifact tool\n- If asked to \"build a tool for X\", use the workbench.convertArtifact tool\n- If asked to create/generate code or plugins, use the appropriate tool\n\nYour response should indicate which tool you would use and with what parameters. Format like:\nTOOL: tool.name\nINPUT: { \"param\": \"value\" }\n\nBe action-oriented. Do things, don't just explain how to do them.");
+                        messages.push({ role: 'system', content: systemPrompt });
+                    }
+                    messages.push({ role: 'user', content: prompt });
+                    return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {
+                            model: roleConfig.model,
+                            messages: messages,
+                        }, {
+                            headers: {
+                                'Authorization': "Bearer ".concat(apiKey),
+                                'Content-Type': 'application/json',
+                            },
+                        })];
+                case 1:
+                    res = _f.sent();
+                    usage = res.data.usage;
+                    if (usage) {
+                        sessionCosts.requests++;
+                        // OpenRouter includes cost in generation response
+                        if ((_a = res.data.usage) === null || _a === void 0 ? void 0 : _a.total_cost) {
+                            sessionCosts.total += res.data.usage.total_cost;
+                        }
+                    }
+                    return [2 /*return*/, {
+                            content: ((_d = (_c = (_b = res.data.choices) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.message) === null || _d === void 0 ? void 0 : _d.content) || '',
+                            usage: res.data.usage,
+                            model: res.data.model,
+                            sessionCosts: __assign({}, sessionCosts)
+                        }];
+            }
+        });
+    });
+});
 // List available models from OpenRouter
 electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, void 0, void 0, function () {
     var config, apiKey, res, models, e_3;
@@ -956,26 +1034,55 @@ electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, 
         }
     });
 }); });
+// Template variable replacement
+function processTemplateVariables(text) {
+    var now = new Date();
+    var user = require('os').userInfo().username;
+    return text
+        .replace(/\{\{today\}\}/g, now.toLocaleDateString())
+        .replace(/\{\{time\}\}/g, now.toLocaleTimeString())
+        .replace(/\{\{datetime\}\}/g, now.toLocaleString())
+        .replace(/\{\{user\}\}/g, user)
+        .replace(/\{\{clipboard\}\}/g, electron_1.clipboard.readText());
+}
 // Streaming task runner
 electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, apiKey, res, fullContent_1, e_4;
-    return __generator(this, function (_a) {
-        switch (_a.label) {
+    var config, router, roleConfig, error, apiKey, error, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_4, errorDetails, errorMessage;
+    var _a, _b, _c, _d, _f, _g, _h, _j;
+    return __generator(this, function (_k) {
+        switch (_k.label) {
             case 0:
                 config = store.store;
                 router = config.router || {};
                 roleConfig = router[taskType];
-                if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model))
-                    throw new Error("No model configured for task type: ".concat(taskType));
+                // Check if model is configured
+                if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model)) {
+                    error = "No model configured for \"".concat(taskType, "\". Please configure a model in Settings tab.");
+                    console.error('[task:runStream]', error);
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: error });
+                    throw new Error(error);
+                }
                 apiKey = config.openrouterApiKey;
-                if (!apiKey)
-                    throw new Error('No OpenRouter API key');
-                _a.label = 1;
+                if (!apiKey) {
+                    error = 'No OpenRouter API key configured. Please add your API key in Settings tab.';
+                    console.error('[task:runStream]', error);
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: error });
+                    throw new Error(error);
+                }
+                console.log("[task:runStream] Model: ".concat(roleConfig.model, ", TaskType: ").concat(taskType));
+                processedPrompt = processTemplateVariables(prompt);
+                _k.label = 1;
             case 1:
-                _a.trys.push([1, 3, , 4]);
+                _k.trys.push([1, 3, , 4]);
                 return [4 /*yield*/, axios_1.default.post('https://openrouter.ai/api/v1/chat/completions', {
                         model: roleConfig.model,
-                        messages: [{ role: 'user', content: prompt }],
+                        messages: [
+                            {
+                                role: 'system',
+                                content: "You are a helpful AI assistant integrated into Workbench - a desktop application with tools.\n\nCRITICAL: When users say \"build\", \"create a tool\", or \"make an artifact\", you should IMMEDIATELY generate the complete code for a Workbench plugin. Don't ask for confirmation or details - just build it based on their request.\n\nWorkbench Plugin Format:\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'category.toolName',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        // input parameters\n      },\n      required: []\n    },\n    run: async (input) => {\n      // Tool logic here\n      // For API calls, return the data or result\n      return { result: 'data' };\n    }\n  });\n};\n```\n\nWhen user asks you to build something:\n1. Generate the COMPLETE plugin code immediately\n2. Explain what it does briefly\n3. Tell them to save it in the plugins folder\n\nExample:\nUser: \"Build a tool that tells me the temperature\"\nYou: \"Here's a weather temperature tool for Workbench:\n\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'weather.temperature',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        city: { type: 'string', description: 'City name' }\n      },\n      required: ['city']\n    },\n    run: async (input) => {\n      // In production, you'd call a real weather API\n      return { \n        temperature: 72,\n        city: input.city,\n        message: `Temperature in ${input.city} is 72\u00B0F`\n      };\n    }\n  });\n};\n```\n\nThis tool fetches temperature data. Save this as `plugins/weather_temperature/index.js` and restart Workbench to use it.\"\n\nBE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked."
+                            },
+                            { role: 'user', content: processedPrompt }
+                        ],
                         stream: true
                     }, {
                         headers: {
@@ -985,8 +1092,10 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                         responseType: 'stream'
                     })];
             case 2:
-                res = _a.sent();
+                res = _k.sent();
                 fullContent_1 = '';
+                promptTokens_1 = 0;
+                completionTokens_1 = 0;
                 res.data.on('data', function (chunk) {
                     var _a, _b, _c;
                     var lines = chunk.toString().split('\n').filter(function (line) { return line.trim().startsWith('data:'); });
@@ -994,7 +1103,18 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                         var line = lines_2[_i];
                         var data = line.replace('data:', '').trim();
                         if (data === '[DONE]') {
-                            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1 });
+                            // Track costs
+                            var cost = calculateCost(roleConfig.model, promptTokens_1, completionTokens_1);
+                            sessionCosts.total += cost;
+                            sessionCosts.requests += 1;
+                            if (!sessionCosts.byModel[roleConfig.model]) {
+                                sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+                            }
+                            sessionCosts.byModel[roleConfig.model].cost += cost;
+                            sessionCosts.byModel[roleConfig.model].requests += 1;
+                            sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens_1;
+                            sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens_1;
+                            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1, cost: cost, tokens: { prompt: promptTokens_1, completion: completionTokens_1 } });
                             return;
                         }
                         try {
@@ -1004,6 +1124,11 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                                 fullContent_1 += delta;
                                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:chunk', { requestId: requestId, chunk: delta, content: fullContent_1 });
                             }
+                            // Track usage if available
+                            if (parsed.usage) {
+                                promptTokens_1 = parsed.usage.prompt_tokens || 0;
+                                completionTokens_1 = parsed.usage.completion_tokens || 0;
+                            }
                         }
                         catch (e) {
                             // Skip malformed chunks
@@ -1011,15 +1136,46 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                     }
                 });
                 res.data.on('end', function () {
-                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1 });
+                    // Track costs even if no [DONE] received
+                    if (promptTokens_1 > 0 || completionTokens_1 > 0) {
+                        var cost = calculateCost(roleConfig.model, promptTokens_1, completionTokens_1);
+                        sessionCosts.total += cost;
+                        sessionCosts.requests += 1;
+                        if (!sessionCosts.byModel[roleConfig.model]) {
+                            sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+                        }
+                        sessionCosts.byModel[roleConfig.model].cost += cost;
+                        sessionCosts.byModel[roleConfig.model].requests += 1;
+                        sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens_1;
+                        sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens_1;
+                    }
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1, cost: sessionCosts.total, tokens: { prompt: promptTokens_1, completion: completionTokens_1 } });
                 });
                 res.data.on('error', function (err) {
                     mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: err.message });
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
-                e_4 = _a.sent();
-                throw new Error("Stream failed: ".concat(e_4.message));
+                e_4 = _k.sent();
+                errorDetails = {
+                    status: (_a = e_4.response) === null || _a === void 0 ? void 0 : _a.status,
+                    statusText: (_b = e_4.response) === null || _b === void 0 ? void 0 : _b.statusText,
+                    data: (_c = e_4.response) === null || _c === void 0 ? void 0 : _c.data,
+                    message: e_4.message
+                };
+                console.error('[task:runStream] Full error:', JSON.stringify(errorDetails, null, 2));
+                errorMessage = 'Request failed';
+                if ((_g = (_f = (_d = e_4.response) === null || _d === void 0 ? void 0 : _d.data) === null || _f === void 0 ? void 0 : _f.error) === null || _g === void 0 ? void 0 : _g.message) {
+                    errorMessage = e_4.response.data.error.message;
+                }
+                else if (((_h = e_4.response) === null || _h === void 0 ? void 0 : _h.status) === 404) {
+                    errorMessage = "Model not found: ".concat(roleConfig.model, ". Please check the model ID in Settings.");
+                }
+                else if (((_j = e_4.response) === null || _j === void 0 ? void 0 : _j.status) === 400) {
+                    errorMessage = "Bad request. The model \"".concat(roleConfig.model, "\" may not support this request format.");
+                }
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: errorMessage });
+                throw new Error(errorMessage);
             case 4: return [2 /*return*/];
         }
     });

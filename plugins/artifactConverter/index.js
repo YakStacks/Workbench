@@ -1,6 +1,9 @@
 // Workbench Artifact Converter Tool
 // Converts React/Claude artifacts into Workbench-compatible tool definitions
 
+const fs = require('fs').promises;
+const path = require('path');
+
 module.exports.register = (api) => {
   api.registerTool({
     name: "workbench.convertArtifact",
@@ -20,79 +23,163 @@ module.exports.register = (api) => {
           description: "Brief description of what the tool should do",
         },
       },
-      required: ["code"],
+      required: ["code", "toolName"],
     },
     run: async (input) => {
       const { code, toolName, description } = input;
 
-      // Generate a suggested tool name if not provided
-      const suggestedName = toolName || "custom.generatedTool";
+      // Extract parameters from the code
+      const params = extractParameters(code);
+      
+      // Generate the tool file content
+      const toolCode = generateToolCode(toolName, description || "Generated tool", params, code);
+      
+      // Create the plugin directory
+      const pluginDir = path.join(process.cwd(), 'plugins', toolName.replace('.', '_'));
+      await fs.mkdir(pluginDir, { recursive: true });
+      
+      // Write the index.js file
+      const indexPath = path.join(pluginDir, 'index.js');
+      await fs.writeFile(indexPath, toolCode, 'utf-8');
+      
+      // Write the package.json file
+      const packageJson = {
+        type: "commonjs"
+      };
+      const packagePath = path.join(pluginDir, 'package.json');
+      await fs.writeFile(packagePath, JSON.stringify(packageJson, null, 2), 'utf-8');
+      
+      return {
+        content: [{
+          type: "text",
+          text: `✅ Tool created successfully!\n\nLocation: ${pluginDir}\nTool name: ${toolName}\n\nThe tool has been generated and saved. Restart the application to load the new plugin.`
+        }]
+      };
+    },
+  });
+};
 
-      const prompt = `You are a senior TypeScript engineer. Convert the following code artifact into a Workbench-compatible tool definition.
+function extractParameters(code) {
+  const params = [];
+  
+  // Extract React props
+  const propsMatch = code.match(/interface\s+\w+Props\s*{([^}]+)}/s) || 
+                     code.match(/type\s+\w+Props\s*=\s*{([^}]+)}/s);
+  
+  if (propsMatch) {
+    const propsContent = propsMatch[1];
+    const propLines = propsContent.split('\n').filter(line => line.trim() && !line.trim().startsWith('//'));
+    
+    propLines.forEach(line => {
+      const match = line.match(/(\w+)(\?)?\s*:\s*([^;,]+)/);
+      if (match) {
+        const [, name, optional, type] = match;
+        params.push({
+          name: name.trim(),
+          type: mapTypeToJsonSchema(type.trim()),
+          required: !optional
+        });
+      }
+    });
+  }
+  
+  // Extract function parameters
+  const funcMatch = code.match(/function\s+\w+\s*\(([^)]+)\)/) ||
+                    code.match(/const\s+\w+\s*=\s*\(([^)]+)\)\s*=>/);
+  
+  if (funcMatch && params.length === 0) {
+    const paramsStr = funcMatch[1];
+    const paramList = paramsStr.split(',').map(p => p.trim()).filter(p => p);
+    
+    paramList.forEach(param => {
+      const match = param.match(/(\w+)(\?)?\s*:\s*([^=]+)/);
+      if (match) {
+        const [, name, optional, type] = match;
+        params.push({
+          name: name.trim(),
+          type: mapTypeToJsonSchema(type.trim()),
+          required: !optional
+        });
+      } else {
+        const name = param.split(/[=:]/, 1)[0].trim();
+        if (name) {
+          params.push({
+            name,
+            type: 'string',
+            required: true
+          });
+        }
+      }
+    });
+  }
+  
+  return params;
+}
 
-## Workbench Tool Requirements
+function mapTypeToJsonSchema(type) {
+  const lowerType = type.toLowerCase();
+  if (lowerType.includes('string')) return 'string';
+  if (lowerType.includes('number')) return 'number';
+  if (lowerType.includes('boolean')) return 'boolean';
+  if (lowerType.includes('array') || lowerType.includes('[]')) return 'array';
+  if (lowerType.includes('object')) return 'object';
+  return 'string'; // default
+}
 
-1. **Structure**: CommonJS module exporting \`register(api)\` that calls \`api.registerTool(toolDefinition)\`
-2. **NO direct LLM/API calls**: Tools must NOT call external LLM APIs directly. Instead, return \`{ prompt, metadata }\` so Workbench routes the call centrally.
-3. **Input schema**: JSON Schema format with \`type\`, \`properties\`, and \`required\`
-4. **Output format**: \`{ prompt: string, metadata: object }\`
+function generateToolCode(toolName, description, params, originalCode) {
+  const properties = {};
+  const required = [];
+  
+  params.forEach(param => {
+    properties[param.name] = {
+      type: param.type,
+      description: `${param.name} parameter`
+    };
+    if (param.required) {
+      required.push(param.name);
+    }
+  });
+  
+  // If no params found, create a generic input parameter
+  if (params.length === 0) {
+    properties.input = {
+      type: 'string',
+      description: 'Input data'
+    };
+    required.push('input');
+  }
+  
+  const inputSchemaStr = JSON.stringify({ type: 'object', properties, required }, null, 6).replace(/^/gm, '    ');
+  
+  // Build prompt using input parameters
+  const paramNames = Object.keys(properties);
+  const promptInputs = paramNames.map(name => `\${input.${name}}`).join(', ');
+  
+  return `// Generated tool: ${toolName}
+// ${description}
 
-## Template
-
-\`\`\`javascript
 module.exports.register = (api) => {
   api.registerTool({
-    name: '${suggestedName}',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        // Extract input parameters from the artifact
-      },
-      required: []
-    },
+    name: '${toolName}',
+    inputSchema: ${inputSchemaStr},
     run: async (input) => {
-      // Transform input into a prompt
-      // DO NOT make API calls - just build the prompt
-      
-      const prompt = \`Your prompt here using \${input.field}\`;
+      // Build the prompt from the input parameters
+      const prompt = \`Process the following data: ${promptInputs}\`;
       
       return {
         prompt,
         metadata: {
-          // Include relevant metadata for Workbench routing
+          toolName: '${toolName}',
+          originalInputs: input
         }
       };
     }
   });
 };
-\`\`\`
 
-## Code to Convert
-
-${description ? `**Description**: ${description}\n\n` : ""}\`\`\`
-${code}
-\`\`\`
-
-## Instructions
-
-1. Analyze what the code does (UI, API calls, data transformation)
-2. Extract the core functionality that should become a tool
-3. Identify input parameters from props, state, or function arguments
-4. Identify any prompts or LLM interactions - these become the \`prompt\` output
-5. Generate a complete, working \`index.js\` file
-
-**Output only the JavaScript code, no explanations.**`;
-
-      return {
-        prompt,
-        metadata: {
-          suggestedRole: "coder_cheap",
-          outputFormat: "javascript",
-          inputCodeLength: code.length,
-          suggestedToolName: suggestedName,
-          hasDescription: !!description,
-        },
-      };
-    },
-  });
-};
+// Original code reference:
+/*
+${originalCode}
+*/
+`;
+}
