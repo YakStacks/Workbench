@@ -47,7 +47,14 @@
       "preload.cjs",
       "plugins/**/*",
       "build/**/*",
+      "icon.ico",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "directories": {
       "output": "release"
