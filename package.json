@@ -68,7 +68,10 @@
     "nsis": {
       "installerIcon": "icon.ico",
       "uninstallerIcon": "icon.ico",
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "shortcutName": "Workbench",
+      "perMachine": false,
+      "oneClick": true
     },
     "mac": {
       "target": "dmg",
