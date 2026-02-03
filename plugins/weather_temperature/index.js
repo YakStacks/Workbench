@@ -28,19 +28,24 @@ module.exports.register = (api) => {
         const feelsLikeF = current.FeelsLikeF;
         
         return {
-          city: input.city,
-          temperature: `${tempF}°F (${tempC}°C)`,
-          feelsLike: `${feelsLikeF}°F`,
-          description: description,
-          humidity: current.humidity + '%',
-          windSpeed: current.windspeedMiles + ' mph',
-          message: `Current temperature in ${input.city}: ${tempF}°F (${tempC}°C) - ${description}`
+          content: `Current temperature in ${input.city}: ${tempF}°F (${tempC}°C) - ${description}`,
+          metadata: {
+            city: input.city,
+            temperatureF: tempF,
+            temperatureC: tempC,
+            feelsLikeF: feelsLikeF,
+            description: description,
+            humidity: current.humidity,
+            windSpeedMph: current.windspeedMiles
+          }
         };
       } catch (error) {
         return {
-          error: 'Failed to fetch weather data',
-          message: `Could not get temperature for ${input.city}. Error: ${error.message}`,
-          note: 'Make sure you have internet connection and the city name is spelled correctly'
+          content: `Could not get temperature for ${input.city}. Make sure you have internet connection and the city name is spelled correctly.`,
+          error: error.message,
+          metadata: {
+            attempted: input.city
+          }
         };
       }
     }
