@@ -69,6 +69,7 @@ const styles = {
     color: colors.text,
     fontFamily: 'system-ui, -apple-system, sans-serif',
   },
+  baseFontSize: 14,
   header: {
     display: 'flex',
     alignItems: 'center',
@@ -147,9 +148,16 @@ export default function App() {
 
   useEffect(() => {
     window.workbench.listTools().then(setTools);
-    // Load saved presets
+    // Load saved presets and apply font settings
     window.workbench.getConfig().then((cfg: any) => {
       if (cfg.chainPresets) setChainPresets(cfg.chainPresets);
+      // Apply saved font settings globally
+      if (cfg.fontSize) {
+        document.documentElement.style.fontSize = cfg.fontSize + 'px';
+      }
+      if (cfg.fontFamily) {
+        document.documentElement.style.fontFamily = cfg.fontFamily;
+      }
     });
   }, []);
 
@@ -1684,6 +1692,8 @@ function SettingsTab() {
   const [workingDir, setWorkingDir] = useState('');
   const [pluginsDir, setPluginsDir] = useState('');
   const [safePaths, setSafePaths] = useState('');
+  const [fontSize, setFontSize] = useState(14);
+  const [fontFamily, setFontFamily] = useState('system-ui, -apple-system, sans-serif');
   const [saved, setSaved] = useState(false);
   
   // Model browser state
@@ -1701,6 +1711,12 @@ function SettingsTab() {
       setWorkingDir(cfg.workingDir || '');
       setPluginsDir(cfg.pluginsDir || '');
       setSafePaths((cfg.safePaths || []).join('\n'));
+      const size = cfg.fontSize || 14;
+      setFontSize(size);
+      document.documentElement.style.fontSize = size + 'px';
+      const family = cfg.fontFamily || 'system-ui, -apple-system, sans-serif';
+      setFontFamily(family);
+      document.documentElement.style.fontFamily = family;
     });
   }, []);
 
@@ -1729,8 +1745,12 @@ function SettingsTab() {
       router,
       workingDir,
       pluginsDir,
-      safePaths: safePaths.split('\n').map(s => s.trim()).filter(Boolean)
+      safePaths: safePaths.split('\n').map(s => s.trim()).filter(Boolean),
+      fontSize,
+      fontFamily
     });
+    document.documentElement.style.fontSize = fontSize + 'px';
+    document.documentElement.style.fontFamily = fontFamily;
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -1769,6 +1789,49 @@ function SettingsTab() {
             />
             <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
               OpenRouter: https://openrouter.ai/api/v1 | OpenAI: https://api.openai.com/v1 | Azure: https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT
+            </div>
+            
+            <label style={{ ...styles.label, marginTop: 12 }}>Base Font Size</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input 
+                type="range" 
+                min="10" 
+                max="20" 
+                value={fontSize} 
+                onChange={e => setFontSize(parseInt(e.target.value))} 
+                style={{ flex: 1 }}
+              />
+              <input 
+                type="number" 
+                min="10" 
+                max="20" 
+                value={fontSize} 
+                onChange={e => setFontSize(parseInt(e.target.value) || 14)} 
+                style={{ ...styles.input, width: 60, padding: '4px 8px' }}
+              />
+              <span style={{ color: colors.textMuted, fontSize: 12 }}>px</span>
+            </div>
+            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+              Adjust the base font size for the entire app (10-20px)
+            </div>
+            
+            <label style={{ ...styles.label, marginTop: 12 }}>Font Family</label>
+            <select 
+              value={fontFamily} 
+              onChange={e => setFontFamily(e.target.value)}
+              style={styles.input}
+            >
+              <option value="system-ui, -apple-system, sans-serif">System Default</option>
+              <option value="'Segoe UI', Tahoma, Geneva, Verdana, sans-serif">Segoe UI</option>
+              <option value="Arial, Helvetica, sans-serif">Arial</option>
+              <option value="'Courier New', Courier, monospace">Courier New (Mono)</option>
+              <option value="'Consolas', 'Monaco', monospace">Consolas (Mono)</option>
+              <option value="'JetBrains Mono', 'Fira Code', monospace">JetBrains Mono</option>
+              <option value="Georgia, 'Times New Roman', serif">Georgia (Serif)</option>
+              <option value="'Comic Sans MS', cursive">Comic Sans MS</option>
+            </select>
+            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+              Choose the font family for the entire app
             </div>
             
             <div style={{ marginTop: 8 }}>
