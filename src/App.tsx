@@ -920,28 +920,41 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
           />
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 12px 12px' }}>
-          {categories.map(cat => (
-            <div key={cat} style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 6 }}>
-                {cat} ({filteredTools.filter(t => t.category === cat).length})
-              </div>
-              {filteredTools.filter(t => t.category === cat).map(tool => (
-                <div
-                  key={tool.name}
-                  onClick={() => selectTool(tool)}
-                  style={{
-                    padding: '8px 10px',
-                    cursor: 'pointer',
-                    borderRadius: 6,
-                    marginBottom: 2,
-                    background: selected?.name === tool.name ? colors.primary : 'transparent',
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{tool.name.split('.').pop()}</div>
-                </div>
-              ))}
+          {tools.length === 0 ? (
+            <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 40, padding: 16 }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🔧</div>
+              <div style={{ fontSize: 14, marginBottom: 8 }}>No tools loaded</div>
+              <div style={{ fontSize: 12 }}>Check plugins folder or refresh</div>
             </div>
-          ))}
+          ) : categories.length === 0 ? (
+            <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 40, padding: 16 }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+              <div style={{ fontSize: 14 }}>No tools match your search</div>
+            </div>
+          ) : (
+            categories.map(cat => (
+              <div key={cat} style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 6 }}>
+                  {cat} ({filteredTools.filter(t => t.category === cat).length})
+                </div>
+                {filteredTools.filter(t => t.category === cat).map(tool => (
+                  <div
+                    key={tool.name}
+                    onClick={() => selectTool(tool)}
+                    style={{
+                      padding: '8px 10px',
+                      cursor: 'pointer',
+                      borderRadius: 6,
+                      marginBottom: 2,
+                      background: selected?.name === tool.name ? colors.primary : 'transparent',
+                    }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{tool.name.split('.').pop()}</div>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
         </div>
         <div style={{ padding: 12, borderTop: `1px solid ${colors.border}` }}>
           <button onClick={onRefresh} style={{ ...styles.button, ...styles.buttonGhost, width: '100%' }}>
@@ -1341,7 +1354,7 @@ function ChainsTab({ tools, presets, setPresets }: {
 
   const runChain = async () => {
     setLoading(true);
-    setOutput('Running chain...\n');
+    setOutput('Running chain...\n\n');
     try {
       const chainSteps = steps.map(s => ({
         tool: s.tool,
@@ -1349,9 +1362,36 @@ function ChainsTab({ tools, presets, setPresets }: {
         outputKey: s.outputKey
       }));
       const result = await window.workbench.runChain(chainSteps);
-      setOutput(JSON.stringify(result, null, 2));
+      
+      // Format chain results with execution log
+      let outputText = '';
+      
+      if (result.executionLog) {
+        outputText += '📋 Execution Log:\n';
+        result.executionLog.forEach((log: any) => {
+          const statusIcon = log.status === 'success' ? '✅' : '❌';
+          outputText += `${statusIcon} Step ${log.step}: ${log.tool} - ${log.status}\n`;
+          if (log.error) {
+            outputText += `   Error: ${log.error}\n`;
+          }
+        });
+        outputText += '\n';
+      }
+      
+      if (result.success === false) {
+        outputText += `\n⚠️ Chain Failed at Step ${result.failedAt}\n`;
+        outputText += `Error: ${result.error}\n\n`;
+        outputText += 'Partial Results:\n';
+        outputText += JSON.stringify(result.results, null, 2);
+      } else {
+        outputText += '✅ Chain Completed Successfully\n\n';
+        outputText += 'Results:\n';
+        outputText += JSON.stringify(result.results, null, 2);
+      }
+      
+      setOutput(outputText);
     } catch (e: any) {
-      setOutput(`Error: ${e.message}`);
+      setOutput(`❌ Chain Error: ${e.message}`);
     }
     setLoading(false);
   };
@@ -1430,42 +1470,55 @@ function ChainsTab({ tools, presets, setPresets }: {
           </button>
         </div>
 
-        {steps.map((step, index) => (
-          <div key={step.id} style={styles.card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <span style={{ fontWeight: 600 }}>Step {index + 1}</span>
-              <button onClick={() => removeStep(step.id)} style={{ ...styles.button, ...styles.buttonDanger, padding: '4px 8px' }}>✕</button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 150px', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={styles.label}>Tool</label>
-                <select
-                  value={step.tool}
-                  onChange={e => updateStep(step.id, { tool: e.target.value, input: {} })}
-                  style={styles.input}
-                >
-                  {tools.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={styles.label}>Output Key</label>
-                <input
-                  value={step.outputKey}
-                  onChange={e => updateStep(step.id, { outputKey: e.target.value })}
-                  style={styles.input}
-                />
-              </div>
-            </div>
-            <div>
-              <label style={styles.label}>Input (JSON)</label>
-              <textarea
-                value={JSON.stringify(step.input, null, 2)}
-                onChange={e => { try { updateStep(step.id, { input: JSON.parse(e.target.value) }); } catch {} }}
-                style={{ ...styles.input, minHeight: 80, fontFamily: 'monospace' }}
-              />
-            </div>
+        {steps.length === 0 ? (
+          <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 80, padding: 16 }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>⛓️</div>
+            <div style={{ fontSize: 16, marginBottom: 8 }}>No chain steps yet</div>
+            <div style={{ fontSize: 13, marginBottom: 16 }}>Build multi-step workflows by adding tool steps</div>
+            <button onClick={addStep} style={{ ...styles.button, ...styles.buttonPrimary }}>
+              + Add First Step
+            </button>
           </div>
-        ))}
+        ) : (
+          <>
+            {steps.map((step, index) => (
+              <div key={step.id} style={styles.card}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <span style={{ fontWeight: 600 }}>Step {index + 1}</span>
+                  <button onClick={() => removeStep(step.id)} style={{ ...styles.button, ...styles.buttonDanger, padding: '4px 8px' }}>✕</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 150px', gap: 12, marginBottom: 12 }}>
+                  <div>
+                    <label style={styles.label}>Tool</label>
+                    <select
+                      value={step.tool}
+                      onChange={e => updateStep(step.id, { tool: e.target.value, input: {} })}
+                      style={styles.input}
+                    >
+                      {tools.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={styles.label}>Output Key</label>
+                    <input
+                      value={step.outputKey}
+                      onChange={e => updateStep(step.id, { outputKey: e.target.value })}
+                      style={styles.input}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label style={styles.label}>Input (JSON)</label>
+                  <textarea
+                    value={JSON.stringify(step.input, null, 2)}
+                    onChange={e => { try { updateStep(step.id, { input: JSON.parse(e.target.value) }); } catch {} }}
+                    style={{ ...styles.input, minHeight: 80, fontFamily: 'monospace' }}
+                  />
+                </div>
+              </div>
+            ))}
+          </>
+        )}
 
         {steps.length > 0 && (
           <div style={{ ...styles.card, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1576,7 +1629,11 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
       <div style={styles.card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Connected Servers</h3>
         {servers.length === 0 ? (
-          <div style={{ color: colors.textMuted }}>No MCP servers configured</div>
+          <div style={{ textAlign: 'center', color: colors.textMuted, padding: '32px 16px' }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🔌</div>
+            <div style={{ fontSize: 14, marginBottom: 8 }}>No MCP servers configured</div>
+            <div style={{ fontSize: 12 }}>Add a server above to extend Workbench with MCP tools</div>
+          </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
             {servers.map(server => (
@@ -1587,7 +1644,12 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
                     {server.status}
                   </span>
                 </div>
-                <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 8 }}>{server.toolCount} tools</div>
+                <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 8 }}>
+                  {server.status === 'error' ? '❌ Connection failed' : 
+                   server.status === 'disconnected' ? '⏸️ Offline - tools unavailable' :
+                   server.status === 'connecting' ? '⏳ Connecting...' :
+                   `✅ ${server.toolCount} tools available`}
+                </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button onClick={() => reconnect(server.name)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px', fontSize: 12 }}>Reconnect</button>
                   <button onClick={() => removeServer(server.name)} style={{ ...styles.button, ...styles.buttonDanger, padding: '4px 8px', fontSize: 12 }}>Remove</button>

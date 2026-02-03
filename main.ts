@@ -909,8 +909,49 @@ ipcMain.handle('tools:refresh', () => {
 ipcMain.handle('tools:run', async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
-  const rawOutput = await tool.run(input);
-  return normalizeToolOutput(rawOutput);
+  
+  // Safety: Tool timeout (30 seconds)
+  const TOOL_TIMEOUT = 30000;
+  const MAX_OUTPUT_SIZE = 500000; // 500KB max output
+  
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Tool execution timeout (30s limit)')), TOOL_TIMEOUT);
+  });
+  
+  try {
+    const rawOutput = await Promise.race([
+      tool.run(input),
+      timeoutPromise
+    ]);
+    
+    const normalized = normalizeToolOutput(rawOutput);
+    
+    // Safety: Truncate large outputs
+    if (typeof normalized.content === 'string' && normalized.content.length > MAX_OUTPUT_SIZE) {
+      normalized.content = normalized.content.substring(0, MAX_OUTPUT_SIZE) + 
+        `\n\n[Output truncated - exceeded ${MAX_OUTPUT_SIZE} character limit]`;
+      normalized.metadata = {
+        ...normalized.metadata,
+        truncated: true,
+        originalSize: normalized.content.length
+      };
+    }
+    
+    return normalized;
+  } catch (error: any) {
+    // Friendly error handling
+    return normalizeToolOutput({
+      content: error.message.includes('timeout') 
+        ? 'Tool execution timed out. Please try again or simplify your request.'
+        : `Tool error: ${error.message}`,
+      error: error.message,
+      metadata: {
+        tool: name,
+        input,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
 });
 
 // Cost tracking
@@ -1267,28 +1308,101 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`
 ipcMain.handle('chain:run', async (_e, steps: { tool: string; input: any; outputKey?: string }[]) => {
   const results: any[] = [];
   const context: Record<string, any> = {};
+  const executionLog: Array<{
+    step: number;
+    tool: string;
+    status: 'success' | 'failed';
+    error?: string;
+    output?: any;
+  }> = [];
   
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const tool = tools.get(step.tool);
-    if (!tool) throw new Error(`Tool not found: ${step.tool}`);
     
-    // Interpolate context variables in input
-    const resolvedInput = interpolateContext(step.input, context);
-    
-    console.log(`[chain:run] Step ${i + 1}: ${step.tool}`);
-    const result = await tool.run(resolvedInput);
-    results.push({ tool: step.tool, result });
-    
-    // Store result in context for next steps
-    if (step.outputKey) {
-      context[step.outputKey] = result;
+    if (!tool) {
+      const errorMsg = `Tool not found: ${step.tool}`;
+      executionLog.push({
+        step: i + 1,
+        tool: step.tool,
+        status: 'failed',
+        error: errorMsg
+      });
+      return {
+        success: false,
+        failedAt: i + 1,
+        error: errorMsg,
+        results,
+        context,
+        executionLog
+      };
     }
-    context[`step${i}`] = result;
-    context.lastResult = result;
+    
+    try {
+      // Interpolate context variables in input
+      const resolvedInput = interpolateContext(step.input, context);
+      
+      console.log(`[chain:run] Step ${i + 1}: ${step.tool}`);
+      const result = await tool.run(resolvedInput);
+      const normalized = normalizeToolOutput(result);
+      
+      // Check if tool returned an error
+      if (normalized.error) {
+        executionLog.push({
+          step: i + 1,
+          tool: step.tool,
+          status: 'failed',
+          error: normalized.error,
+          output: normalized
+        });
+        return {
+          success: false,
+          failedAt: i + 1,
+          error: `Tool "${step.tool}" failed: ${normalized.error}`,
+          results,
+          context,
+          executionLog
+        };
+      }
+      
+      results.push({ tool: step.tool, result: normalized });
+      executionLog.push({
+        step: i + 1,
+        tool: step.tool,
+        status: 'success',
+        output: normalized
+      });
+      
+      // Store result in context for next steps
+      if (step.outputKey) {
+        context[step.outputKey] = normalized;
+      }
+      context[`step${i}`] = normalized;
+      context.lastResult = normalized;
+    } catch (error: any) {
+      executionLog.push({
+        step: i + 1,
+        tool: step.tool,
+        status: 'failed',
+        error: error.message
+      });
+      return {
+        success: false,
+        failedAt: i + 1,
+        error: `Step ${i + 1} (${step.tool}) threw exception: ${error.message}`,
+        results,
+        context,
+        executionLog
+      };
+    }
   }
   
-  return { results, context };
+  return {
+    success: true,
+    results,
+    context,
+    executionLog
+  };
 });
 
 function interpolateContext(input: any, context: Record<string, any>): any {

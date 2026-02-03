@@ -1,6 +1,8 @@
-# Workbench v0.3.0
+# Workbench v0.1.0
 
 A local-first AI task runner with messenger-style chat, AI-powered artifact generation, file browser/editor, MCP support, streaming responses, tool chaining, and a plugin system. Build tools by simply asking the AI - it generates, saves, and loads them automatically.
+
+> **Not a SaaS - 100% Local-First**: All your conversations, tools, and data stay on your machine. No cloud sync, no tracking, no server dependencies. You control where your data lives.
 
 ## ✨ Key Features
 
@@ -51,54 +53,72 @@ A local-first AI task runner with messenger-style chat, AI-powered artifact gene
 
 ## 🚀 Quick Start
 
-### For End Users (Windows)
+### Prerequisites
+- Node.js 16+ and npm installed
+- Git (for cloning)
+- An API key from OpenRouter, OpenAI, or compatible service
 
-**Download the installer:**
-1. Go to [Releases](https://github.com/YakStacks/Workbench/releases)
-2. Download `Workbench Setup X.X.X.exe`
-3. Run the installer
-4. Launch Workbench from Start Menu or Desktop
+### Fresh Install (From Scratch)
 
-**Or build from source below ↓**
-
-### For Developers
-
-**1. Clone and Install**
 ```bash
+# 1. Clone the repository
 git clone https://github.com/YakStacks/Workbench.git
 cd Workbench
+
+# 2. Install dependencies
 npm install
+
+# 3. Run the app
+npm run dev
 ```
 
-**2. Configure API**
-1. Get an API key:
-   - **OpenRouter**: https://openrouter.ai (access to 200+ models)
-   - **OpenAI**: https://platform.openai.com (GPT models)
-   - **Azure OpenAI**: Your Azure portal
-2. Run the app: `npm run dev`
-3. Go to **Settings** tab
-4. Enter your **API Key**
-5. Enter your **API Endpoint**:
+The app will open automatically. **Don't panic if you see errors** - the UI will load, but you need to configure your API key first.
+
+### First-Time Setup
+
+1. **Open Settings Tab** (last tab in the header)
+2. **Enter API Key**:
+   - Get one from [OpenRouter](https://openrouter.ai) (easiest - 200+ models)
+   - Or [OpenAI](https://platform.openai.com) for GPT models
+3. **Enter API Endpoint**:
    - OpenRouter: `https://openrouter.ai/api/v1` (default)
    - OpenAI: `https://api.openai.com/v1`
-   - Azure: `https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT`
-   - Local/Other: Any OpenAI-compatible endpoint
-6. Click "Load Available Models" (OpenRouter only)
-7. Assign models to each role (Writer, Structurer, Coder, Reviewer)
-8. Click Save
+   - Azure/Other: Your custom endpoint
+4. **Click "Load Available Models"** (OpenRouter only)
+5. **Assign Models to Roles**:
+   - Writer: General chat (e.g., `anthropic/claude-3-haiku`)
+   - Coder: Code generation (e.g., `anthropic/claude-3.5-sonnet`)
+   - Structurer: Data formatting (any fast model)
+   - Reviewer: Quality checks (any model)
+6. **Click Save**
 
-**3. Build Your First Tool**
+✅ **You're ready!** Go to the Chat tab and start talking.
+
+### Verify Installation
+
+After setup, you should see:
+- ✅ 11+ tools in the Tools tab (builtin + example tools)
+- ✅ Chat tab responds when you type a message
+- ✅ No error messages in Settings tab
+
+If something's wrong:
+- Check the terminal/console for errors
+- Verify your API key is correct
+- Make sure you assigned models to all roles
+
+### Build Your First Custom Tool
+
 Go to the **Chat** tab and say:
 ```
-Build a tool that gives me the temperature
+Build a tool that gives me the temperature for any city
 ```
 
 The AI will:
 - Generate the complete plugin code
-- Automatically save it to `plugins/weather_temperature/`
+- Automatically save it to `plugins/`
 - Tell you to restart
 
-Restart the app and the tool appears in the **Tools** tab!
+Restart with `Ctrl+C` and `npm run dev`, and your tool appears in the **Tools** tab!
 
 ## 📖 Usage Guide
 
@@ -232,6 +252,17 @@ npx -y @modelcontextprotocol/server-memory
 
 ## 🛠️ Creating Plugins
 
+### Quick Start: Example Plugins Included
+
+Workbench ships with example plugins to get you started:
+- `example.helloWorld` - Simple hello world (see source as template)
+- `example.echo` - Text echoing utility
+- `example.currentTime` - Date and time tool
+- `weather.temperature` - Real weather data
+- Plus 8 more in the `plugins/` folder
+
+All plugins automatically load on startup. Check the **Tools** tab to see them all.
+
 ### Automatic Way (Recommended)
 Just ask the AI in Chat:
 ```
@@ -240,7 +271,7 @@ Build a tool that converts Celsius to Fahrenheit
 
 AI generates, saves, you restart. Done!
 
-### Manual Way
+### Manual Way: Create Your Own
 Create a folder in `plugins/` with this structure:
 
 ```
@@ -255,6 +286,7 @@ plugins/
 module.exports.register = (api) => {
   api.registerTool({
     name: 'custom.myTool',
+    description: 'Brief description of what this tool does',
     inputSchema: {
       type: 'object',
       properties: {
@@ -281,6 +313,11 @@ module.exports.register = (api) => {
   "type": "commonjs"
 }
 ```
+
+**Then:**
+1. Restart app OR click "Refresh Tools" in Tools tab
+2. Your tool appears in the list
+3. Ready to use!
 
 ### Standard Response Format
 **All tools MUST return:**
