@@ -14,7 +14,7 @@
     "build": "vite build && npm run build:electron",
     "build:electron": "tsc main.ts preload.ts --outDir . --esModuleInterop --module commonjs --skipLibCheck && node -e \"require('fs').renameSync('main.js','main.cjs');require('fs').renameSync('preload.js','preload.cjs')\"",
     "start": "electron .",
-    "package": "npm run build && electron-builder --win --x64",
+    "package": "npm run build && electron-builder --win --x64 && node set-icon.cjs && electron-builder build --win nsis --x64 --prepackaged release/win-unpacked",
     "package:all": "npm run build && electron-builder -mwl"
   },
   "dependencies": {
@@ -34,6 +34,7 @@
     "electron-builder": "^26.4.0",
     "electron-icon-builder": "^2.0.1",
     "png-to-ico": "^3.0.1",
+    "rcedit": "^5.0.2",
     "typescript": "^5.0.0",
     "vite": "^5.0.0",
     "wait-on": "^9.0.3"
@@ -42,6 +43,7 @@
     "appId": "com.workbench.app",
     "productName": "Workbench",
     "icon": "icon.ico",
+    "afterPack": "./set-icon.cjs",
     "files": [
       "dist/**/*",
       "main.cjs",
