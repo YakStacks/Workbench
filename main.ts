@@ -641,13 +641,26 @@ class MCPClient {
   ) {}
 
   async connect(): Promise<void> {
+    // Wrap connection in timeout
+    return Promise.race([
+      this._doConnect(),
+      new Promise<void>((_, reject) => 
+        setTimeout(() => reject(new Error('Connection timeout after 30 seconds')), 30000)
+      )
+    ]);
+  }
+
+  private async _doConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.status = 'connecting';
       
       try {
+        console.log(`[MCP ${this.name}] Spawning process: ${this.command} ${this.args.join(' ')}`);
+        
         this.process = spawn(this.command, this.args, {
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env }
+          env: { ...process.env },
+          shell: true  // Use shell to handle path resolution
         });
 
         this.process.stdout?.on('data', (data) => {
@@ -661,30 +674,37 @@ class MCPClient {
         this.process.on('error', (err) => {
           console.error(`[MCP ${this.name}] process error:`, err);
           this.status = 'error';
-          reject(err);
+          reject(new Error(`Failed to start MCP server: ${err.message}`));
         });
 
         this.process.on('close', (code) => {
           console.log(`[MCP ${this.name}] process closed with code:`, code);
+          if (this.status === 'connecting') {
+            reject(new Error(`MCP server exited during connection (code ${code})`));
+          }
           this.status = 'disconnected';
         });
 
         // Initialize the connection
         setTimeout(async () => {
           try {
+            console.log(`[MCP ${this.name}] Initializing...`);
             await this.initialize();
+            console.log(`[MCP ${this.name}] Loading tools...`);
             await this.loadTools();
+            console.log(`[MCP ${this.name}] Connected successfully with ${this.tools.length} tools`);
             this.status = 'connected';
             resolve();
-          } catch (e) {
+          } catch (e: any) {
+            console.error(`[MCP ${this.name}] Initialization failed:`, e.message);
             this.status = 'error';
-            reject(e);
+            reject(new Error(`Initialization failed: ${e.message}`));
           }
         }, 500);
 
-      } catch (e) {
+      } catch (e: any) {
         this.status = 'error';
-        reject(e);
+        reject(new Error(`Connection setup failed: ${e.message}`));
       }
     });
   }
@@ -1437,6 +1457,8 @@ ipcMain.handle('mcp:list', () => {
 });
 
 ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; args?: string[] }) => {
+  console.log('[mcp:add] Adding server:', config);
+  
   const servers = store.get('mcpServers') as any[] || [];
   servers.push(config);
   store.set('mcpServers', servers);
@@ -1445,7 +1467,10 @@ ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; ar
   mcpClients.set(config.name, client);
   
   try {
+    console.log('[mcp:add] Connecting to server...');
     await client.connect();
+    console.log('[mcp:add] Connected! Tools:', client.tools.length);
+    
     client.tools.forEach(tool => {
       const toolName = `mcp.${config.name}.${tool.name}`;
       tools.set(toolName, {
@@ -1457,7 +1482,10 @@ ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; ar
     });
     return { success: true, toolCount: client.tools.length };
   } catch (e: any) {
-    return { success: false, error: e.message };
+    console.error('[mcp:add] Connection failed:', e.message);
+    client.disconnect(); // Clean up failed connection
+    mcpClients.delete(config.name); // Remove from map
+    return { success: false, error: e.message || 'Connection failed' };
   }
 });
 
