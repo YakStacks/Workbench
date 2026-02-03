@@ -41,6 +41,7 @@
   "build": {
     "appId": "com.workbench.app",
     "productName": "Workbench",
+    "icon": "icon.ico",
     "files": [
       "dist/**/*",
       "main.cjs",

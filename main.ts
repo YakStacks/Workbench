@@ -64,9 +64,10 @@ let mcpServers: Map<string, MCPServer> = new Map();
 function createWindow() {
   let iconPath: string;
   if (app.isPackaged) {
-    iconPath = path.join(process.resourcesPath, 'build', 'icon.png');
+    // For Windows, use .ico file
+    iconPath = path.join(process.resourcesPath, 'icon.ico');
   } else {
-    iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
+    iconPath = path.join(app.getAppPath(), 'icon.ico');
   }
   
   // Fallback if icon not found

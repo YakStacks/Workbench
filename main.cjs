@@ -101,10 +101,11 @@ var mcpServers = new Map();
 function createWindow() {
     var iconPath;
     if (electron_1.app.isPackaged) {
-        iconPath = path_1.default.join(process.resourcesPath, 'build', 'icon.png');
+        // For Windows, use .ico file
+        iconPath = path_1.default.join(process.resourcesPath, 'icon.ico');
     }
     else {
-        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'build', 'icon.png');
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'icon.ico');
     }
     // Fallback if icon not found
     if (!fs_1.default.existsSync(iconPath)) {
