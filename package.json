@@ -43,7 +43,6 @@
     "appId": "com.workbench.app",
     "productName": "Workbench",
     "icon": "icon.ico",
-    "afterPack": "./set-icon.cjs",
     "files": [
       "dist/**/*",
       "main.cjs",

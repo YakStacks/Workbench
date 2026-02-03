@@ -1569,8 +1569,13 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
   const [loading, setLoading] = useState(false);
 
   const refreshServers = async () => {
-    const list = await window.workbench.mcp.list();
-    setServers(list);
+    try {
+      const list = await window.workbench.mcp.list();
+      setServers(list);
+    } catch (error: any) {
+      console.error('Error refreshing MCP servers:', error);
+      // Don't block UI on refresh failure
+    }
   };
 
   useEffect(() => { refreshServers(); }, []);
@@ -1578,16 +1583,21 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
   const addServer = async () => {
     if (!newServer.name || !newServer.command) return;
     setLoading(true);
-    const args = newServer.args.split(' ').filter(a => a.trim());
-    const result = await window.workbench.mcp.add({ name: newServer.name, command: newServer.command, args });
-    if (result.success) {
-      setNewServer({ name: '', command: '', args: '' });
-      await refreshServers();
-      onToolsChanged();
-    } else {
-      alert(`Failed: ${result.error}`);
+    try {
+      const args = newServer.args.split(' ').filter(a => a.trim());
+      const result = await window.workbench.mcp.add({ name: newServer.name, command: newServer.command, args });
+      if (result.success) {
+        setNewServer({ name: '', command: '', args: '' });
+        await refreshServers();
+        onToolsChanged();
+      } else {
+        alert(`Failed to add server: ${result.error}`);
+      }
+    } catch (error: any) {
+      alert(`Error adding server: ${error.message}`);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const removeServer = async (name: string) => {
@@ -1598,10 +1608,16 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
 
   const reconnect = async (name: string) => {
     setLoading(true);
-    await window.workbench.mcp.reconnect(name);
-    await refreshServers();
-    onToolsChanged();
-    setLoading(false);
+    try {
+      await window.workbench.mcp.reconnect(name);
+      await refreshServers();
+      onToolsChanged();
+    } catch (error: any) {
+      alert(`Error reconnecting: ${error.message}`);
+      await refreshServers(); // Refresh to show error state
+    } finally {
+      setLoading(false);
+    }
   };
 
   const statusColors: Record<string, string> = {
@@ -1618,18 +1634,36 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr auto', gap: 12, alignItems: 'end' }}>
           <div>
             <label style={styles.label}>Name</label>
-            <input value={newServer.name} onChange={e => setNewServer({ ...newServer, name: e.target.value })} style={styles.input} placeholder="filesystem" />
+            <input 
+              value={newServer.name} 
+              onChange={e => setNewServer({ ...newServer, name: e.target.value })} 
+              style={styles.input} 
+              placeholder="filesystem"
+              disabled={loading}
+            />
           </div>
           <div>
             <label style={styles.label}>Command</label>
-            <input value={newServer.command} onChange={e => setNewServer({ ...newServer, command: e.target.value })} style={styles.input} placeholder="npx" />
+            <input 
+              value={newServer.command} 
+              onChange={e => setNewServer({ ...newServer, command: e.target.value })} 
+              style={styles.input} 
+              placeholder="npx"
+              disabled={loading}
+            />
           </div>
           <div>
             <label style={styles.label}>Arguments</label>
-            <input value={newServer.args} onChange={e => setNewServer({ ...newServer, args: e.target.value })} style={styles.input} placeholder="-y @modelcontextprotocol/server-filesystem /path" />
+            <input 
+              value={newServer.args} 
+              onChange={e => setNewServer({ ...newServer, args: e.target.value })} 
+              style={styles.input} 
+              placeholder="-y @modelcontextprotocol/server-filesystem /path"
+              disabled={loading}
+            />
           </div>
-          <button onClick={addServer} disabled={loading} style={{ ...styles.button, ...styles.buttonPrimary }}>
-            {loading ? '...' : 'Add'}
+          <button onClick={addServer} disabled={loading || !newServer.name || !newServer.command} style={{ ...styles.button, ...styles.buttonPrimary }}>
+            {loading ? '⏳ Adding...' : 'Add'}
           </button>
         </div>
       </div>
