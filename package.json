@@ -57,6 +57,11 @@
       "signAndEditExecutable": false,
       "icon": "build/icons/icon.ico"
     },
+    "nsis": {
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "createDesktopShortcut": true
+    },
     "mac": {
       "target": "dmg",
       "icon": "build/icon.icns"
