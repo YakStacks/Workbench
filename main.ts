@@ -103,7 +103,8 @@ function createWindow() {
 function createTray() {
   let iconPath: string;
   if (app.isPackaged) {
-    iconPath = path.join(process.resourcesPath, 'build', 'icon.png');
+    // Use the same icon.ico that's embedded in the exe
+    iconPath = path.join(process.resourcesPath, 'icon.ico');
   } else {
     iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
   }

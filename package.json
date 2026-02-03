@@ -55,11 +55,11 @@
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false,
-      "icon": "build/icons/icon.ico"
+      "icon": "icon.ico"
     },
     "nsis": {
-      "installerIcon": "build/icons/icon.ico",
-      "uninstallerIcon": "build/icons/icon.ico",
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
       "createDesktopShortcut": true
     },
     "mac": {
