@@ -2,6 +2,7 @@
 import { app, BrowserWindow, ipcMain, clipboard, Tray, Menu, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import net from 'net';
 import { spawn, ChildProcess } from 'child_process';
 import Store from 'electron-store';
 import axios from 'axios';
@@ -971,7 +972,227 @@ class MCPClient {
   }
 }
 
-const mcpClients: Map<string, MCPClient> = new Map();
+/**
+ * MCP Proxy Client - connects to PipeWrench proxy via TCP
+ * Same interface as MCPClient but uses TCP socket instead of stdio
+ */
+class MCPProxyClient {
+  private socket: net.Socket | null = null;
+  private messageId = 0;
+  private pendingRequests: Map<number, { resolve: Function; reject: Function }> = new Map();
+  private buffer = '';
+  public tools: any[] = [];
+  public status: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
+  private proxyHost: string;
+  private proxyPort: number;
+
+  constructor(
+    public name: string,
+    public command: string,
+    public args: string[] = [],
+    proxyPort: number = 9999,
+    proxyHost: string = '127.0.0.1'
+  ) {
+    this.proxyHost = proxyHost;
+    this.proxyPort = proxyPort;
+  }
+
+  async connect(): Promise<void> {
+    return Promise.race([
+      this._doConnect(),
+      new Promise<void>((_, reject) => 
+        setTimeout(() => reject(new Error('Proxy connection timeout after 30 seconds')), 30000)
+      )
+    ]);
+  }
+
+  private async _doConnect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.status = 'connecting';
+      
+      console.log(`[MCPProxy ${this.name}] Connecting to proxy at ${this.proxyHost}:${this.proxyPort}`);
+      
+      this.socket = new net.Socket();
+      
+      this.socket.on('connect', async () => {
+        console.log(`[MCPProxy ${this.name}] Connected to proxy`);
+        
+        // Send connect command to proxy
+        const connectCmd = JSON.stringify({
+          type: 'connect',
+          command: this.command,
+          args: this.args
+        }) + '\n';
+        
+        this.socket!.write(connectCmd);
+        
+        try {
+          await this.initialize();
+          await this.loadTools();
+          this.status = 'connected';
+          resolve();
+        } catch (e) {
+          this.status = 'error';
+          reject(e);
+        }
+      });
+      
+      this.socket.on('data', (data: Buffer) => {
+        this.handleData(data.toString());
+      });
+      
+      this.socket.on('error', (err: Error) => {
+        console.error(`[MCPProxy ${this.name}] Socket error:`, err.message);
+        this.status = 'error';
+        reject(err);
+      });
+      
+      this.socket.on('close', () => {
+        console.log(`[MCPProxy ${this.name}] Socket closed`);
+        this.status = 'disconnected';
+      });
+      
+      this.socket.connect(this.proxyPort, this.proxyHost);
+    });
+  }
+
+  private handleData(data: string) {
+    this.buffer += data;
+    
+    // Parse JSON lines from proxy
+    const lines = this.buffer.split('\n');
+    this.buffer = lines.pop() || '';
+    
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      
+      try {
+        const msg = JSON.parse(line);
+        
+        // Handle proxy wrapper messages
+        if (msg.type === 'message' && msg.payload) {
+          this.handleMCPMessage(msg.payload);
+        } else if (msg.type === 'error') {
+          console.error(`[MCPProxy ${this.name}] Proxy error:`, msg.message);
+        } else if (msg.type === 'connected') {
+          console.log(`[MCPProxy ${this.name}] Server spawned by proxy`);
+        } else if (msg.jsonrpc === '2.0') {
+          // Direct MCP message (some proxies may send unwrapped)
+          this.handleMCPMessage(msg);
+        }
+      } catch (e) {
+        // May be partial JSON, will be handled next chunk
+      }
+    }
+  }
+
+  private handleMCPMessage(message: MCPMessage) {
+    if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+      const pending = this.pendingRequests.get(message.id)!;
+      this.pendingRequests.delete(message.id);
+      
+      if (message.error) {
+        pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+      } else {
+        pending.resolve(message.result);
+      }
+    }
+  }
+
+  private send(method: string, params?: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Not connected to proxy'));
+      }
+
+      const id = ++this.messageId;
+      this.pendingRequests.set(id, { resolve, reject });
+
+      const mcpMessage: MCPMessage = {
+        jsonrpc: '2.0',
+        id,
+        method,
+        params
+      };
+
+      // Wrap in proxy message format
+      const proxyMessage = JSON.stringify({
+        type: 'message',
+        payload: mcpMessage
+      }) + '\n';
+
+      this.socket.write(proxyMessage);
+
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id);
+          reject(new Error('MCP request timeout'));
+        }
+      }, 30000);
+    });
+  }
+
+  private notify(method: string, params?: any): void {
+    if (!this.socket) {
+      console.error(`[MCPProxy ${this.name}] Cannot send notification: not connected`);
+      return;
+    }
+
+    const notification = {
+      jsonrpc: '2.0',
+      method,
+      params
+    };
+
+    const proxyMessage = JSON.stringify({
+      type: 'message',
+      payload: notification
+    }) + '\n';
+
+    this.socket.write(proxyMessage);
+  }
+
+  private async initialize(): Promise<void> {
+    await this.send('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: {
+        name: 'Workbench',
+        version: '0.1.0'
+      }
+    });
+    this.notify('notifications/initialized');
+  }
+
+  private async loadTools(): Promise<void> {
+    const result = await this.send('tools/list');
+    this.tools = result.tools || [];
+    console.log(`[MCPProxy ${this.name}] Loaded ${this.tools.length} tools via proxy`);
+  }
+
+  async callTool(toolName: string, args: any): Promise<any> {
+    const result = await this.send('tools/call', {
+      name: toolName,
+      arguments: args
+    });
+    return result;
+  }
+
+  disconnect() {
+    if (this.socket) {
+      // Send disconnect to proxy
+      try {
+        this.socket.write(JSON.stringify({ type: 'disconnect' }) + '\n');
+      } catch (e) {}
+      this.socket.destroy();
+      this.socket = null;
+    }
+    this.status = 'disconnected';
+    this.tools = [];
+  }
+}
+
+const mcpClients: Map<string, MCPClient | MCPProxyClient> = new Map();
 
 function loadMCPServers() {
   const serverConfigs = store.get('mcpServers') as any[] || [];
@@ -1628,14 +1849,26 @@ ipcMain.handle('mcp:list', () => {
   }));
 });
 
-ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; args?: string[] }) => {
+ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; args?: string[]; transport?: 'stdio' | 'pipewrench' }) => {
   console.log('[mcp:add] Adding server:', config);
   
   const servers = store.get('mcpServers') as any[] || [];
   servers.push(config);
   store.set('mcpServers', servers);
   
-  const client = new MCPClient(config.name, config.command, config.args || []);
+  // Create client based on transport type
+  const transport = config.transport || 'stdio';
+  const proxyPort = store.get('pipewrenchPort', 9999) as number;
+  
+  let client: MCPClient | MCPProxyClient;
+  
+  if (transport === 'pipewrench') {
+    console.log(`[mcp:add] Using PipeWrench proxy on port ${proxyPort}`);
+    client = new MCPProxyClient(config.name, config.command, config.args || [], proxyPort);
+  } else {
+    client = new MCPClient(config.name, config.command, config.args || []);
+  }
+  
   mcpClients.set(config.name, client);
   
   try {
@@ -1652,7 +1885,7 @@ ipcMain.handle('mcp:add', async (_e, config: { name: string; command: string; ar
         run: async (input: any) => client.callTool(tool.name, input)
       });
     });
-    return { success: true, toolCount: client.tools.length };
+    return { success: true, toolCount: client.tools.length, transport };
   } catch (e: any) {
     console.error('[mcp:add] Connection failed:', e.message);
     client.disconnect(); // Clean up failed connection

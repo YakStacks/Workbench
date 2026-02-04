@@ -63,6 +63,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var electron_1 = require("electron");
 var path_1 = __importDefault(require("path"));
 var fs_1 = __importDefault(require("fs"));
+var net_1 = __importDefault(require("net"));
 var child_process_1 = require("child_process");
 var electron_store_1 = __importDefault(require("electron-store"));
 var axios_1 = __importDefault(require("axios"));
@@ -999,13 +1000,257 @@ var MCPClient = /** @class */ (function () {
     };
     return MCPClient;
 }());
+/**
+ * MCP Proxy Client - connects to PipeWrench proxy via TCP
+ * Same interface as MCPClient but uses TCP socket instead of stdio
+ */
+var MCPProxyClient = /** @class */ (function () {
+    function MCPProxyClient(name, command, args, proxyPort, proxyHost) {
+        if (args === void 0) { args = []; }
+        if (proxyPort === void 0) { proxyPort = 9999; }
+        if (proxyHost === void 0) { proxyHost = '127.0.0.1'; }
+        this.name = name;
+        this.command = command;
+        this.args = args;
+        this.socket = null;
+        this.messageId = 0;
+        this.pendingRequests = new Map();
+        this.buffer = '';
+        this.tools = [];
+        this.status = 'disconnected';
+        this.proxyHost = proxyHost;
+        this.proxyPort = proxyPort;
+    }
+    MCPProxyClient.prototype.connect = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, Promise.race([
+                        this._doConnect(),
+                        new Promise(function (_, reject) {
+                            return setTimeout(function () { return reject(new Error('Proxy connection timeout after 30 seconds')); }, 30000);
+                        })
+                    ])];
+            });
+        });
+    };
+    MCPProxyClient.prototype._doConnect = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var _this = this;
+            return __generator(this, function (_a) {
+                return [2 /*return*/, new Promise(function (resolve, reject) {
+                        _this.status = 'connecting';
+                        console.log("[MCPProxy ".concat(_this.name, "] Connecting to proxy at ").concat(_this.proxyHost, ":").concat(_this.proxyPort));
+                        _this.socket = new net_1.default.Socket();
+                        _this.socket.on('connect', function () { return __awaiter(_this, void 0, void 0, function () {
+                            var connectCmd, e_2;
+                            return __generator(this, function (_a) {
+                                switch (_a.label) {
+                                    case 0:
+                                        console.log("[MCPProxy ".concat(this.name, "] Connected to proxy"));
+                                        connectCmd = JSON.stringify({
+                                            type: 'connect',
+                                            command: this.command,
+                                            args: this.args
+                                        }) + '\n';
+                                        this.socket.write(connectCmd);
+                                        _a.label = 1;
+                                    case 1:
+                                        _a.trys.push([1, 4, , 5]);
+                                        return [4 /*yield*/, this.initialize()];
+                                    case 2:
+                                        _a.sent();
+                                        return [4 /*yield*/, this.loadTools()];
+                                    case 3:
+                                        _a.sent();
+                                        this.status = 'connected';
+                                        resolve();
+                                        return [3 /*break*/, 5];
+                                    case 4:
+                                        e_2 = _a.sent();
+                                        this.status = 'error';
+                                        reject(e_2);
+                                        return [3 /*break*/, 5];
+                                    case 5: return [2 /*return*/];
+                                }
+                            });
+                        }); });
+                        _this.socket.on('data', function (data) {
+                            _this.handleData(data.toString());
+                        });
+                        _this.socket.on('error', function (err) {
+                            console.error("[MCPProxy ".concat(_this.name, "] Socket error:"), err.message);
+                            _this.status = 'error';
+                            reject(err);
+                        });
+                        _this.socket.on('close', function () {
+                            console.log("[MCPProxy ".concat(_this.name, "] Socket closed"));
+                            _this.status = 'disconnected';
+                        });
+                        _this.socket.connect(_this.proxyPort, _this.proxyHost);
+                    })];
+            });
+        });
+    };
+    MCPProxyClient.prototype.handleData = function (data) {
+        this.buffer += data;
+        // Parse JSON lines from proxy
+        var lines = this.buffer.split('\n');
+        this.buffer = lines.pop() || '';
+        for (var _i = 0, lines_1 = lines; _i < lines_1.length; _i++) {
+            var line = lines_1[_i];
+            if (!line.trim())
+                continue;
+            try {
+                var msg = JSON.parse(line);
+                // Handle proxy wrapper messages
+                if (msg.type === 'message' && msg.payload) {
+                    this.handleMCPMessage(msg.payload);
+                }
+                else if (msg.type === 'error') {
+                    console.error("[MCPProxy ".concat(this.name, "] Proxy error:"), msg.message);
+                }
+                else if (msg.type === 'connected') {
+                    console.log("[MCPProxy ".concat(this.name, "] Server spawned by proxy"));
+                }
+                else if (msg.jsonrpc === '2.0') {
+                    // Direct MCP message (some proxies may send unwrapped)
+                    this.handleMCPMessage(msg);
+                }
+            }
+            catch (e) {
+                // May be partial JSON, will be handled next chunk
+            }
+        }
+    };
+    MCPProxyClient.prototype.handleMCPMessage = function (message) {
+        if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+            var pending = this.pendingRequests.get(message.id);
+            this.pendingRequests.delete(message.id);
+            if (message.error) {
+                pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+            }
+            else {
+                pending.resolve(message.result);
+            }
+        }
+    };
+    MCPProxyClient.prototype.send = function (method, params) {
+        var _this = this;
+        return new Promise(function (resolve, reject) {
+            if (!_this.socket) {
+                return reject(new Error('Not connected to proxy'));
+            }
+            var id = ++_this.messageId;
+            _this.pendingRequests.set(id, { resolve: resolve, reject: reject });
+            var mcpMessage = {
+                jsonrpc: '2.0',
+                id: id,
+                method: method,
+                params: params
+            };
+            // Wrap in proxy message format
+            var proxyMessage = JSON.stringify({
+                type: 'message',
+                payload: mcpMessage
+            }) + '\n';
+            _this.socket.write(proxyMessage);
+            setTimeout(function () {
+                if (_this.pendingRequests.has(id)) {
+                    _this.pendingRequests.delete(id);
+                    reject(new Error('MCP request timeout'));
+                }
+            }, 30000);
+        });
+    };
+    MCPProxyClient.prototype.notify = function (method, params) {
+        if (!this.socket) {
+            console.error("[MCPProxy ".concat(this.name, "] Cannot send notification: not connected"));
+            return;
+        }
+        var notification = {
+            jsonrpc: '2.0',
+            method: method,
+            params: params
+        };
+        var proxyMessage = JSON.stringify({
+            type: 'message',
+            payload: notification
+        }) + '\n';
+        this.socket.write(proxyMessage);
+    };
+    MCPProxyClient.prototype.initialize = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.send('initialize', {
+                            protocolVersion: '2024-11-05',
+                            capabilities: {},
+                            clientInfo: {
+                                name: 'Workbench',
+                                version: '0.1.0'
+                            }
+                        })];
+                    case 1:
+                        _a.sent();
+                        this.notify('notifications/initialized');
+                        return [2 /*return*/];
+                }
+            });
+        });
+    };
+    MCPProxyClient.prototype.loadTools = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var result;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.send('tools/list')];
+                    case 1:
+                        result = _a.sent();
+                        this.tools = result.tools || [];
+                        console.log("[MCPProxy ".concat(this.name, "] Loaded ").concat(this.tools.length, " tools via proxy"));
+                        return [2 /*return*/];
+                }
+            });
+        });
+    };
+    MCPProxyClient.prototype.callTool = function (toolName, args) {
+        return __awaiter(this, void 0, void 0, function () {
+            var result;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.send('tools/call', {
+                            name: toolName,
+                            arguments: args
+                        })];
+                    case 1:
+                        result = _a.sent();
+                        return [2 /*return*/, result];
+                }
+            });
+        });
+    };
+    MCPProxyClient.prototype.disconnect = function () {
+        if (this.socket) {
+            // Send disconnect to proxy
+            try {
+                this.socket.write(JSON.stringify({ type: 'disconnect' }) + '\n');
+            }
+            catch (e) { }
+            this.socket.destroy();
+            this.socket = null;
+        }
+        this.status = 'disconnected';
+        this.tools = [];
+    };
+    return MCPProxyClient;
+}());
 var mcpClients = new Map();
 function loadMCPServers() {
     var _this = this;
     var serverConfigs = store.get('mcpServers') || [];
     console.log('[loadMCPServers] Loading MCP servers:', serverConfigs.length);
     serverConfigs.forEach(function (config) { return __awaiter(_this, void 0, void 0, function () {
-        var client, e_2;
+        var client, e_3;
         var _this = this;
         return __generator(this, function (_a) {
             switch (_a.label) {
@@ -1042,8 +1287,8 @@ function loadMCPServers() {
                     console.log("[MCP] Connected to ".concat(config.name, ", registered ").concat(client.tools.length, " tools"));
                     return [3 /*break*/, 4];
                 case 3:
-                    e_2 = _a.sent();
-                    console.error("[MCP] Failed to connect to ".concat(config.name, ":"), e_2);
+                    e_3 = _a.sent();
+                    console.error("[MCP] Failed to connect to ".concat(config.name, ":"), e_3);
                     return [3 /*break*/, 4];
                 case 4: return [2 /*return*/];
             }
@@ -1264,7 +1509,7 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
 });
 // List available models from OpenRouter
 electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, void 0, void 0, function () {
-    var config, apiKey, res, models, e_3;
+    var config, apiKey, res, models, e_4;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1303,8 +1548,8 @@ electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, 
                 models.sort(function (a, b) { return a.pricing.prompt - b.pricing.prompt; });
                 return [2 /*return*/, models];
             case 3:
-                e_3 = _a.sent();
-                throw new Error("Failed to fetch models: ".concat(e_3.message));
+                e_4 = _a.sent();
+                throw new Error("Failed to fetch models: ".concat(e_4.message));
             case 4: return [2 /*return*/];
         }
     });
@@ -1322,7 +1567,7 @@ function processTemplateVariables(text) {
 }
 // Streaming task runner
 electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_4, errorDetails, errorMessage;
+    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_5, errorDetails, errorMessage;
     var _a, _b, _c, _d, _f, _g, _h, _j;
     return __generator(this, function (_k) {
         switch (_k.label) {
@@ -1375,8 +1620,8 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 res.data.on('data', function (chunk) {
                     var _a, _b, _c;
                     var lines = chunk.toString().split('\n').filter(function (line) { return line.trim().startsWith('data:'); });
-                    for (var _i = 0, lines_1 = lines; _i < lines_1.length; _i++) {
-                        var line = lines_1[_i];
+                    for (var _i = 0, lines_2 = lines; _i < lines_2.length; _i++) {
+                        var line = lines_2[_i];
                         var data = line.replace('data:', '').trim();
                         if (data === '[DONE]') {
                             // Track costs
@@ -1432,22 +1677,22 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
-                e_4 = _k.sent();
+                e_5 = _k.sent();
                 errorDetails = {
-                    status: (_a = e_4.response) === null || _a === void 0 ? void 0 : _a.status,
-                    statusText: (_b = e_4.response) === null || _b === void 0 ? void 0 : _b.statusText,
-                    data: (_c = e_4.response) === null || _c === void 0 ? void 0 : _c.data,
-                    message: e_4.message
+                    status: (_a = e_5.response) === null || _a === void 0 ? void 0 : _a.status,
+                    statusText: (_b = e_5.response) === null || _b === void 0 ? void 0 : _b.statusText,
+                    data: (_c = e_5.response) === null || _c === void 0 ? void 0 : _c.data,
+                    message: e_5.message
                 };
                 console.error('[task:runStream] Full error:', JSON.stringify(errorDetails, null, 2));
                 errorMessage = 'Request failed';
-                if ((_g = (_f = (_d = e_4.response) === null || _d === void 0 ? void 0 : _d.data) === null || _f === void 0 ? void 0 : _f.error) === null || _g === void 0 ? void 0 : _g.message) {
-                    errorMessage = e_4.response.data.error.message;
+                if ((_g = (_f = (_d = e_5.response) === null || _d === void 0 ? void 0 : _d.data) === null || _f === void 0 ? void 0 : _f.error) === null || _g === void 0 ? void 0 : _g.message) {
+                    errorMessage = e_5.response.data.error.message;
                 }
-                else if (((_h = e_4.response) === null || _h === void 0 ? void 0 : _h.status) === 404) {
+                else if (((_h = e_5.response) === null || _h === void 0 ? void 0 : _h.status) === 404) {
                     errorMessage = "Model not found: ".concat(roleConfig.model, ". Please check the model ID in Settings.");
                 }
-                else if (((_j = e_4.response) === null || _j === void 0 ? void 0 : _j.status) === 400) {
+                else if (((_j = e_5.response) === null || _j === void 0 ? void 0 : _j.status) === 400) {
                     errorMessage = "Bad request. The model \"".concat(roleConfig.model, "\" may not support this request format.");
                 }
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: errorMessage });
@@ -1591,7 +1836,7 @@ electron_1.ipcMain.handle('mcp:list', function () {
     });
 });
 electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
-    var servers, client, e_5;
+    var servers, transport, proxyPort, client, e_6;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1599,7 +1844,15 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                 servers = store.get('mcpServers') || [];
                 servers.push(config);
                 store.set('mcpServers', servers);
-                client = new MCPClient(config.name, config.command, config.args || []);
+                transport = config.transport || 'stdio';
+                proxyPort = store.get('pipewrenchPort', 9999);
+                if (transport === 'pipewrench') {
+                    console.log("[mcp:add] Using PipeWrench proxy on port ".concat(proxyPort));
+                    client = new MCPProxyClient(config.name, config.command, config.args || [], proxyPort);
+                }
+                else {
+                    client = new MCPClient(config.name, config.command, config.args || []);
+                }
                 mcpClients.set(config.name, client);
                 _a.label = 1;
             case 1:
@@ -1620,13 +1873,13 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                         }); }); }
                     });
                 });
-                return [2 /*return*/, { success: true, toolCount: client.tools.length }];
+                return [2 /*return*/, { success: true, toolCount: client.tools.length, transport: transport }];
             case 3:
-                e_5 = _a.sent();
-                console.error('[mcp:add] Connection failed:', e_5.message);
+                e_6 = _a.sent();
+                console.error('[mcp:add] Connection failed:', e_6.message);
                 client.disconnect(); // Clean up failed connection
                 mcpClients.delete(config.name); // Remove from map
-                return [2 /*return*/, { success: false, error: e_5.message || 'Connection failed' }];
+                return [2 /*return*/, { success: false, error: e_6.message || 'Connection failed' }];
             case 4: return [2 /*return*/];
         }
     });
@@ -1651,7 +1904,7 @@ electron_1.ipcMain.handle('mcp:remove', function (_e, name) { return __awaiter(v
     });
 }); });
 electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
-    var client, e_6;
+    var client, e_7;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1678,8 +1931,8 @@ electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaite
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
-                e_6 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_6.message }];
+                e_7 = _a.sent();
+                return [2 /*return*/, { success: false, error: e_7.message }];
             case 4: return [2 /*return*/];
         }
     });
