@@ -1,0 +1,59 @@
+🔧 PipeWrench MCP Diagnostics
+═══════════════════════════════════════════════════════════════
+
+Target: mcp-stdio:npx -y @modelcontextprotocol/server-memory
+Status: ✅ PASSED
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Connection Test Results:
+
+  ✅ Server Spawn
+     Process spawned successfully
+
+  ✅ Stdio Pollution  
+     No stderr pollution detected
+
+  ✅ MCP Framing
+     Framing: line-delimited
+
+  ✅ JSON-RPC Validity
+     JSON-RPC messages are valid
+
+  ✅ MCP Initialize
+     Protocol version: 2024-11-05
+     Initialize succeeded in 1273ms
+
+  ✅ MCP Tools List
+     9 tools available
+
+  ✅ Response Timing
+     Total: 1282ms, TTFB: 1273ms
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Available Tools:
+  • create_entities - Create multiple new entities in the knowledge graph
+  • create_relations - Create multiple new relations between entities
+  • add_observations - Add new observations to existing entities
+  • delete_entities - Delete multiple entities and their relations
+  • delete_observations - Delete specific observations from entities
+  • delete_relations - Delete multiple relations from the knowledge graph
+  • read_graph - Read the entire knowledge graph
+  • search_nodes - Search for nodes in the knowledge graph
+  • open_nodes - Open specific nodes in the knowledge graph
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Server Info:
+  Name: memory-server
+  Version: 0.6.3
+  Protocol: 2024-11-05
+  Transport: stdio
+
+Health Score: 100/100 ✅
+
+Recommendations:
+  ✅ All checks passed
+  ✅ Server is responding normally  
+  ✅ Ready for production use
