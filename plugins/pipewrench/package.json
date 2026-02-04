@@ -1,0 +1,15 @@
+{
+  "name": "pipewrench-plugin",
+  "version": "0.1.0",
+  "description": "PipeWrench MCP diagnostics as a Workbench plugin",
+  "main": "index.js",
+  "keywords": [
+    "workbench",
+    "plugin",
+    "mcp",
+    "diagnostics",
+    "pipewrench"
+  ],
+  "author": "",
+  "license": "MIT"
+}
