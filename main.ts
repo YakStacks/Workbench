@@ -657,19 +657,94 @@ class MCPClient {
       try {
         console.log(`[MCP ${this.name}] Spawning process: ${this.command} ${this.args.join(' ')}`);
         
-        this.process = spawn(this.command, this.args, {
+        // Create environment for clean Node.js execution
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.NODE_CHANNEL_FD;  // Remove Electron IPC channel
+        // Add ELECTRON_RUN_AS_NODE to make spawned process behave like plain Node
+        cleanEnv.ELECTRON_RUN_AS_NODE = '1';
+        // Ensure unbuffered stdio
+        cleanEnv.NODE_NO_READLINE = '1';
+        cleanEnv.PYTHONUNBUFFERED = '1';
+        
+        // On Windows, use process.execPath (Electron as Node) or explicit node command
+        const isWindows = process.platform === 'win32';
+        let command = this.command;
+        let args = this.args;
+        
+        if (isWindows && this.command === 'npx') {
+          // Extract package name and resolve to actual JS entry point
+          const packageArg = args.find(arg => arg.startsWith('@modelcontextprotocol/'));
+          if (packageArg) {
+            // Build the direct path to the server's dist/index.js
+            const modulePath = path.join(
+              __dirname,
+              'node_modules',
+              packageArg,
+              'dist',
+              'index.js'
+            );
+            
+            if (fs.existsSync(modulePath)) {
+              // Use plain 'node' command from PATH, not Electron's process
+              command = 'node';
+              args = [modulePath];
+              console.log(`[MCP ${this.name}] Spawning system Node.js: node ${modulePath}`);
+            } else {
+              // Fallback: try .bin wrapper
+              const serverName = packageArg.replace('@modelcontextprotocol/', 'mcp-');
+              const binPath = path.join(__dirname, 'node_modules', '.bin', `${serverName}.cmd`);
+              
+              if (fs.existsSync(binPath)) {
+                command = binPath;
+                args = args.filter(arg => arg !== '-y' && arg !== packageArg);
+                console.log(`[MCP ${this.name}] Using local .bin wrapper: ${binPath}`);
+              } else {
+                // Last resort: npx.cmd
+                command = 'npx.cmd';
+                console.log(`[MCP ${this.name}] Module not found, using npx.cmd`);
+              }
+            }
+          } else {
+            command = 'npx.cmd';
+          }
+        }
+        
+        this.process = spawn(command, args, {
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env },
-          shell: true  // Use shell to handle path resolution
+          env: cleanEnv,
+          shell: false,
+          detached: false  // Keep process attached
         });
 
-        this.process.stdout?.on('data', (data) => {
-          this.handleData(data.toString());
-        });
+        // Prevent stdin from auto-closing
+        if (this.process.stdin) {
+          this.process.stdin.on('error', (err) => {
+            console.error(`[MCP ${this.name}] stdin error:`, err);
+          });
+        }
 
-        this.process.stderr?.on('data', (data) => {
-          console.error(`[MCP ${this.name}] stderr:`, data.toString());
-        });
+        // Set encoding and ensure stdout is readable
+        if (this.process.stdout) {
+          this.process.stdout.setEncoding('utf8');
+          this.process.stdout.on('data', (data) => {
+            console.log(`[MCP ${this.name}] 📥 STDOUT DATA RECEIVED (${data.length} chars):`, data.substring(0, 200));
+            console.log(`[MCP ${this.name}] 📥 Hex dump:`, Buffer.from(data).toString('hex').substring(0, 200));
+            this.handleData(data.toString());
+          });
+          this.process.stdout.on('readable', () => {
+            console.log(`[MCP ${this.name}] stdout is readable`);
+          });
+          this.process.stdout.on('end', () => {
+            console.log(`[MCP ${this.name}] stdout ended`);
+          });
+        }
+
+        if (this.process.stderr) {
+          this.process.stderr.setEncoding('utf8');
+          this.process.stderr.on('data', (data) => {
+            console.error(`[MCP ${this.name}] stderr:`, data.toString());
+          });
+        }
 
         this.process.on('error', (err) => {
           console.error(`[MCP ${this.name}] process error:`, err);
@@ -677,10 +752,14 @@ class MCPClient {
           reject(new Error(`Failed to start MCP server: ${err.message}`));
         });
 
-        this.process.on('close', (code) => {
-          console.log(`[MCP ${this.name}] process closed with code:`, code);
+        this.process.on('exit', (code, signal) => {
+          console.log(`[MCP ${this.name}] process exited with code: ${code}, signal: ${signal}`);
+        });
+
+        this.process.on('close', (code, signal) => {
+          console.log(`[MCP ${this.name}] process closed with code: ${code}, signal: ${signal}`);
           if (this.status === 'connecting') {
-            reject(new Error(`MCP server exited during connection (code ${code})`));
+            reject(new Error(`MCP server exited during connection (code ${code}, signal ${signal})`));
           }
           this.status = 'disconnected';
         });
@@ -711,26 +790,74 @@ class MCPClient {
 
   private handleData(data: string) {
     this.buffer += data;
-    
-    // Process complete JSON-RPC messages (newline-delimited)
-    const lines = this.buffer.split('\n');
-    this.buffer = lines.pop() || '';
+    console.log(`[MCP ${this.name}] Received data (${data.length} bytes):`, data.substring(0, 200));
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const message: MCPMessage = JSON.parse(line);
-        if (message.id !== undefined && this.pendingRequests.has(message.id)) {
-          const { resolve, reject } = this.pendingRequests.get(message.id)!;
-          this.pendingRequests.delete(message.id);
-          if (message.error) {
-            reject(new Error(message.error.message || 'MCP error'));
-          } else {
-            resolve(message.result);
+    // Try to process messages - handle both Content-Length framing and line-delimited JSON
+    while (true) {
+      // First, try Content-Length framing
+      const headerEndIndex = this.buffer.indexOf('\r\n\r\n');
+      if (headerEndIndex !== -1) {
+        const header = this.buffer.substring(0, headerEndIndex);
+        const contentLengthMatch = header.match(/Content-Length:\s*(\d+)/i);
+
+        if (contentLengthMatch) {
+          const contentLength = parseInt(contentLengthMatch[1], 10);
+          const bodyStart = headerEndIndex + 4; // Skip \r\n\r\n
+          const bodyEnd = bodyStart + contentLength;
+
+          // Check if we have the full message body
+          if (this.buffer.length < bodyEnd) {
+            // Not enough data yet, wait for more
+            break;
+          }
+
+          // Extract and parse the message body
+          const body = this.buffer.substring(bodyStart, bodyEnd);
+          this.buffer = this.buffer.substring(bodyEnd);
+
+          try {
+            const message: MCPMessage = JSON.parse(body);
+            this.handleMessage(message);
+          } catch (e) {
+            console.error(`[MCP ${this.name}] Failed to parse Content-Length message:`, body, e);
+          }
+          continue;
+        }
+      }
+
+      // If no Content-Length framing, try line-delimited JSON
+      const newlineIndex = this.buffer.indexOf('\n');
+      if (newlineIndex !== -1) {
+        const line = this.buffer.substring(0, newlineIndex).trim();
+        this.buffer = this.buffer.substring(newlineIndex + 1);
+
+        // Skip empty lines and non-JSON lines (like the "Secure MCP Filesystem Server" message)
+        if (line && line.startsWith('{')) {
+          try {
+            const message: MCPMessage = JSON.parse(line);
+            this.handleMessage(message);
+          } catch (e) {
+            console.error(`[MCP ${this.name}] Failed to parse line-delimited JSON:`, line, e);
           }
         }
-      } catch (e) {
-        console.error(`[MCP ${this.name}] Failed to parse message:`, line, e);
+        continue;
+      }
+
+      // No complete message yet, wait for more data
+      break;
+    }
+  }
+
+  private handleMessage(message: MCPMessage) {
+    console.log(`[MCP ${this.name}] Received:`, message.id !== undefined ? `response #${message.id}` : (message.method || 'notification'));
+
+    if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+      const { resolve, reject} = this.pendingRequests.get(message.id)!;
+      this.pendingRequests.delete(message.id);
+      if (message.error) {
+        reject(new Error(message.error.message || 'MCP error'));
+      } else {
+        resolve(message.result);
       }
     }
   }
@@ -751,7 +878,28 @@ class MCPClient {
       };
 
       this.pendingRequests.set(id, { resolve, reject });
-      this.process.stdin.write(JSON.stringify(message) + '\n');
+
+      // Use line-delimited JSON (NOT Content-Length framing)
+      const body = JSON.stringify(message);
+      const lineDelimitedMessage = body + '\n';
+      
+      // Debug logging
+      console.log(`[MCP ${this.name}] Sending request:`, method);
+      console.log(`[MCP ${this.name}] Message:`, lineDelimitedMessage.trim());
+      console.log(`[MCP ${this.name}] stdin.writable:`, this.process.stdin.writable);
+      
+      const written = this.process.stdin.write(lineDelimitedMessage, 'utf8', (err) => {
+        if (err) {
+          console.error(`[MCP ${this.name}] Error writing to stdin:`, err);
+          reject(new Error(`Failed to write to MCP server: ${err.message}`));
+        } else {
+          console.log(`[MCP ${this.name}] ✅ Write completed and flushed successfully`);
+        }
+      });
+      
+      console.log(`[MCP ${this.name}] write() returned:`, written);
+      
+      // Keep stdin open for bidirectional communication
 
       // Timeout after 30 seconds
       setTimeout(() => {
@@ -763,6 +911,29 @@ class MCPClient {
     });
   }
 
+  // Send a notification (no id, no response expected)
+  private notify(method: string, params?: any): void {
+    if (!this.process?.stdin) {
+      console.error(`[MCP ${this.name}] Cannot send notification: process not connected`);
+      return;
+    }
+
+    const message: any = {
+      jsonrpc: '2.0',
+      method
+    };
+    if (params !== undefined) {
+      message.params = params;
+    }
+
+    // Use Content-Length framing for MCP protocol
+    const body = JSON.stringify(message);
+    const contentLength = Buffer.byteLength(body, 'utf8');
+    const framedMessage = `Content-Length: ${contentLength}\r\n\r\n${body}`;
+    console.log(`[MCP ${this.name}] Sending notification:`, method, `(${contentLength} bytes)`);
+    this.process.stdin.write(framedMessage);
+  }
+
   private async initialize(): Promise<void> {
     await this.send('initialize', {
       protocolVersion: '2024-11-05',
@@ -772,7 +943,8 @@ class MCPClient {
         version: '0.1.0'
       }
     });
-    await this.send('notifications/initialized');
+    // notifications/initialized is a notification, not a request (no id, no response)
+    this.notify('notifications/initialized');
   }
 
   private async loadTools(): Promise<void> {

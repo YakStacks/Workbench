@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type {} from 'react/jsx-runtime';
 
-const TABS = ['Chat', 'Tools', 'Files', 'Chains', 'MCP', 'Settings'] as const;
+const TABS = ['Chat', 'Tools', 'Files', 'Chains', 'Settings'] as const;
 type Tab = typeof TABS[number];
 
 type Tool = { 

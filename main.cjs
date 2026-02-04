@@ -658,29 +658,115 @@ var MCPClient = /** @class */ (function () {
     }
     MCPClient.prototype.connect = function () {
         return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                // Wrap connection in timeout
+                return [2 /*return*/, Promise.race([
+                        this._doConnect(),
+                        new Promise(function (_, reject) {
+                            return setTimeout(function () { return reject(new Error('Connection timeout after 30 seconds')); }, 30000);
+                        })
+                    ])];
+            });
+        });
+    };
+    MCPClient.prototype._doConnect = function () {
+        return __awaiter(this, void 0, void 0, function () {
             var _this = this;
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve, reject) {
-                        var _a, _b;
                         _this.status = 'connecting';
                         try {
-                            _this.process = (0, child_process_1.spawn)(_this.command, _this.args, {
+                            console.log("[MCP ".concat(_this.name, "] Spawning process: ").concat(_this.command, " ").concat(_this.args.join(' ')));
+                            // Create environment for clean Node.js execution
+                            var cleanEnv = __assign({}, process.env);
+                            delete cleanEnv.NODE_CHANNEL_FD; // Remove Electron IPC channel
+                            // Add ELECTRON_RUN_AS_NODE to make spawned process behave like plain Node
+                            cleanEnv.ELECTRON_RUN_AS_NODE = '1';
+                            // Ensure unbuffered stdio
+                            cleanEnv.NODE_NO_READLINE = '1';
+                            cleanEnv.PYTHONUNBUFFERED = '1';
+                            // On Windows, use process.execPath (Electron as Node) or explicit node command
+                            var isWindows = process.platform === 'win32';
+                            var command = _this.command;
+                            var args = _this.args;
+                            if (isWindows && _this.command === 'npx') {
+                                // Extract package name and resolve to actual JS entry point
+                                var packageArg_1 = args.find(function (arg) { return arg.startsWith('@modelcontextprotocol/'); });
+                                if (packageArg_1) {
+                                    // Build the direct path to the server's dist/index.js
+                                    var modulePath = path_1.default.join(__dirname, 'node_modules', packageArg_1, 'dist', 'index.js');
+                                    if (fs_1.default.existsSync(modulePath)) {
+                                        // Use plain 'node' command from PATH, not Electron's process
+                                        command = 'node';
+                                        args = [modulePath];
+                                        console.log("[MCP ".concat(_this.name, "] Spawning system Node.js: node ").concat(modulePath));
+                                    }
+                                    else {
+                                        // Fallback: try .bin wrapper
+                                        var serverName = packageArg_1.replace('@modelcontextprotocol/', 'mcp-');
+                                        var binPath = path_1.default.join(__dirname, 'node_modules', '.bin', "".concat(serverName, ".cmd"));
+                                        if (fs_1.default.existsSync(binPath)) {
+                                            command = binPath;
+                                            args = args.filter(function (arg) { return arg !== '-y' && arg !== packageArg_1; });
+                                            console.log("[MCP ".concat(_this.name, "] Using local .bin wrapper: ").concat(binPath));
+                                        }
+                                        else {
+                                            // Last resort: npx.cmd
+                                            command = 'npx.cmd';
+                                            console.log("[MCP ".concat(_this.name, "] Module not found, using npx.cmd"));
+                                        }
+                                    }
+                                }
+                                else {
+                                    command = 'npx.cmd';
+                                }
+                            }
+                            _this.process = (0, child_process_1.spawn)(command, args, {
                                 stdio: ['pipe', 'pipe', 'pipe'],
-                                env: __assign({}, process.env)
+                                env: cleanEnv,
+                                shell: false,
+                                detached: false // Keep process attached
                             });
-                            (_a = _this.process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) {
-                                _this.handleData(data.toString());
-                            });
-                            (_b = _this.process.stderr) === null || _b === void 0 ? void 0 : _b.on('data', function (data) {
-                                console.error("[MCP ".concat(_this.name, "] stderr:"), data.toString());
-                            });
+                            // Prevent stdin from auto-closing
+                            if (_this.process.stdin) {
+                                _this.process.stdin.on('error', function (err) {
+                                    console.error("[MCP ".concat(_this.name, "] stdin error:"), err);
+                                });
+                            }
+                            // Set encoding and ensure stdout is readable
+                            if (_this.process.stdout) {
+                                _this.process.stdout.setEncoding('utf8');
+                                _this.process.stdout.on('data', function (data) {
+                                    console.log("[MCP ".concat(_this.name, "] \uD83D\uDCE5 STDOUT DATA RECEIVED (").concat(data.length, " chars):"), data.substring(0, 200));
+                                    console.log("[MCP ".concat(_this.name, "] \uD83D\uDCE5 Hex dump:"), Buffer.from(data).toString('hex').substring(0, 200));
+                                    _this.handleData(data.toString());
+                                });
+                                _this.process.stdout.on('readable', function () {
+                                    console.log("[MCP ".concat(_this.name, "] stdout is readable"));
+                                });
+                                _this.process.stdout.on('end', function () {
+                                    console.log("[MCP ".concat(_this.name, "] stdout ended"));
+                                });
+                            }
+                            if (_this.process.stderr) {
+                                _this.process.stderr.setEncoding('utf8');
+                                _this.process.stderr.on('data', function (data) {
+                                    console.error("[MCP ".concat(_this.name, "] stderr:"), data.toString());
+                                });
+                            }
                             _this.process.on('error', function (err) {
                                 console.error("[MCP ".concat(_this.name, "] process error:"), err);
                                 _this.status = 'error';
-                                reject(err);
+                                reject(new Error("Failed to start MCP server: ".concat(err.message)));
                             });
-                            _this.process.on('close', function (code) {
-                                console.log("[MCP ".concat(_this.name, "] process closed with code:"), code);
+                            _this.process.on('exit', function (code, signal) {
+                                console.log("[MCP ".concat(_this.name, "] process exited with code: ").concat(code, ", signal: ").concat(signal));
+                            });
+                            _this.process.on('close', function (code, signal) {
+                                console.log("[MCP ".concat(_this.name, "] process closed with code: ").concat(code, ", signal: ").concat(signal));
+                                if (_this.status === 'connecting') {
+                                    reject(new Error("MCP server exited during connection (code ".concat(code, ", signal ").concat(signal, ")")));
+                                }
                                 _this.status = 'disconnected';
                             });
                             // Initialize the connection
@@ -690,19 +776,23 @@ var MCPClient = /** @class */ (function () {
                                     switch (_a.label) {
                                         case 0:
                                             _a.trys.push([0, 3, , 4]);
+                                            console.log("[MCP ".concat(this.name, "] Initializing..."));
                                             return [4 /*yield*/, this.initialize()];
                                         case 1:
                                             _a.sent();
+                                            console.log("[MCP ".concat(this.name, "] Loading tools..."));
                                             return [4 /*yield*/, this.loadTools()];
                                         case 2:
                                             _a.sent();
+                                            console.log("[MCP ".concat(this.name, "] Connected successfully with ").concat(this.tools.length, " tools"));
                                             this.status = 'connected';
                                             resolve();
                                             return [3 /*break*/, 4];
                                         case 3:
                                             e_1 = _a.sent();
+                                            console.error("[MCP ".concat(this.name, "] Initialization failed:"), e_1.message);
                                             this.status = 'error';
-                                            reject(e_1);
+                                            reject(new Error("Initialization failed: ".concat(e_1.message)));
                                             return [3 /*break*/, 4];
                                         case 4: return [2 /*return*/];
                                     }
@@ -711,7 +801,7 @@ var MCPClient = /** @class */ (function () {
                         }
                         catch (e) {
                             _this.status = 'error';
-                            reject(e);
+                            reject(new Error("Connection setup failed: ".concat(e.message)));
                         }
                     })];
             });
@@ -719,28 +809,67 @@ var MCPClient = /** @class */ (function () {
     };
     MCPClient.prototype.handleData = function (data) {
         this.buffer += data;
-        // Process complete JSON-RPC messages (newline-delimited)
-        var lines = this.buffer.split('\n');
-        this.buffer = lines.pop() || '';
-        for (var _i = 0, lines_1 = lines; _i < lines_1.length; _i++) {
-            var line = lines_1[_i];
-            if (!line.trim())
-                continue;
-            try {
-                var message = JSON.parse(line);
-                if (message.id !== undefined && this.pendingRequests.has(message.id)) {
-                    var _a = this.pendingRequests.get(message.id), resolve = _a.resolve, reject = _a.reject;
-                    this.pendingRequests.delete(message.id);
-                    if (message.error) {
-                        reject(new Error(message.error.message || 'MCP error'));
+        console.log("[MCP ".concat(this.name, "] Received data (").concat(data.length, " bytes):"), data.substring(0, 200));
+        // Try to process messages - handle both Content-Length framing and line-delimited JSON
+        while (true) {
+            // First, try Content-Length framing
+            var headerEndIndex = this.buffer.indexOf('\r\n\r\n');
+            if (headerEndIndex !== -1) {
+                var header = this.buffer.substring(0, headerEndIndex);
+                var contentLengthMatch = header.match(/Content-Length:\s*(\d+)/i);
+                if (contentLengthMatch) {
+                    var contentLength = parseInt(contentLengthMatch[1], 10);
+                    var bodyStart = headerEndIndex + 4; // Skip \r\n\r\n
+                    var bodyEnd = bodyStart + contentLength;
+                    // Check if we have the full message body
+                    if (this.buffer.length < bodyEnd) {
+                        // Not enough data yet, wait for more
+                        break;
                     }
-                    else {
-                        resolve(message.result);
+                    // Extract and parse the message body
+                    var body = this.buffer.substring(bodyStart, bodyEnd);
+                    this.buffer = this.buffer.substring(bodyEnd);
+                    try {
+                        var message = JSON.parse(body);
+                        this.handleMessage(message);
                     }
+                    catch (e) {
+                        console.error("[MCP ".concat(this.name, "] Failed to parse Content-Length message:"), body, e);
+                    }
+                    continue;
                 }
             }
-            catch (e) {
-                console.error("[MCP ".concat(this.name, "] Failed to parse message:"), line, e);
+            // If no Content-Length framing, try line-delimited JSON
+            var newlineIndex = this.buffer.indexOf('\n');
+            if (newlineIndex !== -1) {
+                var line = this.buffer.substring(0, newlineIndex).trim();
+                this.buffer = this.buffer.substring(newlineIndex + 1);
+                // Skip empty lines and non-JSON lines (like the "Secure MCP Filesystem Server" message)
+                if (line && line.startsWith('{')) {
+                    try {
+                        var message = JSON.parse(line);
+                        this.handleMessage(message);
+                    }
+                    catch (e) {
+                        console.error("[MCP ".concat(this.name, "] Failed to parse line-delimited JSON:"), line, e);
+                    }
+                }
+                continue;
+            }
+            // No complete message yet, wait for more data
+            break;
+        }
+    };
+    MCPClient.prototype.handleMessage = function (message) {
+        console.log("[MCP ".concat(this.name, "] Received:"), message.id !== undefined ? "response #".concat(message.id) : (message.method || 'notification'));
+        if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+            var _a = this.pendingRequests.get(message.id), resolve = _a.resolve, reject = _a.reject;
+            this.pendingRequests.delete(message.id);
+            if (message.error) {
+                reject(new Error(message.error.message || 'MCP error'));
+            }
+            else {
+                resolve(message.result);
             }
         }
     };
@@ -760,7 +889,24 @@ var MCPClient = /** @class */ (function () {
                 params: params
             };
             _this.pendingRequests.set(id, { resolve: resolve, reject: reject });
-            _this.process.stdin.write(JSON.stringify(message) + '\n');
+            // Use line-delimited JSON (NOT Content-Length framing)
+            var body = JSON.stringify(message);
+            var lineDelimitedMessage = body + '\n';
+            // Debug logging
+            console.log("[MCP ".concat(_this.name, "] Sending request:"), method);
+            console.log("[MCP ".concat(_this.name, "] Message:"), lineDelimitedMessage.trim());
+            console.log("[MCP ".concat(_this.name, "] stdin.writable:"), _this.process.stdin.writable);
+            var written = _this.process.stdin.write(lineDelimitedMessage, 'utf8', function (err) {
+                if (err) {
+                    console.error("[MCP ".concat(_this.name, "] Error writing to stdin:"), err);
+                    reject(new Error("Failed to write to MCP server: ".concat(err.message)));
+                }
+                else {
+                    console.log("[MCP ".concat(_this.name, "] \u2705 Write completed and flushed successfully"));
+                }
+            });
+            console.log("[MCP ".concat(_this.name, "] write() returned:"), written);
+            // Keep stdin open for bidirectional communication
             // Timeout after 30 seconds
             setTimeout(function () {
                 if (_this.pendingRequests.has(id)) {
@@ -769,6 +915,27 @@ var MCPClient = /** @class */ (function () {
                 }
             }, 30000);
         });
+    };
+    // Send a notification (no id, no response expected)
+    MCPClient.prototype.notify = function (method, params) {
+        var _a;
+        if (!((_a = this.process) === null || _a === void 0 ? void 0 : _a.stdin)) {
+            console.error("[MCP ".concat(this.name, "] Cannot send notification: process not connected"));
+            return;
+        }
+        var message = {
+            jsonrpc: '2.0',
+            method: method
+        };
+        if (params !== undefined) {
+            message.params = params;
+        }
+        // Use Content-Length framing for MCP protocol
+        var body = JSON.stringify(message);
+        var contentLength = Buffer.byteLength(body, 'utf8');
+        var framedMessage = "Content-Length: ".concat(contentLength, "\r\n\r\n").concat(body);
+        console.log("[MCP ".concat(this.name, "] Sending notification:"), method, "(".concat(contentLength, " bytes)"));
+        this.process.stdin.write(framedMessage);
     };
     MCPClient.prototype.initialize = function () {
         return __awaiter(this, void 0, void 0, function () {
@@ -779,14 +946,13 @@ var MCPClient = /** @class */ (function () {
                             capabilities: {},
                             clientInfo: {
                                 name: 'Workbench',
-                                version: '0.2.0'
+                                version: '0.1.0'
                             }
                         })];
                     case 1:
                         _a.sent();
-                        return [4 /*yield*/, this.send('notifications/initialized')];
-                    case 2:
-                        _a.sent();
+                        // notifications/initialized is a notification, not a request (no id, no response)
+                        this.notify('notifications/initialized');
                         return [2 /*return*/];
                 }
             });
@@ -968,17 +1134,50 @@ electron_1.ipcMain.handle('tools:refresh', function () {
     }); });
 });
 electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, rawOutput;
+    var tool, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, error_1;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
-                return [4 /*yield*/, tool.run(input)];
+                TOOL_TIMEOUT = 30000;
+                MAX_OUTPUT_SIZE = 500000;
+                timeoutPromise = new Promise(function (_, reject) {
+                    setTimeout(function () { return reject(new Error('Tool execution timeout (30s limit)')); }, TOOL_TIMEOUT);
+                });
+                _a.label = 1;
             case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, Promise.race([
+                        tool.run(input),
+                        timeoutPromise
+                    ])];
+            case 2:
                 rawOutput = _a.sent();
-                return [2 /*return*/, normalizeToolOutput(rawOutput)];
+                normalized = normalizeToolOutput(rawOutput);
+                // Safety: Truncate large outputs
+                if (typeof normalized.content === 'string' && normalized.content.length > MAX_OUTPUT_SIZE) {
+                    normalized.content = normalized.content.substring(0, MAX_OUTPUT_SIZE) +
+                        "\n\n[Output truncated - exceeded ".concat(MAX_OUTPUT_SIZE, " character limit]");
+                    normalized.metadata = __assign(__assign({}, normalized.metadata), { truncated: true, originalSize: normalized.content.length });
+                }
+                return [2 /*return*/, normalized];
+            case 3:
+                error_1 = _a.sent();
+                // Friendly error handling
+                return [2 /*return*/, normalizeToolOutput({
+                        content: error_1.message.includes('timeout')
+                            ? 'Tool execution timed out. Please try again or simplify your request.'
+                            : "Tool error: ".concat(error_1.message),
+                        error: error_1.message,
+                        metadata: {
+                            tool: name,
+                            input: input,
+                            timestamp: new Date().toISOString()
+                        }
+                    })];
+            case 4: return [2 /*return*/];
         }
     });
 }); });
@@ -1176,8 +1375,8 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 res.data.on('data', function (chunk) {
                     var _a, _b, _c;
                     var lines = chunk.toString().split('\n').filter(function (line) { return line.trim().startsWith('data:'); });
-                    for (var _i = 0, lines_2 = lines; _i < lines_2.length; _i++) {
-                        var line = lines_2[_i];
+                    for (var _i = 0, lines_1 = lines; _i < lines_1.length; _i++) {
+                        var line = lines_1[_i];
                         var data = line.replace('data:', '').trim();
                         if (data === '[DONE]') {
                             // Track costs
@@ -1259,37 +1458,102 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
 }); });
 // Tool chaining
 electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(void 0, void 0, void 0, function () {
-    var results, context, i, step, tool, resolvedInput, result;
+    var results, context, executionLog, i, step, tool, errorMsg, resolvedInput, result, normalized, error_2;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 results = [];
                 context = {};
+                executionLog = [];
                 i = 0;
                 _a.label = 1;
             case 1:
-                if (!(i < steps.length)) return [3 /*break*/, 4];
+                if (!(i < steps.length)) return [3 /*break*/, 6];
                 step = steps[i];
                 tool = tools.get(step.tool);
-                if (!tool)
-                    throw new Error("Tool not found: ".concat(step.tool));
+                if (!tool) {
+                    errorMsg = "Tool not found: ".concat(step.tool);
+                    executionLog.push({
+                        step: i + 1,
+                        tool: step.tool,
+                        status: 'failed',
+                        error: errorMsg
+                    });
+                    return [2 /*return*/, {
+                            success: false,
+                            failedAt: i + 1,
+                            error: errorMsg,
+                            results: results,
+                            context: context,
+                            executionLog: executionLog
+                        }];
+                }
+                _a.label = 2;
+            case 2:
+                _a.trys.push([2, 4, , 5]);
                 resolvedInput = interpolateContext(step.input, context);
                 console.log("[chain:run] Step ".concat(i + 1, ": ").concat(step.tool));
                 return [4 /*yield*/, tool.run(resolvedInput)];
-            case 2:
+            case 3:
                 result = _a.sent();
-                results.push({ tool: step.tool, result: result });
+                normalized = normalizeToolOutput(result);
+                // Check if tool returned an error
+                if (normalized.error) {
+                    executionLog.push({
+                        step: i + 1,
+                        tool: step.tool,
+                        status: 'failed',
+                        error: normalized.error,
+                        output: normalized
+                    });
+                    return [2 /*return*/, {
+                            success: false,
+                            failedAt: i + 1,
+                            error: "Tool \"".concat(step.tool, "\" failed: ").concat(normalized.error),
+                            results: results,
+                            context: context,
+                            executionLog: executionLog
+                        }];
+                }
+                results.push({ tool: step.tool, result: normalized });
+                executionLog.push({
+                    step: i + 1,
+                    tool: step.tool,
+                    status: 'success',
+                    output: normalized
+                });
                 // Store result in context for next steps
                 if (step.outputKey) {
-                    context[step.outputKey] = result;
+                    context[step.outputKey] = normalized;
                 }
-                context["step".concat(i)] = result;
-                context.lastResult = result;
-                _a.label = 3;
-            case 3:
+                context["step".concat(i)] = normalized;
+                context.lastResult = normalized;
+                return [3 /*break*/, 5];
+            case 4:
+                error_2 = _a.sent();
+                executionLog.push({
+                    step: i + 1,
+                    tool: step.tool,
+                    status: 'failed',
+                    error: error_2.message
+                });
+                return [2 /*return*/, {
+                        success: false,
+                        failedAt: i + 1,
+                        error: "Step ".concat(i + 1, " (").concat(step.tool, ") threw exception: ").concat(error_2.message),
+                        results: results,
+                        context: context,
+                        executionLog: executionLog
+                    }];
+            case 5:
                 i++;
                 return [3 /*break*/, 1];
-            case 4: return [2 /*return*/, { results: results, context: context }];
+            case 6: return [2 /*return*/, {
+                    success: true,
+                    results: results,
+                    context: context,
+                    executionLog: executionLog
+                }];
         }
     });
 }); });
@@ -1331,6 +1595,7 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
+                console.log('[mcp:add] Adding server:', config);
                 servers = store.get('mcpServers') || [];
                 servers.push(config);
                 store.set('mcpServers', servers);
@@ -1339,9 +1604,11 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
+                console.log('[mcp:add] Connecting to server...');
                 return [4 /*yield*/, client.connect()];
             case 2:
                 _a.sent();
+                console.log('[mcp:add] Connected! Tools:', client.tools.length);
                 client.tools.forEach(function (tool) {
                     var toolName = "mcp.".concat(config.name, ".").concat(tool.name);
                     tools.set(toolName, {
@@ -1356,7 +1623,10 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
                 e_5 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_5.message }];
+                console.error('[mcp:add] Connection failed:', e_5.message);
+                client.disconnect(); // Clean up failed connection
+                mcpClients.delete(config.name); // Remove from map
+                return [2 /*return*/, { success: false, error: e_5.message || 'Connection failed' }];
             case 4: return [2 /*return*/];
         }
     });

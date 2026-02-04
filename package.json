@@ -11,6 +11,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && npm run build:electron && electron .\"",
+    "dev:mcp-debug": "npm run build:electron && electron .",
     "build": "vite build && npm run build:electron",
     "build:electron": "tsc main.ts preload.ts --outDir . --esModuleInterop --module commonjs --skipLibCheck && node -e \"require('fs').renameSync('main.js','main.cjs');require('fs').renameSync('preload.js','preload.cjs')\"",
     "start": "electron .",
@@ -18,6 +19,8 @@
     "package:all": "npm run build && electron-builder -mwl"
   },
   "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "@modelcontextprotocol/server-memory": "^2026.1.26",
     "axios": "^1.13.4",
     "electron-store": "^8.1.0",
     "node-fetch": "^3.3.2",
