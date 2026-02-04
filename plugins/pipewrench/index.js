@@ -2,23 +2,14 @@
  * PipeWrench Plugin for Workbench
  * 
  * Diagnose MCP server connection issues from within Workbench.
- * This wraps the standalone PipeWrench tool as a Workbench plugin.
- * 
- * Usage in chat:
- *   "Run MCP diagnostics on the memory server"
- *   "Why isn't my filesystem MCP server connecting?"
- * 
- * Usage in Tools tab:
- *   Tool: debug.mcpDoctor
- *   Input: { "target": "mcp-stdio:npx -y @modelcontextprotocol/server-memory" }
+ * Inlines the PipeWrench core logic to run diagnostics directly.
  */
 
-const { spawn } = require('child_process');
 const path = require('path');
 
 module.exports.register = (api) => {
   
-  // Main diagnostic tool
+  // Doctor Tool
   api.registerTool({
     name: 'debug.mcpDoctor',
     description: 'Diagnose MCP server connection issues. Returns detailed diagnostic report with pass/warn/fail status for each check.',
@@ -27,237 +18,171 @@ module.exports.register = (api) => {
       properties: {
         target: { 
           type: 'string', 
-          description: 'Target to diagnose. Examples: "mcp-stdio:npx -y @modelcontextprotocol/server-memory", "mcp-stdio:npx -y @modelcontextprotocol/server-filesystem C:\\Projects", "mcp-http:http://localhost:3000/mcp"'
+          description: 'Target to diagnose. Examples: "mcp-stdio:npx -y @modelcontextprotocol/server-memory"'
         },
-        timeout: {
-          type: 'number',
-          description: 'Timeout in milliseconds (default: 15000)'
-        },
-        verbose: {
-          type: 'boolean',
-          description: 'Include detailed evidence for all checks, not just failures'
-        }
+        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 15000)' },
+        verbose: { type: 'boolean', description: 'Include detailed evidence' }
       },
       required: ['target']
     },
     run: async (input) => {
-      const timeout = input.timeout || 15000;
-      const verbose = input.verbose || false;
-      
       try {
-        const result = await runPipeWrench('doctor', input.target, { timeout, verbose, json: true });
+        // Dynamic import of ESM modules
+        const { parseTarget, TargetType } = await import('./lib/types.js');
+        const { runDiagnostics, calculateScore } = await import('./lib/engine.js');
+        const { formatTerminal } = await import('./lib/reporter.js');
         
-        // Parse JSON output
-        const report = JSON.parse(result.stdout);
+        const target = parseTarget(input.target);
+        const timeout = input.timeout || 15000;
+        const verbose = input.verbose || false;
         
-        // Format for readability
+        let probe, rules;
+        
+        // Select probe and rules based on target type
+        switch (target.type) {
+          case 'http':
+          case 'https':
+            probe = await import('./probes/http.js');
+            const httpRules = await import('./rules/http.js');
+            rules = httpRules.allRules;
+            break;
+            
+          case 'cmd':
+          case 'stdio':
+            probe = await import('./probes/command.js');
+            const cmdRules = await import('./rules/command.js');
+            rules = cmdRules.allRules;
+            break;
+            
+          case 'mcp-http':
+          case 'mcp-stdio':
+            probe = await import('./probes/mcp.js');
+            const mcpRules = await import('./rules/mcp.js');
+            rules = mcpRules.allRules;
+            break;
+            
+          default:
+            return {
+              content: `Error: Target type '${target.type}' not supported`,
+              metadata: { error: true }
+            };
+        }
+        
+        // Run diagnostics
+        const report = await runDiagnostics(target, probe, rules, { timeout, verbose });
+        
+        // Format output using the reporter logic, but adapted for markdown
         const summary = formatDiagnosticSummary(report);
         
         return {
           content: summary,
           metadata: {
-            exitCode: result.exitCode,
-            passed: report.summary?.passed || 0,
-            warned: report.summary?.warned || 0,
-            failed: report.summary?.failed || 0,
-            score: report.score || 0,
-            target: input.target
+            exitCode: report.getExitCode(),
+            passed: report.summary.passed,
+            warned: report.summary.warned,
+            failed: report.summary.failed,
+            score: calculateScore(report),
+            target: input.target,
+            rawReport: report
           }
         };
-      } catch (err) {
-        return {
-          content: `Diagnostic failed: ${err.message}`,
-          error: err.message
+      } catch (e) {
+        return { 
+          content: `Diagnostic error: ${e.message}`, 
+          metadata: { error: true, message: e.message } 
         };
       }
     }
   });
-  
-  // Trace tool for detailed I/O capture
+
+  // Trace Tool
   api.registerTool({
     name: 'debug.mcpTrace',
-    description: 'Capture detailed I/O trace from an MCP server. Shows raw protocol messages, timings, and framing details.',
+    description: 'Capture detailed I/O trace from an MCP server.',
     inputSchema: {
       type: 'object',
       properties: {
-        target: { 
-          type: 'string', 
-          description: 'Target to trace. Examples: "mcp-stdio:npx -y @modelcontextprotocol/server-memory"'
-        },
-        timeout: {
-          type: 'number',
-          description: 'Timeout in milliseconds (default: 15000)'
-        }
+        target: { type: 'string', description: 'Target to trace' },
+        timeout: { type: 'number', description: 'Timeout in milliseconds' }
       },
       required: ['target']
     },
     run: async (input) => {
-      const timeout = input.timeout || 15000;
-      
       try {
-        const result = await runPipeWrench('trace', input.target, { timeout, json: true });
+        const { parseTarget } = await import('./lib/types.js');
+        const target = parseTarget(input.target);
+        const timeout = input.timeout || 15000;
         
-        // Parse JSON output
-        const trace = JSON.parse(result.stdout);
+        let probe;
+        switch (target.type) {
+          case 'http': case 'https': probe = await import('./probes/http.js'); break;
+          case 'cmd': case 'stdio': probe = await import('./probes/command.js'); break;
+          case 'mcp-http': case 'mcp-stdio': probe = await import('./probes/mcp.js'); break;
+          default: throw new Error(`Unsupported target type: ${target.type}`);
+        }
         
-        // Format trace for readability
-        const summary = formatTraceSummary(trace);
+        const result = await probe.run(target, { timeout });
+        
+        // Format trace summary
+        const summary = formatTraceSummary(result);
         
         return {
           content: summary,
-          metadata: {
-            exitCode: result.exitCode,
-            duration: trace.timings?.duration,
-            framing: trace.mcp?.framing,
-            initialized: trace.mcp?.initialized,
-            toolCount: trace.mcp?.tools?.length || 0
-          }
+          metadata: result
         };
-      } catch (err) {
-        return {
-          content: `Trace failed: ${err.message}`,
-          error: err.message
-        };
+      } catch (e) {
+        return { content: `Trace error: ${e.message}`, metadata: { error: true } };
       }
     }
   });
   
-  // Quick test tool - simplified interface
+  // Test Tool (Simplified)
   api.registerTool({
     name: 'debug.mcpTest',
-    description: 'Quick test if an MCP server can connect. Returns simple pass/fail with basic info.',
+    description: 'Quick test if an MCP server can connect.',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { 
-          type: 'string', 
-          description: 'Command to run the MCP server (e.g., "npx")'
-        },
-        args: {
-          type: 'string',
-          description: 'Arguments for the command (e.g., "-y @modelcontextprotocol/server-memory")'
-        }
+        command: { type: 'string' },
+        args: { type: 'string' }
       },
       required: ['command']
     },
     run: async (input) => {
       const args = input.args || '';
-      const target = `mcp-stdio:${input.command} ${args}`.trim();
+      const targetStr = `mcp-stdio:${input.command} ${args}`.trim();
       
       try {
-        const result = await runPipeWrench('doctor', target, { timeout: 15000, json: true });
-        const report = JSON.parse(result.stdout);
+        // Reuse doctor logic
+        const { parseTarget } = await import('./lib/types.js');
+        const { runDiagnostics } = await import('./lib/engine.js');
+        const probe = await import('./probes/mcp.js');
+        const rulesMod = await import('./rules/mcp.js');
         
-        const passed = report.summary?.failed === 0;
-        const tools = report.rules?.find(r => r.id === 'mcp-tools-available')?.evidence || [];
+        const target = parseTarget(targetStr);
+        const report = await runDiagnostics(target, probe, rulesMod.allRules, { timeout: 15000 });
+        
+        const passed = report.summary.failed === 0;
         
         if (passed) {
-          return {
-            content: `✅ MCP server connected successfully!\n\nFraming: ${report.rules?.find(r => r.id === 'mcp-framing-detected')?.evidence?.[0] || 'unknown'}\nTools: ${tools.length > 0 ? tools.join(', ') : 'none detected'}`,
-            metadata: { success: true, toolCount: tools.length }
-          };
+           return {
+             content: `✅ MCP server connected successfully!`,
+             metadata: { success: true }
+           };
         } else {
-          const failures = report.rules?.filter(r => r.status === 'fail') || [];
-          const failureList = failures.map(f => `• ${f.title}: ${f.evidence?.[0] || 'unknown'}`).join('\n');
-          
-          return {
-            content: `❌ MCP server connection failed\n\nIssues:\n${failureList}\n\nRun debug.mcpDoctor for detailed diagnostics.`,
-            metadata: { success: false, failures: failures.length }
-          };
+           const failures = report.rules.filter(r => r.status === 'fail');
+           return {
+             content: `❌ Connection failed:\n${failures.map(f => `• ${f.title}: ${f.evidence[0]}`).join('\n')}`,
+             metadata: { success: false, failures: failures.length }
+           };
         }
-      } catch (err) {
-        return {
-          content: `❌ Test failed: ${err.message}`,
-          error: err.message
-        };
-      }
-    }
-  });
-};
-
-/**
- * Run PipeWrench CLI and capture output
- */
-async function runPipeWrench(command, target, options = {}) {
-  return new Promise((resolve, reject) => {
-    const args = [command];
-    
-    if (target) args.push(target);
-    if (options.json) args.push('--json');
-    if (options.verbose) args.push('--verbose');
-    if (options.timeout) args.push('--timeout', String(options.timeout));
-    
-    // Find PipeWrench - check multiple locations
-    const possiblePaths = [
-      path.join(__dirname, '..', '..', 'pipewrench', 'cli.js'),  // Adjacent to plugins folder
-      path.join(__dirname, '..', 'pipewrench', 'cli.js'),        // Inside plugins folder
-      path.join(process.cwd(), 'pipewrench', 'cli.js'),          // Workbench root
-    ];
-    
-    let pipewrenchPath = null;
-    for (const p of possiblePaths) {
-      try {
-        require.resolve(p);
-        pipewrenchPath = p;
-        break;
       } catch (e) {
-        // Try next path
+        return { content: `Test error: ${e.message}`, metadata: { error: true } };
       }
     }
-    
-    if (!pipewrenchPath) {
-      // Fall back to assuming it's in PATH or node_modules
-      pipewrenchPath = 'pipewrench';
-    }
-    
-    const isWindows = process.platform === 'win32';
-    let spawnCmd, spawnArgs;
-    
-    if (pipewrenchPath.endsWith('.js')) {
-      spawnCmd = 'node';
-      spawnArgs = [pipewrenchPath, ...args];
-    } else {
-      spawnCmd = isWindows ? 'pipewrench.cmd' : 'pipewrench';
-      spawnArgs = args;
-    }
-    
-    const proc = spawn(spawnCmd, spawnArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: isWindows,
-      windowsHide: true,
-      timeout: (options.timeout || 15000) + 5000  // Extra buffer for CLI overhead
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    proc.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    
-    proc.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to run PipeWrench: ${err.message}`));
-    });
-    
-    proc.on('close', (code) => {
-      resolve({
-        exitCode: code,
-        stdout: stdout.trim(),
-        stderr: stderr.trim()
-      });
-    });
-    
-    // Timeout fallback
-    setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch (e) {}
-      reject(new Error('PipeWrench execution timeout'));
-    }, (options.timeout || 15000) + 10000);
   });
-}
+
+};
 
 /**
  * Format diagnostic report for chat display
@@ -275,11 +200,6 @@ function formatDiagnosticSummary(report) {
     lines.push(`**Status:** ⚠️ Passed with ${warned} warning(s)\n`);
   } else {
     lines.push(`**Status:** ✅ All checks passed\n`);
-  }
-  
-  // Health score
-  if (report.score !== undefined) {
-    lines.push(`**Health Score:** ${report.score}%\n`);
   }
   
   // Individual checks
