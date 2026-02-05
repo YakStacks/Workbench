@@ -19,10 +19,12 @@ import axios from "axios";
 import { DoctorEngine, DoctorReport } from "./doctor";
 import { PermissionManager, ToolPermissions, PermissionCategory, PermissionAction } from "./permissions";
 import { RunManager } from "./run-manager";
+import { ProcessRegistry } from "./process-registry";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
 const runManager = new RunManager(store);
+const processRegistry = new ProcessRegistry();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -188,6 +190,50 @@ app.on("window-all-closed", () => {
     }
   });
   if (process.platform !== "darwin") app.quit();
+});
+
+// Cleanup processes before quit
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    console.log('[app] Starting cleanup before quit...');
+    event.preventDefault();
+    isQuitting = true;
+    
+    // Kill all child processes
+    await processRegistry.gracefulShutdown(5000);
+    
+    // Disconnect MCP clients
+    mcpClients.forEach(client => {
+      try {
+        client.disconnect();
+      } catch (error) {
+        console.error('[app] Error disconnecting MCP client:', error);
+      }
+    });
+    
+    console.log('[app] Cleanup complete, quitting...');
+    app.quit();
+  }
+});
+
+// Cleanup processes before quit
+app.on('before-quit', async () => {
+  console.log('[app] Starting cleanup before quit...');
+  isQuitting = true;
+  
+  // Kill all child processes
+  await processRegistry.gracefulShutdown(5000);
+  
+  // Disconnect MCP clients
+  mcpClients.forEach(client => {
+    try {
+      client.disconnect();
+    } catch (error) {
+      console.error('[app] Error disconnecting MCP client:', error);
+    }
+  });
+  
+  console.log('[app] Cleanup complete');
 });
 
 // ============================================================================
@@ -2583,17 +2629,12 @@ ipcMain.handle("runs:kill", (_e, runId: string) => {
   const run = runManager.getRun(runId);
   if (!run) return { success: false, error: 'Run not found' };
   
-  // Kill the process if it has one
-  if (run.processId) {
-    try {
-      process.kill(run.processId, 'SIGTERM');
-    } catch (error: any) {
-      console.error('[runs:kill] Error killing process:', error);
-    }
-  }
+  // Kill all processes associated with this run
+  const killed = processRegistry.killRun(runId);
+  console.log(`[runs:kill] Killed ${killed} processes for run ${runId}`);
   
   runManager.killRun(runId);
-  return { success: true };
+  return { success: true, processesKilled: killed };
 });
 
 // Clear run history

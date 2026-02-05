@@ -78,9 +78,11 @@ var axios_1 = __importDefault(require("axios"));
 var doctor_1 = require("./doctor.cjs");
 var permissions_1 = require("./permissions.cjs");
 var run_manager_1 = require("./run-manager.cjs");
+var process_registry_1 = require("./process-registry.cjs");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
+var processRegistry = new process_registry_1.ProcessRegistry();
 var mainWindow = null;
 var tray = null;
 var plugins = [];
@@ -207,6 +209,62 @@ electron_1.app.on("window-all-closed", function () {
     if (process.platform !== "darwin")
         electron_1.app.quit();
 });
+// Cleanup processes before quit
+electron_1.app.on('before-quit', function (event) { return __awaiter(void 0, void 0, void 0, function () {
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                if (!!isQuitting) return [3 /*break*/, 2];
+                console.log('[app] Starting cleanup before quit...');
+                event.preventDefault();
+                isQuitting = true;
+                // Kill all child processes
+                return [4 /*yield*/, processRegistry.gracefulShutdown(5000)];
+            case 1:
+                // Kill all child processes
+                _a.sent();
+                // Disconnect MCP clients
+                mcpClients.forEach(function (client) {
+                    try {
+                        client.disconnect();
+                    }
+                    catch (error) {
+                        console.error('[app] Error disconnecting MCP client:', error);
+                    }
+                });
+                console.log('[app] Cleanup complete, quitting...');
+                electron_1.app.quit();
+                _a.label = 2;
+            case 2: return [2 /*return*/];
+        }
+    });
+}); });
+// Cleanup processes before quit
+electron_1.app.on('before-quit', function () { return __awaiter(void 0, void 0, void 0, function () {
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                console.log('[app] Starting cleanup before quit...');
+                isQuitting = true;
+                // Kill all child processes
+                return [4 /*yield*/, processRegistry.gracefulShutdown(5000)];
+            case 1:
+                // Kill all child processes
+                _a.sent();
+                // Disconnect MCP clients
+                mcpClients.forEach(function (client) {
+                    try {
+                        client.disconnect();
+                    }
+                    catch (error) {
+                        console.error('[app] Error disconnecting MCP client:', error);
+                    }
+                });
+                console.log('[app] Cleanup complete');
+                return [2 /*return*/];
+        }
+    });
+}); });
 // ============================================================================
 // PLUGIN SYSTEM
 // ============================================================================
@@ -2394,17 +2452,11 @@ electron_1.ipcMain.handle("runs:kill", function (_e, runId) {
     var run = runManager.getRun(runId);
     if (!run)
         return { success: false, error: 'Run not found' };
-    // Kill the process if it has one
-    if (run.processId) {
-        try {
-            process.kill(run.processId, 'SIGTERM');
-        }
-        catch (error) {
-            console.error('[runs:kill] Error killing process:', error);
-        }
-    }
+    // Kill all processes associated with this run
+    var killed = processRegistry.killRun(runId);
+    console.log("[runs:kill] Killed ".concat(killed, " processes for run ").concat(runId));
     runManager.killRun(runId);
-    return { success: true };
+    return { success: true, processesKilled: killed };
 });
 // Clear run history
 electron_1.ipcMain.handle("runs:clearHistory", function () {
