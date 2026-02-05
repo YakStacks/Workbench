@@ -18,9 +18,11 @@ import Store from "electron-store";
 import axios from "axios";
 import { DoctorEngine, DoctorReport } from "./doctor";
 import { PermissionManager, ToolPermissions, PermissionCategory, PermissionAction } from "./permissions";
+import { RunManager } from "./run-manager";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
+const runManager = new RunManager(store);
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -100,6 +102,9 @@ function createWindow() {
       contextIsolation: true,
     },
   });
+  
+  // Set window for RunManager
+  runManager.setWindow(mainWindow);
   // Always load from dist folder - use `npm run dev` for hot reload
   mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
 
@@ -1573,6 +1578,9 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 
+  // Create run tracking
+  const runId = runManager.createRun(name, input, 'user');
+
   // PERMISSION CHECK
   // Check all potential actions. For now, check based on tool categories declared
   // We check if the tool *requires* any permissions
@@ -1591,14 +1599,19 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
           if (!check.allowed) {
             if (check.needsPrompt) {
                // Special error that frontend can parse to show prompt
+               runManager.failRun(runId, 'Permission required');
                throw new Error(`PERMISSION_REQUIRED:${name}`);
             }
+            runManager.failRun(runId, `Permission denied for ${cat}:${action}`);
             throw new Error(`Permission denied for ${cat}:${action}`);
           }
         }
       }
     }
   }
+
+  // Start the run
+  runManager.startRun(runId);
 
   // Safety: Tool timeout (30 seconds)
   const TOOL_TIMEOUT = 30000;
@@ -1631,8 +1644,21 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
       };
     }
 
+    // Complete the run
+    const snippet = typeof normalized.content === 'string' 
+      ? normalized.content.slice(0, 200) 
+      : JSON.stringify(normalized.content).slice(0, 200);
+    runManager.completeRun(runId, normalized, snippet);
+
     return normalized;
   } catch (error: any) {
+    // Mark run as failed or timed out
+    if (error.message.includes("timeout")) {
+      runManager.timeoutRun(runId);
+    } else {
+      runManager.failRun(runId, error.message);
+    }
+
     // Friendly error handling
     return normalizeToolOutput({
       content: error.message.includes("timeout")
@@ -2521,4 +2547,79 @@ ipcMain.handle("chat:clear", () => {
     console.error('[chat:clear] Error:', error);
     return { success: false, error: error.message };
   }
+});
+
+// ============================================================================
+// RUN MANAGER - EXECUTION TRACKING
+// ============================================================================
+
+// Get active runs
+ipcMain.handle("runs:getActive", () => {
+  return runManager.getActiveRuns();
+});
+
+// Get run history
+ipcMain.handle("runs:getHistory", (_e, limit?: number) => {
+  return runManager.getHistory(limit);
+});
+
+// Get all runs
+ipcMain.handle("runs:getAll", () => {
+  return runManager.getAllRuns();
+});
+
+// Get specific run
+ipcMain.handle("runs:get", (_e, runId: string) => {
+  return runManager.getRun(runId);
+});
+
+// Get run statistics
+ipcMain.handle("runs:getStats", () => {
+  return runManager.getStats();
+});
+
+// Kill a run
+ipcMain.handle("runs:kill", (_e, runId: string) => {
+  const run = runManager.getRun(runId);
+  if (!run) return { success: false, error: 'Run not found' };
+  
+  // Kill the process if it has one
+  if (run.processId) {
+    try {
+      process.kill(run.processId, 'SIGTERM');
+    } catch (error: any) {
+      console.error('[runs:kill] Error killing process:', error);
+    }
+  }
+  
+  runManager.killRun(runId);
+  return { success: true };
+});
+
+// Clear run history
+ipcMain.handle("runs:clearHistory", () => {
+  runManager.clearHistory();
+  return { success: true };
+});
+
+// Clear all runs
+ipcMain.handle("runs:clearAll", () => {
+  runManager.clearAll();
+  return { success: true };
+});
+
+// Get interrupted runs (for crash recovery)
+ipcMain.handle("runs:getInterrupted", () => {
+  return runManager.getInterruptedRuns();
+});
+
+// Clear interrupted runs
+ipcMain.handle("runs:clearInterrupted", () => {
+  runManager.clearInterruptedRuns();
+  return { success: true };
+});
+
+// Check if there are interrupted runs
+ipcMain.handle("runs:hasInterrupted", () => {
+  return runManager.hasInterruptedRuns();
 });

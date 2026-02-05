@@ -111,4 +111,30 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         load: function () { return electron_1.ipcRenderer.invoke('chat:load'); },
         clear: function () { return electron_1.ipcRenderer.invoke('chat:clear'); },
     },
+    // Run manager - Execution tracking
+    runs: {
+        getActive: function () { return electron_1.ipcRenderer.invoke('runs:getActive'); },
+        getHistory: function (limit) { return electron_1.ipcRenderer.invoke('runs:getHistory', limit); },
+        getAll: function () { return electron_1.ipcRenderer.invoke('runs:getAll'); },
+        get: function (runId) { return electron_1.ipcRenderer.invoke('runs:get', runId); },
+        getStats: function () { return electron_1.ipcRenderer.invoke('runs:getStats'); },
+        kill: function (runId) { return electron_1.ipcRenderer.invoke('runs:kill', runId); },
+        clearHistory: function () { return electron_1.ipcRenderer.invoke('runs:clearHistory'); },
+        clearAll: function () { return electron_1.ipcRenderer.invoke('runs:clearAll'); },
+        getInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:getInterrupted'); },
+        clearInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:clearInterrupted'); },
+        hasInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:hasInterrupted'); },
+        // Listen to run updates
+        onUpdate: function (callback) {
+            var handler = function (_e, run) { return callback(run); };
+            electron_1.ipcRenderer.on('run:update', handler);
+            return function () { return electron_1.ipcRenderer.removeListener('run:update', handler); };
+        },
+        // Listen to stats updates
+        onStatsUpdate: function (callback) {
+            var handler = function (_e, stats) { return callback(stats); };
+            electron_1.ipcRenderer.on('run:stats', handler);
+            return function () { return electron_1.ipcRenderer.removeListener('run:stats', handler); };
+        },
+    },
 });

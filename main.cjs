@@ -77,8 +77,10 @@ var electron_store_1 = __importDefault(require("electron-store"));
 var axios_1 = __importDefault(require("axios"));
 var doctor_1 = require("./doctor.cjs");
 var permissions_1 = require("./permissions.cjs");
+var run_manager_1 = require("./run-manager.cjs");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
+var runManager = new run_manager_1.RunManager(store);
 var mainWindow = null;
 var tray = null;
 var plugins = [];
@@ -129,6 +131,8 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
         } }));
+    // Set window for RunManager
+    runManager.setWindow(mainWindow);
     // Always load from dist folder - use `npm run dev` for hot reload
     mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
     // Minimize to tray instead of closing
@@ -1486,13 +1490,14 @@ electron_1.ipcMain.handle("tools:refresh", function () {
     }); });
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, permissions, categories, _i, categories_1, cat, actions, _a, actions_1, action, check, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, error_1;
+    var tool, runId, permissions, categories, _i, categories_1, cat, actions, _a, actions_1, action, check, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1;
     return __generator(this, function (_b) {
         switch (_b.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                runId = runManager.createRun(name, input, 'user');
                 permissions = permissionManager.getToolPermissions(name);
                 if (permissions) {
                     categories = ['filesystem', 'network', 'process'];
@@ -1506,14 +1511,18 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                                 if (!check.allowed) {
                                     if (check.needsPrompt) {
                                         // Special error that frontend can parse to show prompt
+                                        runManager.failRun(runId, 'Permission required');
                                         throw new Error("PERMISSION_REQUIRED:".concat(name));
                                     }
+                                    runManager.failRun(runId, "Permission denied for ".concat(cat, ":").concat(action));
                                     throw new Error("Permission denied for ".concat(cat, ":").concat(action));
                                 }
                             }
                         }
                     }
                 }
+                // Start the run
+                runManager.startRun(runId);
                 TOOL_TIMEOUT = 30000;
                 MAX_OUTPUT_SIZE = 500000;
                 timeoutPromise = new Promise(function (_, reject) {
@@ -1534,9 +1543,20 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                             "\n\n[Output truncated - exceeded ".concat(MAX_OUTPUT_SIZE, " character limit]");
                     normalized.metadata = __assign(__assign({}, normalized.metadata), { truncated: true, originalSize: normalized.content.length });
                 }
+                snippet = typeof normalized.content === 'string'
+                    ? normalized.content.slice(0, 200)
+                    : JSON.stringify(normalized.content).slice(0, 200);
+                runManager.completeRun(runId, normalized, snippet);
                 return [2 /*return*/, normalized];
             case 3:
                 error_1 = _b.sent();
+                // Mark run as failed or timed out
+                if (error_1.message.includes("timeout")) {
+                    runManager.timeoutRun(runId);
+                }
+                else {
+                    runManager.failRun(runId, error_1.message);
+                }
                 // Friendly error handling
                 return [2 /*return*/, normalizeToolOutput({
                         content: error_1.message.includes("timeout")
@@ -2345,4 +2365,67 @@ electron_1.ipcMain.handle("chat:clear", function () {
         console.error('[chat:clear] Error:', error);
         return { success: false, error: error.message };
     }
+});
+// ============================================================================
+// RUN MANAGER - EXECUTION TRACKING
+// ============================================================================
+// Get active runs
+electron_1.ipcMain.handle("runs:getActive", function () {
+    return runManager.getActiveRuns();
+});
+// Get run history
+electron_1.ipcMain.handle("runs:getHistory", function (_e, limit) {
+    return runManager.getHistory(limit);
+});
+// Get all runs
+electron_1.ipcMain.handle("runs:getAll", function () {
+    return runManager.getAllRuns();
+});
+// Get specific run
+electron_1.ipcMain.handle("runs:get", function (_e, runId) {
+    return runManager.getRun(runId);
+});
+// Get run statistics
+electron_1.ipcMain.handle("runs:getStats", function () {
+    return runManager.getStats();
+});
+// Kill a run
+electron_1.ipcMain.handle("runs:kill", function (_e, runId) {
+    var run = runManager.getRun(runId);
+    if (!run)
+        return { success: false, error: 'Run not found' };
+    // Kill the process if it has one
+    if (run.processId) {
+        try {
+            process.kill(run.processId, 'SIGTERM');
+        }
+        catch (error) {
+            console.error('[runs:kill] Error killing process:', error);
+        }
+    }
+    runManager.killRun(runId);
+    return { success: true };
+});
+// Clear run history
+electron_1.ipcMain.handle("runs:clearHistory", function () {
+    runManager.clearHistory();
+    return { success: true };
+});
+// Clear all runs
+electron_1.ipcMain.handle("runs:clearAll", function () {
+    runManager.clearAll();
+    return { success: true };
+});
+// Get interrupted runs (for crash recovery)
+electron_1.ipcMain.handle("runs:getInterrupted", function () {
+    return runManager.getInterruptedRuns();
+});
+// Clear interrupted runs
+electron_1.ipcMain.handle("runs:clearInterrupted", function () {
+    runManager.clearInterruptedRuns();
+    return { success: true };
+});
+// Check if there are interrupted runs
+electron_1.ipcMain.handle("runs:hasInterrupted", function () {
+    return runManager.hasInterruptedRuns();
 });

@@ -110,4 +110,31 @@ contextBridge.exposeInMainWorld('workbench', {
     load: () => ipcRenderer.invoke('chat:load'),
     clear: () => ipcRenderer.invoke('chat:clear'),
   },
+
+  // Run manager - Execution tracking
+  runs: {
+    getActive: () => ipcRenderer.invoke('runs:getActive'),
+    getHistory: (limit?: number) => ipcRenderer.invoke('runs:getHistory', limit),
+    getAll: () => ipcRenderer.invoke('runs:getAll'),
+    get: (runId: string) => ipcRenderer.invoke('runs:get', runId),
+    getStats: () => ipcRenderer.invoke('runs:getStats'),
+    kill: (runId: string) => ipcRenderer.invoke('runs:kill', runId),
+    clearHistory: () => ipcRenderer.invoke('runs:clearHistory'),
+    clearAll: () => ipcRenderer.invoke('runs:clearAll'),
+    getInterrupted: () => ipcRenderer.invoke('runs:getInterrupted'),
+    clearInterrupted: () => ipcRenderer.invoke('runs:clearInterrupted'),
+    hasInterrupted: () => ipcRenderer.invoke('runs:hasInterrupted'),
+    // Listen to run updates
+    onUpdate: (callback: (run: any) => void) => {
+      const handler = (_e: any, run: any) => callback(run);
+      ipcRenderer.on('run:update', handler);
+      return () => ipcRenderer.removeListener('run:update', handler);
+    },
+    // Listen to stats updates
+    onStatsUpdate: (callback: (stats: any) => void) => {
+      const handler = (_e: any, stats: any) => callback(stats);
+      ipcRenderer.on('run:stats', handler);
+      return () => ipcRenderer.removeListener('run:stats', handler);
+    },
+  },
 });
