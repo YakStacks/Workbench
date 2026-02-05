@@ -143,6 +143,8 @@ export default function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [chainPresets, setChainPresets] = useState<ChainPreset[]>([]);
+  const [showCrashRecovery, setShowCrashRecovery] = useState(false);
+  const [interruptedRuns, setInterruptedRuns] = useState<any[]>([]);
   
   // Tool-in-chat state
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
@@ -154,6 +156,19 @@ export default function App() {
 
   useEffect(() => {
     window.workbench.listTools().then(setTools);
+    
+    // Check for crash recovery
+    window.workbench.runs.hasInterrupted().then((hasInterrupted: boolean) => {
+      if (hasInterrupted) {
+        window.workbench.runs.getInterrupted().then((runs: any[]) => {
+          if (runs && runs.length > 0) {
+            setInterruptedRuns(runs);
+            setShowCrashRecovery(true);
+          }
+        });
+      }
+    });
+    
     // Load chat history
     window.workbench.chat.load().then((result: any) => {
       if (result.success && result.history && result.history.length > 0) {
@@ -225,6 +240,17 @@ export default function App() {
           }}
           onDeny={() => setPermissionRequest(null)}
           onClose={() => setPermissionRequest(null)}
+        />
+      )}
+      
+      {showCrashRecovery && interruptedRuns.length > 0 && (
+        <CrashRecoveryModal 
+          runs={interruptedRuns}
+          onClose={() => {
+            window.workbench.runs.clearInterrupted();
+            setShowCrashRecovery(false);
+            setInterruptedRuns([]);
+          }}
         />
       )}
     </div>
@@ -1769,6 +1795,90 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
 
 // ============================================================================
 // PERMISSION PROMPT - Modal for permission requests
+// ============================================================================
+
+// ============================================================================
+// CRASH RECOVERY MODAL
+// ============================================================================
+
+function CrashRecoveryModal({ runs, onClose }: { runs: any[]; onClose: () => void }) {
+  return (
+    <div 
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0,0,0,0.8)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10000,
+      }}
+    >
+      <div style={{ ...styles.card, maxWidth: 600, minWidth: 400 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ margin: '0 0 8px 0', fontSize: 20, color: colors.warning }}>
+            ⚠️ Workbench Closed Unexpectedly
+          </h2>
+          <p style={{ margin: 0, fontSize: 14, color: colors.textMuted }}>
+            The following tools were running when Workbench closed:
+          </p>
+        </div>
+
+        <div style={{ 
+          maxHeight: 300, 
+          overflow: 'auto', 
+          background: colors.bgTertiary, 
+          padding: 12, 
+          borderRadius: 6,
+          marginBottom: 16,
+        }}>
+          {runs.map((run, idx) => (
+            <div 
+              key={run.runId} 
+              style={{ 
+                padding: 12, 
+                borderBottom: idx < runs.length - 1 ? `1px solid ${colors.border}` : 'none',
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+                🔧 {run.toolName}
+              </div>
+              <div style={{ fontSize: 12, color: colors.textMuted }}>
+                Started: {new Date(run.startTime).toLocaleString()}
+              </div>
+              {run.toolInput && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, fontFamily: 'monospace' }}>
+                  Input: {JSON.stringify(run.toolInput).slice(0, 100)}
+                  {JSON.stringify(run.toolInput).length > 100 && '...'}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
+          These runs have been marked as <span style={{ color: colors.danger, fontWeight: 600 }}>failed</span> due to the interruption. 
+          You can view them in the <strong>Running</strong> tab's history.
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button 
+            onClick={onClose}
+            style={{ ...styles.button, ...styles.buttonPrimary }}
+          >
+            Understood
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// PERMISSION TOOLS
 // ============================================================================
 
 interface PermissionAction {
