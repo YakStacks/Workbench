@@ -77,11 +77,11 @@ var isQuitting = false;
 // Normalize tool output to standard format
 function normalizeToolOutput(output) {
     // Already in correct format
-    if (output && typeof output === 'object' && 'content' in output) {
+    if (output && typeof output === "object" && "content" in output) {
         return output;
     }
     // Plain string
-    if (typeof output === 'string') {
+    if (typeof output === "string") {
         return { content: output };
     }
     // Error object
@@ -89,13 +89,13 @@ function normalizeToolOutput(output) {
         return {
             content: output.message || output.error,
             error: output.error,
-            metadata: output
+            metadata: output,
         };
     }
     // Any other object - serialize it
     return {
         content: JSON.stringify(output, null, 2),
-        metadata: output
+        metadata: output,
     };
 }
 var mcpServers = new Map();
@@ -103,29 +103,29 @@ function createWindow() {
     var iconPath;
     if (electron_1.app.isPackaged) {
         // For Windows, use .ico file
-        iconPath = path_1.default.join(process.resourcesPath, 'icon.ico');
+        iconPath = path_1.default.join(process.resourcesPath, "icon.ico");
     }
     else {
-        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'icon.ico');
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), "icon.ico");
     }
     // Fallback if icon not found
     if (!fs_1.default.existsSync(iconPath)) {
-        console.log('[createWindow] Icon not found at:', iconPath);
-        iconPath = '';
+        console.log("[createWindow] Icon not found at:", iconPath);
+        iconPath = "";
     }
     mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800 }, (iconPath && { icon: iconPath })), { webPreferences: {
-            preload: path_1.default.join(__dirname, 'preload.cjs'),
+            preload: path_1.default.join(__dirname, "preload.cjs"),
             nodeIntegration: false,
             contextIsolation: true,
         } }));
     if (electron_1.app.isPackaged) {
-        mainWindow.loadFile(path_1.default.join(__dirname, 'dist', 'index.html'));
+        mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
     }
     else {
-        mainWindow.loadURL('http://localhost:5173/');
+        mainWindow.loadURL("http://localhost:5173/");
     }
     // Minimize to tray instead of closing
-    mainWindow.on('close', function (event) {
+    mainWindow.on("close", function (event) {
         if (!isQuitting) {
             event.preventDefault();
             mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.hide();
@@ -136,45 +136,45 @@ function createTray() {
     var iconPath;
     if (electron_1.app.isPackaged) {
         // Use the same icon.ico that's embedded in the exe
-        iconPath = path_1.default.join(process.resourcesPath, 'icon.ico');
+        iconPath = path_1.default.join(process.resourcesPath, "icon.ico");
     }
     else {
-        iconPath = path_1.default.join(electron_1.app.getAppPath(), 'build', 'icon.png');
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), "build", "icon.png");
     }
-    console.log('[createTray] Looking for icon at:', iconPath);
+    console.log("[createTray] Looking for icon at:", iconPath);
     if (!fs_1.default.existsSync(iconPath)) {
-        console.log('[createTray] Icon not found, skipping tray');
+        console.log("[createTray] Icon not found, skipping tray");
         return; // Don't create tray if icon missing
     }
     // Create native image from icon
     var icon = electron_1.nativeImage.createFromPath(iconPath);
     if (icon.isEmpty()) {
-        console.log('[createTray] Icon is empty, skipping tray');
+        console.log("[createTray] Icon is empty, skipping tray");
         return;
     }
-    console.log('[createTray] Icon size:', icon.getSize());
+    console.log("[createTray] Icon size:", icon.getSize());
     tray = new electron_1.Tray(icon.resize({ width: 16, height: 16 }));
     var contextMenu = electron_1.Menu.buildFromTemplate([
         {
-            label: 'Show Workbench',
+            label: "Show Workbench",
             click: function () {
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.show();
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
-            }
+            },
         },
-        { type: 'separator' },
+        { type: "separator" },
         {
-            label: 'Quit',
+            label: "Quit",
             click: function () {
                 isQuitting = true;
                 electron_1.app.quit();
-            }
-        }
+            },
+        },
     ]);
-    tray.setToolTip('Workbench');
+    tray.setToolTip("Workbench");
     tray.setContextMenu(contextMenu);
     // Double-click to show window
-    tray.on('double-click', function () {
+    tray.on("double-click", function () {
         mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.show();
         mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
     });
@@ -186,14 +186,14 @@ electron_1.app.whenReady().then(function () {
     registerBuiltinTools();
     loadMCPServers();
 });
-electron_1.app.on('window-all-closed', function () {
+electron_1.app.on("window-all-closed", function () {
     // Cleanup MCP servers
     mcpServers.forEach(function (server) {
         if (server.process) {
             server.process.kill();
         }
     });
-    if (process.platform !== 'darwin')
+    if (process.platform !== "darwin")
         electron_1.app.quit();
 });
 // ============================================================================
@@ -204,41 +204,46 @@ function loadPlugins() {
     // Keep builtin tools, clear plugin tools
     var builtinTools = new Map();
     tools.forEach(function (tool, name) {
-        if (name.startsWith('builtin.') || name.startsWith('mcp.')) {
+        if (name.startsWith("builtin.") || name.startsWith("mcp.")) {
             builtinTools.set(name, tool);
         }
     });
     tools = builtinTools;
-    var pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
-    console.log('[loadPlugins] Looking for plugins in:', pluginsDir);
-    if (!pluginsDir || typeof pluginsDir !== 'string' || !fs_1.default.existsSync(pluginsDir)) {
-        console.log('[loadPlugins] Plugins directory not found');
+    var pluginsDir = store.get("pluginsDir") || path_1.default.join(__dirname, "plugins");
+    console.log("[loadPlugins] Looking for plugins in:", pluginsDir);
+    if (!pluginsDir ||
+        typeof pluginsDir !== "string" ||
+        !fs_1.default.existsSync(pluginsDir)) {
+        console.log("[loadPlugins] Plugins directory not found");
         return;
     }
-    var folders = fs_1.default.readdirSync(pluginsDir, { withFileTypes: true })
+    var folders = fs_1.default
+        .readdirSync(pluginsDir, { withFileTypes: true })
         .filter(function (dirent) { return dirent.isDirectory(); })
         .map(function (dirent) { return dirent.name; });
-    console.log('[loadPlugins] Found folders:', folders);
+    console.log("[loadPlugins] Found folders:", folders);
     folders.forEach(function (folder) {
-        var pluginPath = path_1.default.join(pluginsDir, folder, 'index.js');
+        var pluginPath = path_1.default.join(pluginsDir, folder, "index.js");
         if (fs_1.default.existsSync(pluginPath)) {
             try {
                 // Clear require cache for hot reload
                 delete require.cache[require.resolve(pluginPath)];
                 var plugin = require(pluginPath);
-                if (plugin && typeof plugin.register === 'function') {
+                if (plugin && typeof plugin.register === "function") {
                     plugin.register({
                         registerTool: function (tool) {
                             // Store source folder for delete functionality
                             tool._sourceFolder = folder;
-                            console.log('[loadPlugins] Registered tool:', tool.name, 'from folder:', folder);
+                            console.log("[loadPlugins] Registered tool:", tool.name, "from folder:", folder);
                             tools.set(tool.name, tool);
                         },
+                        getPluginsDir: function () { return pluginsDir; },
+                        reloadPlugins: function () { return loadPlugins(); },
                     });
                 }
             }
             catch (e) {
-                console.error('[loadPlugins] Error loading plugin:', folder, e);
+                console.error("[loadPlugins] Error loading plugin:", folder, e);
             }
         }
     });
@@ -249,38 +254,48 @@ function loadPlugins() {
 function registerBuiltinTools() {
     var _this = this;
     // File System Tools
-    tools.set('builtin.readFile', {
-        name: 'builtin.readFile',
-        description: 'Read contents of a file',
+    tools.set("builtin.readFile", {
+        name: "builtin.readFile",
+        description: "Read contents of a file",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                path: { type: 'string', description: 'File path to read' },
-                encoding: { type: 'string', description: 'Encoding (default: utf-8)', default: 'utf-8' }
+                path: { type: "string", description: "File path to read" },
+                encoding: {
+                    type: "string",
+                    description: "Encoding (default: utf-8)",
+                    default: "utf-8",
+                },
             },
-            required: ['path']
+            required: ["path"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             var safePath, content;
             return __generator(this, function (_a) {
                 safePath = resolveSafePath(input.path);
                 assertPathSafe(safePath);
-                content = fs_1.default.readFileSync(safePath, { encoding: (input.encoding || 'utf-8') });
+                content = fs_1.default.readFileSync(safePath, {
+                    encoding: (input.encoding || "utf-8"),
+                });
                 return [2 /*return*/, { content: content, path: safePath, size: content.length }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.writeFile', {
-        name: 'builtin.writeFile',
-        description: 'Write contents to a file',
+    tools.set("builtin.writeFile", {
+        name: "builtin.writeFile",
+        description: "Write contents to a file",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                path: { type: 'string', description: 'File path to write' },
-                content: { type: 'string', description: 'Content to write' },
-                append: { type: 'boolean', description: 'Append instead of overwrite', default: false }
+                path: { type: "string", description: "File path to write" },
+                content: { type: "string", description: "Content to write" },
+                append: {
+                    type: "boolean",
+                    description: "Append instead of overwrite",
+                    default: false,
+                },
             },
-            required: ['path', 'content']
+            required: ["path", "content"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             var safePath, dir;
@@ -292,25 +307,33 @@ function registerBuiltinTools() {
                     fs_1.default.mkdirSync(dir, { recursive: true });
                 }
                 if (input.append) {
-                    fs_1.default.appendFileSync(safePath, input.content, 'utf-8');
+                    fs_1.default.appendFileSync(safePath, input.content, "utf-8");
                 }
                 else {
-                    fs_1.default.writeFileSync(safePath, input.content, 'utf-8');
+                    fs_1.default.writeFileSync(safePath, input.content, "utf-8");
                 }
-                return [2 /*return*/, { success: true, path: safePath, bytesWritten: input.content.length }];
+                return [2 /*return*/, {
+                        success: true,
+                        path: safePath,
+                        bytesWritten: input.content.length,
+                    }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.listDir', {
-        name: 'builtin.listDir',
-        description: 'List contents of a directory',
+    tools.set("builtin.listDir", {
+        name: "builtin.listDir",
+        description: "List contents of a directory",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                path: { type: 'string', description: 'Directory path' },
-                recursive: { type: 'boolean', description: 'List recursively', default: false }
+                path: { type: "string", description: "Directory path" },
+                recursive: {
+                    type: "boolean",
+                    description: "List recursively",
+                    default: false,
+                },
             },
-            required: ['path']
+            required: ["path"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             var safePath, entries;
@@ -320,17 +343,17 @@ function registerBuiltinTools() {
                 entries = listDirRecursive(safePath, input.recursive || false, 0, 3);
                 return [2 /*return*/, { path: safePath, entries: entries }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.fileExists', {
-        name: 'builtin.fileExists',
-        description: 'Check if a file or directory exists',
+    tools.set("builtin.fileExists", {
+        name: "builtin.fileExists",
+        description: "Check if a file or directory exists",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                path: { type: 'string', description: 'Path to check' }
+                path: { type: "string", description: "Path to check" },
             },
-            required: ['path']
+            required: ["path"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             var safePath, exists, isFile, isDir, stat;
@@ -345,175 +368,202 @@ function registerBuiltinTools() {
                 }
                 return [2 /*return*/, { exists: exists, isFile: isFile, isDirectory: isDir, path: safePath }];
             });
-        }); }
+        }); },
     });
     // Clipboard Tools
-    tools.set('builtin.clipboardRead', {
-        name: 'builtin.clipboardRead',
-        description: 'Read text from system clipboard',
-        inputSchema: { type: 'object', properties: {} },
+    tools.set("builtin.clipboardRead", {
+        name: "builtin.clipboardRead",
+        description: "Read text from system clipboard",
+        inputSchema: { type: "object", properties: {} },
         run: function () { return __awaiter(_this, void 0, void 0, function () {
             var text;
             return __generator(this, function (_a) {
                 text = electron_1.clipboard.readText();
                 return [2 /*return*/, { content: text, length: text.length }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.clipboardWrite', {
-        name: 'builtin.clipboardWrite',
-        description: 'Write text to system clipboard',
+    tools.set("builtin.clipboardWrite", {
+        name: "builtin.clipboardWrite",
+        description: "Write text to system clipboard",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                content: { type: 'string', description: 'Text to copy to clipboard' }
+                content: { type: "string", description: "Text to copy to clipboard" },
             },
-            required: ['content']
+            required: ["content"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 electron_1.clipboard.writeText(input.content);
                 return [2 /*return*/, { success: true, length: input.content.length }];
             });
-        }); }
+        }); },
     });
     // Shell Execution Tool
-    tools.set('builtin.shell', {
-        name: 'builtin.shell',
-        description: 'Execute a shell command',
+    tools.set("builtin.shell", {
+        name: "builtin.shell",
+        description: "Execute a shell command",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                command: { type: 'string', description: 'Command to execute' },
-                cwd: { type: 'string', description: 'Working directory' },
-                timeout: { type: 'number', description: 'Timeout in ms (default: 30000)', default: 30000 }
+                command: { type: "string", description: "Command to execute" },
+                cwd: { type: "string", description: "Working directory" },
+                timeout: {
+                    type: "number",
+                    description: "Timeout in ms (default: 30000)",
+                    default: 30000,
+                },
             },
-            required: ['command']
+            required: ["command"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve) {
                         var _a, _b;
                         var cwd = input.cwd ? resolveSafePath(input.cwd) : process.cwd();
-                        var isWindows = process.platform === 'win32';
-                        var shell = isWindows ? 'cmd.exe' : '/bin/sh';
-                        var shellArg = isWindows ? '/c' : '-c';
+                        var isWindows = process.platform === "win32";
+                        var shell = isWindows ? "cmd.exe" : "/bin/sh";
+                        var shellArg = isWindows ? "/c" : "-c";
                         var proc = (0, child_process_1.spawn)(shell, [shellArg, input.command], {
                             cwd: cwd,
                             timeout: input.timeout || 30000,
-                            env: process.env
+                            env: process.env,
                         });
-                        var stdout = '';
-                        var stderr = '';
-                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { stdout += data.toString(); });
-                        (_b = proc.stderr) === null || _b === void 0 ? void 0 : _b.on('data', function (data) { stderr += data.toString(); });
-                        proc.on('close', function (code) {
+                        var stdout = "";
+                        var stderr = "";
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on("data", function (data) {
+                            stdout += data.toString();
+                        });
+                        (_b = proc.stderr) === null || _b === void 0 ? void 0 : _b.on("data", function (data) {
+                            stderr += data.toString();
+                        });
+                        proc.on("close", function (code) {
                             resolve({ exitCode: code, stdout: stdout, stderr: stderr, command: input.command });
                         });
-                        proc.on('error', function (err) {
-                            resolve({ exitCode: -1, stdout: stdout, stderr: stderr, error: err.message, command: input.command });
+                        proc.on("error", function (err) {
+                            resolve({
+                                exitCode: -1,
+                                stdout: stdout,
+                                stderr: stderr,
+                                error: err.message,
+                                command: input.command,
+                            });
                         });
                     })];
             });
-        }); }
+        }); },
     });
-    console.log('[registerBuiltinTools] Registered builtin tools');
+    console.log("[registerBuiltinTools] Registered builtin tools");
     // System Info Tools
-    tools.set('builtin.systemInfo', {
-        name: 'builtin.systemInfo',
-        description: 'Get system information (OS, CPU, memory, etc.)',
-        inputSchema: { type: 'object', properties: {} },
+    tools.set("builtin.systemInfo", {
+        name: "builtin.systemInfo",
+        description: "Get system information (OS, CPU, memory, etc.)",
+        inputSchema: { type: "object", properties: {} },
         run: function () { return __awaiter(_this, void 0, void 0, function () {
             var os;
             return __generator(this, function (_a) {
-                os = require('os');
+                os = require("os");
                 return [2 /*return*/, {
                         platform: os.platform(),
                         release: os.release(),
                         arch: os.arch(),
                         hostname: os.hostname(),
                         uptime: os.uptime(),
-                        cpus: os.cpus().map(function (cpu) { return ({ model: cpu.model, speed: cpu.speed }); }),
+                        cpus: os
+                            .cpus()
+                            .map(function (cpu) { return ({ model: cpu.model, speed: cpu.speed }); }),
                         totalMemory: os.totalmem(),
                         freeMemory: os.freemem(),
                         usedMemory: os.totalmem() - os.freemem(),
-                        memoryUsagePercent: ((os.totalmem() - os.freemem()) / os.totalmem() * 100).toFixed(1),
+                        memoryUsagePercent: (((os.totalmem() - os.freemem()) / os.totalmem()) *
+                            100).toFixed(1),
                         homeDir: os.homedir(),
                         tempDir: os.tmpdir(),
                         userInfo: os.userInfo(),
                     }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.processes', {
-        name: 'builtin.processes',
-        description: 'List running processes',
+    tools.set("builtin.processes", {
+        name: "builtin.processes",
+        description: "List running processes",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                limit: { type: 'number', description: 'Max processes to return (default 20)', default: 20 }
-            }
+                limit: {
+                    type: "number",
+                    description: "Max processes to return (default 20)",
+                    default: 20,
+                },
+            },
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve) {
                         var _a;
                         var limit = input.limit || 20;
-                        var isWindows = process.platform === 'win32';
-                        var cmd = isWindows ? 'tasklist' : 'ps aux';
-                        var proc = (0, child_process_1.spawn)(isWindows ? 'cmd.exe' : '/bin/sh', [isWindows ? '/c' : '-c', cmd], {
-                            timeout: 10000
+                        var isWindows = process.platform === "win32";
+                        var cmd = isWindows ? "tasklist" : "ps aux";
+                        var proc = (0, child_process_1.spawn)(isWindows ? "cmd.exe" : "/bin/sh", [isWindows ? "/c" : "-c", cmd], {
+                            timeout: 10000,
                         });
-                        var output = '';
-                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
-                        proc.on('close', function () {
-                            var lines = output.trim().split('\n');
+                        var output = "";
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on("data", function (data) {
+                            output += data.toString();
+                        });
+                        proc.on("close", function () {
+                            var lines = output.trim().split("\n");
                             resolve({
                                 count: lines.length - 1,
                                 processes: lines.slice(1, limit + 1),
-                                raw: lines.slice(0, limit + 1).join('\n')
+                                raw: lines.slice(0, limit + 1).join("\n"),
                             });
                         });
-                        proc.on('error', function (err) {
+                        proc.on("error", function (err) {
                             resolve({ error: err.message });
                         });
                     })];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.diskSpace', {
-        name: 'builtin.diskSpace',
-        description: 'Check disk space usage',
-        inputSchema: { type: 'object', properties: {} },
+    tools.set("builtin.diskSpace", {
+        name: "builtin.diskSpace",
+        description: "Check disk space usage",
+        inputSchema: { type: "object", properties: {} },
         run: function () { return __awaiter(_this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve) {
                         var _a;
-                        var isWindows = process.platform === 'win32';
-                        var cmd = isWindows ? 'wmic logicaldisk get size,freespace,caption' : 'df -h';
-                        var proc = (0, child_process_1.spawn)(isWindows ? 'cmd.exe' : '/bin/sh', [isWindows ? '/c' : '-c', cmd], {
-                            timeout: 10000
+                        var isWindows = process.platform === "win32";
+                        var cmd = isWindows
+                            ? "wmic logicaldisk get size,freespace,caption"
+                            : "df -h";
+                        var proc = (0, child_process_1.spawn)(isWindows ? "cmd.exe" : "/bin/sh", [isWindows ? "/c" : "-c", cmd], {
+                            timeout: 10000,
                         });
-                        var output = '';
-                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
-                        proc.on('close', function () {
+                        var output = "";
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on("data", function (data) {
+                            output += data.toString();
+                        });
+                        proc.on("close", function () {
                             resolve({ raw: output.trim() });
                         });
-                        proc.on('error', function (err) {
+                        proc.on("error", function (err) {
                             resolve({ error: err.message });
                         });
                     })];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.networkInfo', {
-        name: 'builtin.networkInfo',
-        description: 'Get network interface information',
-        inputSchema: { type: 'object', properties: {} },
+    tools.set("builtin.networkInfo", {
+        name: "builtin.networkInfo",
+        description: "Get network interface information",
+        inputSchema: { type: "object", properties: {} },
         run: function () { return __awaiter(_this, void 0, void 0, function () {
             var os, interfaces, result, _i, _a, _b, name_1, addrs;
             return __generator(this, function (_c) {
-                os = require('os');
+                os = require("os");
                 interfaces = os.networkInterfaces();
                 result = {};
                 for (_i = 0, _a = Object.entries(interfaces); _i < _a.length; _i++) {
@@ -527,16 +577,19 @@ function registerBuiltinTools() {
                 }
                 return [2 /*return*/, result];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.envVars', {
-        name: 'builtin.envVars',
-        description: 'List environment variables (filtered for safety)',
+    tools.set("builtin.envVars", {
+        name: "builtin.envVars",
+        description: "List environment variables (filtered for safety)",
         inputSchema: {
-            type: 'object',
+            type: "object",
             properties: {
-                filter: { type: 'string', description: 'Filter by variable name (case-insensitive)' }
-            }
+                filter: {
+                    type: "string",
+                    description: "Filter by variable name (case-insensitive)",
+                },
+            },
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
             var env, safeKeys, result;
@@ -545,8 +598,11 @@ function registerBuiltinTools() {
                 safeKeys = Object.keys(env).filter(function (key) {
                     // Filter out sensitive-looking keys
                     var lower = key.toLowerCase();
-                    if (lower.includes('key') || lower.includes('secret') || lower.includes('password') ||
-                        lower.includes('token') || lower.includes('credential')) {
+                    if (lower.includes("key") ||
+                        lower.includes("secret") ||
+                        lower.includes("password") ||
+                        lower.includes("token") ||
+                        lower.includes("credential")) {
                         return false;
                     }
                     if (input.filter) {
@@ -556,40 +612,46 @@ function registerBuiltinTools() {
                 });
                 result = {};
                 safeKeys.forEach(function (key) {
-                    result[key] = env[key] || '';
+                    result[key] = env[key] || "";
                 });
                 return [2 /*return*/, { count: safeKeys.length, variables: result }];
             });
-        }); }
+        }); },
     });
-    tools.set('builtin.installedApps', {
-        name: 'builtin.installedApps',
-        description: 'List installed applications (Windows only)',
-        inputSchema: { type: 'object', properties: {} },
+    tools.set("builtin.installedApps", {
+        name: "builtin.installedApps",
+        description: "List installed applications (Windows only)",
+        inputSchema: { type: "object", properties: {} },
         run: function () { return __awaiter(_this, void 0, void 0, function () {
             return __generator(this, function (_a) {
-                if (process.platform !== 'win32') {
-                    return [2 /*return*/, { error: 'This tool only works on Windows' }];
+                if (process.platform !== "win32") {
+                    return [2 /*return*/, { error: "This tool only works on Windows" }];
                 }
                 return [2 /*return*/, new Promise(function (resolve) {
                         var _a;
-                        var cmd = 'wmic product get name,version';
-                        var proc = (0, child_process_1.spawn)('cmd.exe', ['/c', cmd], { timeout: 30000 });
-                        var output = '';
-                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) { output += data.toString(); });
-                        proc.on('close', function () {
-                            var lines = output.trim().split('\n').slice(1).filter(function (l) { return l.trim(); });
+                        var cmd = "wmic product get name,version";
+                        var proc = (0, child_process_1.spawn)("cmd.exe", ["/c", cmd], { timeout: 30000 });
+                        var output = "";
+                        (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on("data", function (data) {
+                            output += data.toString();
+                        });
+                        proc.on("close", function () {
+                            var lines = output
+                                .trim()
+                                .split("\n")
+                                .slice(1)
+                                .filter(function (l) { return l.trim(); });
                             resolve({
                                 count: lines.length,
-                                apps: lines.slice(0, 50).map(function (l) { return l.trim(); })
+                                apps: lines.slice(0, 50).map(function (l) { return l.trim(); }),
                             });
                         });
-                        proc.on('error', function (err) {
+                        proc.on("error", function (err) {
                             resolve({ error: err.message });
                         });
                     })];
             });
-        }); }
+        }); },
     });
 }
 function resolveSafePath(inputPath) {
@@ -597,15 +659,15 @@ function resolveSafePath(inputPath) {
     if (path_1.default.isAbsolute(inputPath)) {
         return inputPath;
     }
-    var workingDir = store.get('workingDir') || electron_1.app.getPath('home');
+    var workingDir = store.get("workingDir") || electron_1.app.getPath("home");
     return path_1.default.resolve(workingDir, inputPath);
 }
 function isPathSafe(targetPath) {
-    var safePaths = store.get('safePaths') || [];
-    var workingDir = store.get('workingDir');
+    var safePaths = store.get("safePaths") || [];
+    var workingDir = store.get("workingDir");
     // If no safe paths configured, allow workingDir and home
     if (safePaths.length === 0) {
-        var allowedRoots = [workingDir, electron_1.app.getPath('home')].filter(Boolean);
+        var allowedRoots = [workingDir, electron_1.app.getPath("home")].filter(Boolean);
         return allowedRoots.some(function (root) { return targetPath.startsWith(root); });
     }
     // Check if path is within any safe path
@@ -629,7 +691,7 @@ function listDirRecursive(dirPath, recursive, depth, maxDepth) {
             var entryPath = path_1.default.join(dirPath, entry.name);
             var result = {
                 name: entry.name,
-                type: entry.isDirectory() ? 'directory' : 'file',
+                type: entry.isDirectory() ? "directory" : "file",
             };
             if (entry.isFile()) {
                 result.size = fs_1.default.statSync(entryPath).size;
@@ -653,9 +715,9 @@ var MCPClient = /** @class */ (function () {
         this.process = null;
         this.messageId = 0;
         this.pendingRequests = new Map();
-        this.buffer = '';
+        this.buffer = "";
         this.tools = [];
-        this.status = 'disconnected';
+        this.status = "disconnected";
     }
     MCPClient.prototype.connect = function () {
         return __awaiter(this, void 0, void 0, function () {
@@ -664,8 +726,8 @@ var MCPClient = /** @class */ (function () {
                 return [2 /*return*/, Promise.race([
                         this._doConnect(),
                         new Promise(function (_, reject) {
-                            return setTimeout(function () { return reject(new Error('Connection timeout after 30 seconds')); }, 30000);
-                        })
+                            return setTimeout(function () { return reject(new Error("Connection timeout after 30 seconds")); }, 30000);
+                        }),
                     ])];
             });
         });
@@ -675,100 +737,102 @@ var MCPClient = /** @class */ (function () {
             var _this = this;
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve, reject) {
-                        _this.status = 'connecting';
+                        _this.status = "connecting";
                         try {
-                            console.log("[MCP ".concat(_this.name, "] Spawning process: ").concat(_this.command, " ").concat(_this.args.join(' ')));
+                            console.log("[MCP ".concat(_this.name, "] Spawning process: ").concat(_this.command, " ").concat(_this.args.join(" ")));
                             // Create environment for clean Node.js execution
                             var cleanEnv = __assign({}, process.env);
                             delete cleanEnv.NODE_CHANNEL_FD; // Remove Electron IPC channel
                             // Add ELECTRON_RUN_AS_NODE to make spawned process behave like plain Node
-                            cleanEnv.ELECTRON_RUN_AS_NODE = '1';
+                            cleanEnv.ELECTRON_RUN_AS_NODE = "1";
                             // Ensure unbuffered stdio
-                            cleanEnv.NODE_NO_READLINE = '1';
-                            cleanEnv.PYTHONUNBUFFERED = '1';
+                            cleanEnv.NODE_NO_READLINE = "1";
+                            cleanEnv.PYTHONUNBUFFERED = "1";
                             // On Windows, use process.execPath (Electron as Node) or explicit node command
-                            var isWindows = process.platform === 'win32';
+                            var isWindows = process.platform === "win32";
                             var command = _this.command;
                             var args = _this.args;
-                            if (isWindows && _this.command === 'npx') {
+                            if (isWindows && _this.command === "npx") {
                                 // Extract package name and resolve to actual JS entry point
-                                var packageArg_1 = args.find(function (arg) { return arg.startsWith('@modelcontextprotocol/'); });
+                                var packageArg_1 = args.find(function (arg) {
+                                    return arg.startsWith("@modelcontextprotocol/");
+                                });
                                 if (packageArg_1) {
                                     // Build the direct path to the server's dist/index.js
-                                    var modulePath = path_1.default.join(__dirname, 'node_modules', packageArg_1, 'dist', 'index.js');
+                                    var modulePath = path_1.default.join(__dirname, "node_modules", packageArg_1, "dist", "index.js");
                                     if (fs_1.default.existsSync(modulePath)) {
                                         // Use plain 'node' command from PATH, not Electron's process
-                                        command = 'node';
+                                        command = "node";
                                         args = [modulePath];
                                         console.log("[MCP ".concat(_this.name, "] Spawning system Node.js: node ").concat(modulePath));
                                     }
                                     else {
                                         // Fallback: try .bin wrapper
-                                        var serverName = packageArg_1.replace('@modelcontextprotocol/', 'mcp-');
-                                        var binPath = path_1.default.join(__dirname, 'node_modules', '.bin', "".concat(serverName, ".cmd"));
+                                        var serverName = packageArg_1.replace("@modelcontextprotocol/", "mcp-");
+                                        var binPath = path_1.default.join(__dirname, "node_modules", ".bin", "".concat(serverName, ".cmd"));
                                         if (fs_1.default.existsSync(binPath)) {
                                             command = binPath;
-                                            args = args.filter(function (arg) { return arg !== '-y' && arg !== packageArg_1; });
+                                            args = args.filter(function (arg) { return arg !== "-y" && arg !== packageArg_1; });
                                             console.log("[MCP ".concat(_this.name, "] Using local .bin wrapper: ").concat(binPath));
                                         }
                                         else {
                                             // Last resort: npx.cmd
-                                            command = 'npx.cmd';
+                                            command = "npx.cmd";
                                             console.log("[MCP ".concat(_this.name, "] Module not found, using npx.cmd"));
                                         }
                                     }
                                 }
                                 else {
-                                    command = 'npx.cmd';
+                                    command = "npx.cmd";
                                 }
                             }
                             _this.process = (0, child_process_1.spawn)(command, args, {
-                                stdio: ['pipe', 'pipe', 'pipe'],
+                                stdio: ["pipe", "pipe", "pipe"],
                                 env: cleanEnv,
                                 shell: false,
-                                detached: false // Keep process attached
+                                detached: false, // Keep process attached
                             });
                             // Prevent stdin from auto-closing
                             if (_this.process.stdin) {
-                                _this.process.stdin.on('error', function (err) {
+                                _this.process.stdin.on("error", function (err) {
                                     console.error("[MCP ".concat(_this.name, "] stdin error:"), err);
                                 });
                             }
                             // Set encoding and ensure stdout is readable
                             if (_this.process.stdout) {
-                                _this.process.stdout.setEncoding('utf8');
-                                _this.process.stdout.on('data', function (data) {
+                                _this.process.stdout.setEncoding("utf8");
+                                _this.process.stdout.on("data", function (data) {
                                     console.log("[MCP ".concat(_this.name, "] \uD83D\uDCE5 STDOUT DATA RECEIVED (").concat(data.length, " chars):"), data.substring(0, 200));
-                                    console.log("[MCP ".concat(_this.name, "] \uD83D\uDCE5 Hex dump:"), Buffer.from(data).toString('hex').substring(0, 200));
+                                    console.log("[MCP ".concat(_this.name, "] \uD83D\uDCE5 Hex dump:"), Buffer.from(data).toString("hex").substring(0, 200));
                                     _this.handleData(data.toString());
                                 });
-                                _this.process.stdout.on('readable', function () {
+                                _this.process.stdout.on("readable", function () {
                                     console.log("[MCP ".concat(_this.name, "] stdout is readable"));
                                 });
-                                _this.process.stdout.on('end', function () {
+                                _this.process.stdout.on("end", function () {
                                     console.log("[MCP ".concat(_this.name, "] stdout ended"));
                                 });
                             }
                             if (_this.process.stderr) {
-                                _this.process.stderr.setEncoding('utf8');
-                                _this.process.stderr.on('data', function (data) {
+                                _this.process.stderr.setEncoding("utf8");
+                                _this.process.stderr.on("data", function (data) {
                                     console.error("[MCP ".concat(_this.name, "] stderr:"), data.toString());
                                 });
                             }
-                            _this.process.on('error', function (err) {
+                            _this.process.on("error", function (err) {
                                 console.error("[MCP ".concat(_this.name, "] process error:"), err);
-                                _this.status = 'error';
+                                _this.status = "error";
                                 reject(new Error("Failed to start MCP server: ".concat(err.message)));
                             });
-                            _this.process.on('exit', function (code, signal) {
+                            _this.process.on("exit", function (code, signal) {
                                 console.log("[MCP ".concat(_this.name, "] process exited with code: ").concat(code, ", signal: ").concat(signal));
                             });
-                            _this.process.on('close', function (code, signal) {
+                            _this.process.on("close", function (code, signal) {
                                 console.log("[MCP ".concat(_this.name, "] process closed with code: ").concat(code, ", signal: ").concat(signal));
-                                if (_this.status === 'connecting') {
+                                if (_this.status === "connecting") {
                                     reject(new Error("MCP server exited during connection (code ".concat(code, ", signal ").concat(signal, ")")));
                                 }
-                                _this.status = 'disconnected';
+                                _this.status = "disconnected";
                             });
                             // Initialize the connection
                             setTimeout(function () { return __awaiter(_this, void 0, void 0, function () {
@@ -786,13 +850,13 @@ var MCPClient = /** @class */ (function () {
                                         case 2:
                                             _a.sent();
                                             console.log("[MCP ".concat(this.name, "] Connected successfully with ").concat(this.tools.length, " tools"));
-                                            this.status = 'connected';
+                                            this.status = "connected";
                                             resolve();
                                             return [3 /*break*/, 4];
                                         case 3:
                                             e_1 = _a.sent();
                                             console.error("[MCP ".concat(this.name, "] Initialization failed:"), e_1.message);
-                                            this.status = 'error';
+                                            this.status = "error";
                                             reject(new Error("Initialization failed: ".concat(e_1.message)));
                                             return [3 /*break*/, 4];
                                         case 4: return [2 /*return*/];
@@ -801,7 +865,7 @@ var MCPClient = /** @class */ (function () {
                             }); }, 500);
                         }
                         catch (e) {
-                            _this.status = 'error';
+                            _this.status = "error";
                             reject(new Error("Connection setup failed: ".concat(e.message)));
                         }
                     })];
@@ -814,7 +878,7 @@ var MCPClient = /** @class */ (function () {
         // Try to process messages - handle both Content-Length framing and line-delimited JSON
         while (true) {
             // First, try Content-Length framing
-            var headerEndIndex = this.buffer.indexOf('\r\n\r\n');
+            var headerEndIndex = this.buffer.indexOf("\r\n\r\n");
             if (headerEndIndex !== -1) {
                 var header = this.buffer.substring(0, headerEndIndex);
                 var contentLengthMatch = header.match(/Content-Length:\s*(\d+)/i);
@@ -841,12 +905,12 @@ var MCPClient = /** @class */ (function () {
                 }
             }
             // If no Content-Length framing, try line-delimited JSON
-            var newlineIndex = this.buffer.indexOf('\n');
+            var newlineIndex = this.buffer.indexOf("\n");
             if (newlineIndex !== -1) {
                 var line = this.buffer.substring(0, newlineIndex).trim();
                 this.buffer = this.buffer.substring(newlineIndex + 1);
                 // Skip empty lines and non-JSON lines (like the "Secure MCP Filesystem Server" message)
-                if (line && line.startsWith('{')) {
+                if (line && line.startsWith("{")) {
                     try {
                         var message = JSON.parse(line);
                         this.handleMessage(message);
@@ -862,12 +926,14 @@ var MCPClient = /** @class */ (function () {
         }
     };
     MCPClient.prototype.handleMessage = function (message) {
-        console.log("[MCP ".concat(this.name, "] Received:"), message.id !== undefined ? "response #".concat(message.id) : (message.method || 'notification'));
+        console.log("[MCP ".concat(this.name, "] Received:"), message.id !== undefined
+            ? "response #".concat(message.id)
+            : message.method || "notification");
         if (message.id !== undefined && this.pendingRequests.has(message.id)) {
             var _a = this.pendingRequests.get(message.id), resolve = _a.resolve, reject = _a.reject;
             this.pendingRequests.delete(message.id);
             if (message.error) {
-                reject(new Error(message.error.message || 'MCP error'));
+                reject(new Error(message.error.message || "MCP error"));
             }
             else {
                 resolve(message.result);
@@ -879,25 +945,25 @@ var MCPClient = /** @class */ (function () {
         return new Promise(function (resolve, reject) {
             var _a;
             if (!((_a = _this.process) === null || _a === void 0 ? void 0 : _a.stdin)) {
-                reject(new Error('MCP process not connected'));
+                reject(new Error("MCP process not connected"));
                 return;
             }
             var id = ++_this.messageId;
             var message = {
-                jsonrpc: '2.0',
+                jsonrpc: "2.0",
                 id: id,
                 method: method,
-                params: params
+                params: params,
             };
             _this.pendingRequests.set(id, { resolve: resolve, reject: reject });
             // Use line-delimited JSON (NOT Content-Length framing)
             var body = JSON.stringify(message);
-            var lineDelimitedMessage = body + '\n';
+            var lineDelimitedMessage = body + "\n";
             // Debug logging
             console.log("[MCP ".concat(_this.name, "] Sending request:"), method);
             console.log("[MCP ".concat(_this.name, "] Message:"), lineDelimitedMessage.trim());
             console.log("[MCP ".concat(_this.name, "] stdin.writable:"), _this.process.stdin.writable);
-            var written = _this.process.stdin.write(lineDelimitedMessage, 'utf8', function (err) {
+            var written = _this.process.stdin.write(lineDelimitedMessage, "utf8", function (err) {
                 if (err) {
                     console.error("[MCP ".concat(_this.name, "] Error writing to stdin:"), err);
                     reject(new Error("Failed to write to MCP server: ".concat(err.message)));
@@ -912,7 +978,7 @@ var MCPClient = /** @class */ (function () {
             setTimeout(function () {
                 if (_this.pendingRequests.has(id)) {
                     _this.pendingRequests.delete(id);
-                    reject(new Error('MCP request timeout'));
+                    reject(new Error("MCP request timeout"));
                 }
             }, 30000);
         });
@@ -925,15 +991,15 @@ var MCPClient = /** @class */ (function () {
             return;
         }
         var message = {
-            jsonrpc: '2.0',
-            method: method
+            jsonrpc: "2.0",
+            method: method,
         };
         if (params !== undefined) {
             message.params = params;
         }
         // Use Content-Length framing for MCP protocol
         var body = JSON.stringify(message);
-        var contentLength = Buffer.byteLength(body, 'utf8');
+        var contentLength = Buffer.byteLength(body, "utf8");
         var framedMessage = "Content-Length: ".concat(contentLength, "\r\n\r\n").concat(body);
         console.log("[MCP ".concat(this.name, "] Sending notification:"), method, "(".concat(contentLength, " bytes)"));
         this.process.stdin.write(framedMessage);
@@ -942,18 +1008,18 @@ var MCPClient = /** @class */ (function () {
         return __awaiter(this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('initialize', {
-                            protocolVersion: '2024-11-05',
+                    case 0: return [4 /*yield*/, this.send("initialize", {
+                            protocolVersion: "2024-11-05",
                             capabilities: {},
                             clientInfo: {
-                                name: 'Workbench',
-                                version: '0.1.0'
-                            }
+                                name: "Workbench",
+                                version: "0.1.0",
+                            },
                         })];
                     case 1:
                         _a.sent();
                         // notifications/initialized is a notification, not a request (no id, no response)
-                        this.notify('notifications/initialized');
+                        this.notify("notifications/initialized");
                         return [2 /*return*/];
                 }
             });
@@ -964,7 +1030,7 @@ var MCPClient = /** @class */ (function () {
             var result;
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('tools/list')];
+                    case 0: return [4 /*yield*/, this.send("tools/list")];
                     case 1:
                         result = _a.sent();
                         this.tools = result.tools || [];
@@ -979,9 +1045,9 @@ var MCPClient = /** @class */ (function () {
             var result;
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('tools/call', {
+                    case 0: return [4 /*yield*/, this.send("tools/call", {
                             name: toolName,
-                            arguments: args
+                            arguments: args,
                         })];
                     case 1:
                         result = _a.sent();
@@ -995,7 +1061,7 @@ var MCPClient = /** @class */ (function () {
             this.process.kill();
             this.process = null;
         }
-        this.status = 'disconnected';
+        this.status = "disconnected";
         this.tools = [];
     };
     return MCPClient;
@@ -1008,16 +1074,16 @@ var MCPProxyClient = /** @class */ (function () {
     function MCPProxyClient(name, command, args, proxyPort, proxyHost) {
         if (args === void 0) { args = []; }
         if (proxyPort === void 0) { proxyPort = 9999; }
-        if (proxyHost === void 0) { proxyHost = '127.0.0.1'; }
+        if (proxyHost === void 0) { proxyHost = "127.0.0.1"; }
         this.name = name;
         this.command = command;
         this.args = args;
         this.socket = null;
         this.messageId = 0;
         this.pendingRequests = new Map();
-        this.buffer = '';
+        this.buffer = "";
         this.tools = [];
-        this.status = 'disconnected';
+        this.status = "disconnected";
         this.proxyHost = proxyHost;
         this.proxyPort = proxyPort;
     }
@@ -1027,8 +1093,8 @@ var MCPProxyClient = /** @class */ (function () {
                 return [2 /*return*/, Promise.race([
                         this._doConnect(),
                         new Promise(function (_, reject) {
-                            return setTimeout(function () { return reject(new Error('Proxy connection timeout after 30 seconds')); }, 30000);
-                        })
+                            return setTimeout(function () { return reject(new Error("Proxy connection timeout after 30 seconds")); }, 30000);
+                        }),
                     ])];
             });
         });
@@ -1038,20 +1104,20 @@ var MCPProxyClient = /** @class */ (function () {
             var _this = this;
             return __generator(this, function (_a) {
                 return [2 /*return*/, new Promise(function (resolve, reject) {
-                        _this.status = 'connecting';
+                        _this.status = "connecting";
                         console.log("[MCPProxy ".concat(_this.name, "] Connecting to proxy at ").concat(_this.proxyHost, ":").concat(_this.proxyPort));
                         _this.socket = new net_1.default.Socket();
-                        _this.socket.on('connect', function () { return __awaiter(_this, void 0, void 0, function () {
+                        _this.socket.on("connect", function () { return __awaiter(_this, void 0, void 0, function () {
                             var connectCmd, e_2;
                             return __generator(this, function (_a) {
                                 switch (_a.label) {
                                     case 0:
                                         console.log("[MCPProxy ".concat(this.name, "] Connected to proxy"));
                                         connectCmd = JSON.stringify({
-                                            type: 'connect',
+                                            type: "connect",
                                             command: this.command,
-                                            args: this.args
-                                        }) + '\n';
+                                            args: this.args,
+                                        }) + "\n";
                                         this.socket.write(connectCmd);
                                         _a.label = 1;
                                     case 1:
@@ -1062,29 +1128,29 @@ var MCPProxyClient = /** @class */ (function () {
                                         return [4 /*yield*/, this.loadTools()];
                                     case 3:
                                         _a.sent();
-                                        this.status = 'connected';
+                                        this.status = "connected";
                                         resolve();
                                         return [3 /*break*/, 5];
                                     case 4:
                                         e_2 = _a.sent();
-                                        this.status = 'error';
+                                        this.status = "error";
                                         reject(e_2);
                                         return [3 /*break*/, 5];
                                     case 5: return [2 /*return*/];
                                 }
                             });
                         }); });
-                        _this.socket.on('data', function (data) {
+                        _this.socket.on("data", function (data) {
                             _this.handleData(data.toString());
                         });
-                        _this.socket.on('error', function (err) {
+                        _this.socket.on("error", function (err) {
                             console.error("[MCPProxy ".concat(_this.name, "] Socket error:"), err.message);
-                            _this.status = 'error';
+                            _this.status = "error";
                             reject(err);
                         });
-                        _this.socket.on('close', function () {
+                        _this.socket.on("close", function () {
                             console.log("[MCPProxy ".concat(_this.name, "] Socket closed"));
-                            _this.status = 'disconnected';
+                            _this.status = "disconnected";
                         });
                         _this.socket.connect(_this.proxyPort, _this.proxyHost);
                     })];
@@ -1094,8 +1160,8 @@ var MCPProxyClient = /** @class */ (function () {
     MCPProxyClient.prototype.handleData = function (data) {
         this.buffer += data;
         // Parse JSON lines from proxy
-        var lines = this.buffer.split('\n');
-        this.buffer = lines.pop() || '';
+        var lines = this.buffer.split("\n");
+        this.buffer = lines.pop() || "";
         for (var _i = 0, lines_1 = lines; _i < lines_1.length; _i++) {
             var line = lines_1[_i];
             if (!line.trim())
@@ -1103,16 +1169,16 @@ var MCPProxyClient = /** @class */ (function () {
             try {
                 var msg = JSON.parse(line);
                 // Handle proxy wrapper messages
-                if (msg.type === 'message' && msg.payload) {
+                if (msg.type === "message" && msg.payload) {
                     this.handleMCPMessage(msg.payload);
                 }
-                else if (msg.type === 'error') {
+                else if (msg.type === "error") {
                     console.error("[MCPProxy ".concat(this.name, "] Proxy error:"), msg.message);
                 }
-                else if (msg.type === 'connected') {
+                else if (msg.type === "connected") {
                     console.log("[MCPProxy ".concat(this.name, "] Server spawned by proxy"));
                 }
-                else if (msg.jsonrpc === '2.0') {
+                else if (msg.jsonrpc === "2.0") {
                     // Direct MCP message (some proxies may send unwrapped)
                     this.handleMCPMessage(msg);
                 }
@@ -1138,26 +1204,26 @@ var MCPProxyClient = /** @class */ (function () {
         var _this = this;
         return new Promise(function (resolve, reject) {
             if (!_this.socket) {
-                return reject(new Error('Not connected to proxy'));
+                return reject(new Error("Not connected to proxy"));
             }
             var id = ++_this.messageId;
             _this.pendingRequests.set(id, { resolve: resolve, reject: reject });
             var mcpMessage = {
-                jsonrpc: '2.0',
+                jsonrpc: "2.0",
                 id: id,
                 method: method,
-                params: params
+                params: params,
             };
             // Wrap in proxy message format
             var proxyMessage = JSON.stringify({
-                type: 'message',
-                payload: mcpMessage
-            }) + '\n';
+                type: "message",
+                payload: mcpMessage,
+            }) + "\n";
             _this.socket.write(proxyMessage);
             setTimeout(function () {
                 if (_this.pendingRequests.has(id)) {
                     _this.pendingRequests.delete(id);
-                    reject(new Error('MCP request timeout'));
+                    reject(new Error("MCP request timeout"));
                 }
             }, 30000);
         });
@@ -1168,31 +1234,31 @@ var MCPProxyClient = /** @class */ (function () {
             return;
         }
         var notification = {
-            jsonrpc: '2.0',
+            jsonrpc: "2.0",
             method: method,
-            params: params
+            params: params,
         };
         var proxyMessage = JSON.stringify({
-            type: 'message',
-            payload: notification
-        }) + '\n';
+            type: "message",
+            payload: notification,
+        }) + "\n";
         this.socket.write(proxyMessage);
     };
     MCPProxyClient.prototype.initialize = function () {
         return __awaiter(this, void 0, void 0, function () {
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('initialize', {
-                            protocolVersion: '2024-11-05',
+                    case 0: return [4 /*yield*/, this.send("initialize", {
+                            protocolVersion: "2024-11-05",
                             capabilities: {},
                             clientInfo: {
-                                name: 'Workbench',
-                                version: '0.1.0'
-                            }
+                                name: "Workbench",
+                                version: "0.1.0",
+                            },
                         })];
                     case 1:
                         _a.sent();
-                        this.notify('notifications/initialized');
+                        this.notify("notifications/initialized");
                         return [2 /*return*/];
                 }
             });
@@ -1203,7 +1269,7 @@ var MCPProxyClient = /** @class */ (function () {
             var result;
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('tools/list')];
+                    case 0: return [4 /*yield*/, this.send("tools/list")];
                     case 1:
                         result = _a.sent();
                         this.tools = result.tools || [];
@@ -1218,9 +1284,9 @@ var MCPProxyClient = /** @class */ (function () {
             var result;
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4 /*yield*/, this.send('tools/call', {
+                    case 0: return [4 /*yield*/, this.send("tools/call", {
                             name: toolName,
-                            arguments: args
+                            arguments: args,
                         })];
                     case 1:
                         result = _a.sent();
@@ -1233,13 +1299,13 @@ var MCPProxyClient = /** @class */ (function () {
         if (this.socket) {
             // Send disconnect to proxy
             try {
-                this.socket.write(JSON.stringify({ type: 'disconnect' }) + '\n');
+                this.socket.write(JSON.stringify({ type: "disconnect" }) + "\n");
             }
             catch (e) { }
             this.socket.destroy();
             this.socket = null;
         }
-        this.status = 'disconnected';
+        this.status = "disconnected";
         this.tools = [];
     };
     return MCPProxyClient;
@@ -1247,8 +1313,8 @@ var MCPProxyClient = /** @class */ (function () {
 var mcpClients = new Map();
 function loadMCPServers() {
     var _this = this;
-    var serverConfigs = store.get('mcpServers') || [];
-    console.log('[loadMCPServers] Loading MCP servers:', serverConfigs.length);
+    var serverConfigs = store.get("mcpServers") || [];
+    console.log("[loadMCPServers] Loading MCP servers:", serverConfigs.length);
     serverConfigs.forEach(function (config) { return __awaiter(_this, void 0, void 0, function () {
         var client, e_3;
         var _this = this;
@@ -1281,7 +1347,7 @@ function loadMCPServers() {
                                         case 1: return [2 /*return*/, _a.sent()];
                                     }
                                 });
-                            }); }
+                            }); },
                         });
                     });
                     console.log("[MCP] Connected to ".concat(config.name, ", registered ").concat(client.tools.length, " tools"));
@@ -1299,23 +1365,25 @@ function loadMCPServers() {
 // IPC HANDLERS
 // ============================================================================
 // Config
-electron_1.ipcMain.handle('config:get', function () { return store.store; });
-electron_1.ipcMain.handle('config:set', function (_e, partial) {
+electron_1.ipcMain.handle("config:get", function () { return store.store; });
+electron_1.ipcMain.handle("config:set", function (_e, partial) {
     store.set(partial);
     return store.store;
 });
 // Plugins
-electron_1.ipcMain.handle('plugins:reload', function () {
+electron_1.ipcMain.handle("plugins:reload", function () {
     loadPlugins();
     return true;
 });
-electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("plugins:save", function (_e, pluginName, code) { return __awaiter(void 0, void 0, void 0, function () {
     var pluginsDir, safeName, pluginPath, stat, cleanCode, fenceMatch;
     return __generator(this, function (_a) {
-        pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
-        safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+        pluginsDir = store.get("pluginsDir") || path_1.default.join(__dirname, "plugins");
+        safeName = pluginName
+            .replace(/[^a-zA-Z0-9_-]/g, "_")
+            .replace(/^_+|_+$/g, "");
         if (!safeName)
-            throw new Error('Invalid plugin name');
+            throw new Error("Invalid plugin name");
         pluginPath = path_1.default.join(pluginsDir, safeName);
         // Check if path exists as a file and remove it
         if (fs_1.default.existsSync(pluginPath)) {
@@ -1333,52 +1401,52 @@ electron_1.ipcMain.handle('plugins:save', function (_e, pluginName, code) { retu
         if (fenceMatch) {
             cleanCode = fenceMatch[1].trim();
         }
-        fs_1.default.writeFileSync(path_1.default.join(pluginPath, 'index.js'), cleanCode, 'utf-8');
-        fs_1.default.writeFileSync(path_1.default.join(pluginPath, 'package.json'), '{\n  "type": "commonjs"\n}\n', 'utf-8');
+        fs_1.default.writeFileSync(path_1.default.join(pluginPath, "index.js"), cleanCode, "utf-8");
+        fs_1.default.writeFileSync(path_1.default.join(pluginPath, "package.json"), '{\n  "type": "commonjs"\n}\n', "utf-8");
         loadPlugins();
         return [2 /*return*/, { success: true, path: pluginPath, name: safeName }];
     });
 }); });
 // Delete a plugin
 // Delete a plugin
-electron_1.ipcMain.handle('plugins:delete', function (_e, pluginName) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("plugins:delete", function (_e, pluginName) { return __awaiter(void 0, void 0, void 0, function () {
     var pluginsDir, safeName, pluginPath;
     return __generator(this, function (_a) {
-        pluginsDir = store.get('pluginsDir') || path_1.default.join(__dirname, 'plugins');
-        safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '_');
+        pluginsDir = store.get("pluginsDir") || path_1.default.join(__dirname, "plugins");
+        safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, "_");
         pluginPath = path_1.default.join(pluginsDir, safeName);
         if (!fs_1.default.existsSync(pluginPath)) {
             throw new Error("Plugin \"".concat(pluginName, "\" not found"));
         }
         // Only allow deleting custom plugins, not built-in ones
         fs_1.default.rmSync(pluginPath, { recursive: true, force: true });
-        console.log('[plugins:delete] Deleted plugin:', safeName);
+        console.log("[plugins:delete] Deleted plugin:", safeName);
         loadPlugins();
         return [2 /*return*/, { success: true, name: safeName }];
     });
 }); });
 // Tools
-electron_1.ipcMain.handle('tools:list', function () {
+electron_1.ipcMain.handle("tools:list", function () {
     return Array.from(tools.values()).map(function (t) { return ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
-        category: t.name.split('.')[0],
-        _sourceFolder: t._sourceFolder
+        category: t.name.split(".")[0],
+        _sourceFolder: t._sourceFolder,
     }); });
 });
-electron_1.ipcMain.handle('tools:refresh', function () {
-    console.log('[IPC] Refreshing tools...');
+electron_1.ipcMain.handle("tools:refresh", function () {
+    console.log("[IPC] Refreshing tools...");
     loadPlugins();
     return Array.from(tools.values()).map(function (t) { return ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
-        category: t.name.split('.')[0],
-        _sourceFolder: t._sourceFolder
+        category: t.name.split(".")[0],
+        _sourceFolder: t._sourceFolder,
     }); });
 });
-electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
     var tool, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, error_1;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -1389,22 +1457,21 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
                 TOOL_TIMEOUT = 30000;
                 MAX_OUTPUT_SIZE = 500000;
                 timeoutPromise = new Promise(function (_, reject) {
-                    setTimeout(function () { return reject(new Error('Tool execution timeout (30s limit)')); }, TOOL_TIMEOUT);
+                    setTimeout(function () { return reject(new Error("Tool execution timeout (30s limit)")); }, TOOL_TIMEOUT);
                 });
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
-                return [4 /*yield*/, Promise.race([
-                        tool.run(input),
-                        timeoutPromise
-                    ])];
+                return [4 /*yield*/, Promise.race([tool.run(input), timeoutPromise])];
             case 2:
                 rawOutput = _a.sent();
                 normalized = normalizeToolOutput(rawOutput);
                 // Safety: Truncate large outputs
-                if (typeof normalized.content === 'string' && normalized.content.length > MAX_OUTPUT_SIZE) {
-                    normalized.content = normalized.content.substring(0, MAX_OUTPUT_SIZE) +
-                        "\n\n[Output truncated - exceeded ".concat(MAX_OUTPUT_SIZE, " character limit]");
+                if (typeof normalized.content === "string" &&
+                    normalized.content.length > MAX_OUTPUT_SIZE) {
+                    normalized.content =
+                        normalized.content.substring(0, MAX_OUTPUT_SIZE) +
+                            "\n\n[Output truncated - exceeded ".concat(MAX_OUTPUT_SIZE, " character limit]");
                     normalized.metadata = __assign(__assign({}, normalized.metadata), { truncated: true, originalSize: normalized.content.length });
                 }
                 return [2 /*return*/, normalized];
@@ -1412,15 +1479,15 @@ electron_1.ipcMain.handle('tools:run', function (_e, name, input) { return __awa
                 error_1 = _a.sent();
                 // Friendly error handling
                 return [2 /*return*/, normalizeToolOutput({
-                        content: error_1.message.includes('timeout')
-                            ? 'Tool execution timed out. Please try again or simplify your request.'
+                        content: error_1.message.includes("timeout")
+                            ? "Tool execution timed out. Please try again or simplify your request."
                             : "Tool error: ".concat(error_1.message),
                         error: error_1.message,
                         metadata: {
                             tool: name,
                             input: input,
-                            timestamp: new Date().toISOString()
-                        }
+                            timestamp: new Date().toISOString(),
+                        },
                     })];
             case 4: return [2 /*return*/];
         }
@@ -1431,22 +1498,23 @@ var sessionCosts = { total: 0, requests: 0, byModel: {} };
 function calculateCost(model, promptTokens, completionTokens) {
     // Approximate pricing per 1M tokens (adjust based on actual OpenRouter pricing)
     var pricing = {
-        'anthropic/claude-3.5-sonnet': { prompt: 3, completion: 15 },
-        'anthropic/claude-3-haiku': { prompt: 0.25, completion: 1.25 },
-        'openai/gpt-4o': { prompt: 2.5, completion: 10 },
-        'openai/gpt-4o-mini': { prompt: 0.15, completion: 0.6 },
-        'default': { prompt: 1, completion: 2 }
+        "anthropic/claude-3.5-sonnet": { prompt: 3, completion: 15 },
+        "anthropic/claude-3-haiku": { prompt: 0.25, completion: 1.25 },
+        "openai/gpt-4o": { prompt: 2.5, completion: 10 },
+        "openai/gpt-4o-mini": { prompt: 0.15, completion: 0.6 },
+        default: { prompt: 1, completion: 2 },
     };
-    var rates = pricing[model] || pricing['default'];
-    return (promptTokens * rates.prompt / 1000000) + (completionTokens * rates.completion / 1000000);
+    var rates = pricing[model] || pricing["default"];
+    return ((promptTokens * rates.prompt) / 1000000 +
+        (completionTokens * rates.completion) / 1000000);
 }
-electron_1.ipcMain.handle('costs:get', function () { return sessionCosts; });
-electron_1.ipcMain.handle('costs:reset', function () {
+electron_1.ipcMain.handle("costs:get", function () { return sessionCosts; });
+electron_1.ipcMain.handle("costs:reset", function () {
     sessionCosts = { total: 0, requests: 0, byModel: {} };
     return sessionCosts;
 });
 // Task runner (non-streaming)
-electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
+electron_1.ipcMain.handle("task:run", function (_e_1, taskType_1, prompt_1) {
     var args_1 = [];
     for (var _i = 3; _i < arguments.length; _i++) {
         args_1[_i - 3] = arguments[_i];
@@ -1465,26 +1533,26 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
                         throw new Error("No model configured for task type: ".concat(taskType));
                     apiKey = config.openrouterApiKey;
                     if (!apiKey)
-                        throw new Error('No API key configured');
-                    apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
+                        throw new Error("No API key configured");
+                    apiEndpoint = config.apiEndpoint || "https://openrouter.ai/api/v1";
                     messages = [];
                     // Add system prompt with tools if requested
                     if (includeTools) {
                         toolsList = Array.from(tools.values())
-                            .filter(function (t) { return !t.name.startsWith('builtin.'); })
-                            .map(function (t) { return "- ".concat(t.name, ": ").concat(t.description || 'No description'); })
-                            .join('\n');
+                            .filter(function (t) { return !t.name.startsWith("builtin."); })
+                            .map(function (t) { return "- ".concat(t.name, ": ").concat(t.description || "No description"); })
+                            .join("\n");
                         systemPrompt = "You are a helpful AI assistant with access to tools that can perform actions.\n\nAvailable tools:\n".concat(toolsList, "\n\nWhen a user asks you to create, build, or do something, you should USE THE APPROPRIATE TOOL instead of just providing instructions.\n\nFor example:\n- If asked to \"create an artifact to connect Google Calendar\", use the workbench.convertArtifact tool\n- If asked to \"build a tool for X\", use the workbench.convertArtifact tool\n- If asked to create/generate code or plugins, use the appropriate tool\n\nYour response should indicate which tool you would use and with what parameters. Format like:\nTOOL: tool.name\nINPUT: { \"param\": \"value\" }\n\nBe action-oriented. Do things, don't just explain how to do them.");
-                        messages.push({ role: 'system', content: systemPrompt });
+                        messages.push({ role: "system", content: systemPrompt });
                     }
-                    messages.push({ role: 'user', content: prompt });
+                    messages.push({ role: "user", content: prompt });
                     return [4 /*yield*/, axios_1.default.post("".concat(apiEndpoint, "/chat/completions"), {
                             model: roleConfig.model,
                             messages: messages,
                         }, {
                             headers: {
-                                'Authorization': "Bearer ".concat(apiKey),
-                                'Content-Type': 'application/json',
+                                Authorization: "Bearer ".concat(apiKey),
+                                "Content-Type": "application/json",
                             },
                         })];
                 case 1:
@@ -1498,17 +1566,17 @@ electron_1.ipcMain.handle('task:run', function (_e_1, taskType_1, prompt_1) {
                         }
                     }
                     return [2 /*return*/, {
-                            content: ((_d = (_c = (_b = res.data.choices) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.message) === null || _d === void 0 ? void 0 : _d.content) || '',
+                            content: ((_d = (_c = (_b = res.data.choices) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.message) === null || _d === void 0 ? void 0 : _d.content) || "",
                             usage: res.data.usage,
                             model: res.data.model,
-                            sessionCosts: __assign({}, sessionCosts)
+                            sessionCosts: __assign({}, sessionCosts),
                         }];
             }
         });
     });
 });
 // List available models from OpenRouter
-electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("models:list", function () { return __awaiter(void 0, void 0, void 0, function () {
     var config, apiKey, res, models, e_4;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -1516,14 +1584,14 @@ electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, 
                 config = store.store;
                 apiKey = config.openrouterApiKey;
                 if (!apiKey) {
-                    throw new Error('No OpenRouter API key configured');
+                    throw new Error("No OpenRouter API key configured");
                 }
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
-                return [4 /*yield*/, axios_1.default.get('https://openrouter.ai/api/v1/models', {
+                return [4 /*yield*/, axios_1.default.get("https://openrouter.ai/api/v1/models", {
                         headers: {
-                            'Authorization': "Bearer ".concat(apiKey),
+                            Authorization: "Bearer ".concat(apiKey),
                         },
                     })];
             case 2:
@@ -1537,11 +1605,17 @@ electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, 
                         context_length: m.context_length,
                         pricing: {
                             prompt: ((_a = m.pricing) === null || _a === void 0 ? void 0 : _a.prompt) ? parseFloat(m.pricing.prompt) : 0,
-                            completion: ((_b = m.pricing) === null || _b === void 0 ? void 0 : _b.completion) ? parseFloat(m.pricing.completion) : 0,
+                            completion: ((_b = m.pricing) === null || _b === void 0 ? void 0 : _b.completion)
+                                ? parseFloat(m.pricing.completion)
+                                : 0,
                         },
                         top_provider: m.top_provider,
-                        per_million_prompt: ((_c = m.pricing) === null || _c === void 0 ? void 0 : _c.prompt) ? (parseFloat(m.pricing.prompt) * 1000000).toFixed(2) : '0',
-                        per_million_completion: ((_d = m.pricing) === null || _d === void 0 ? void 0 : _d.completion) ? (parseFloat(m.pricing.completion) * 1000000).toFixed(2) : '0',
+                        per_million_prompt: ((_c = m.pricing) === null || _c === void 0 ? void 0 : _c.prompt)
+                            ? (parseFloat(m.pricing.prompt) * 1000000).toFixed(2)
+                            : "0",
+                        per_million_completion: ((_d = m.pricing) === null || _d === void 0 ? void 0 : _d.completion)
+                            ? (parseFloat(m.pricing.completion) * 1000000).toFixed(2)
+                            : "0",
                     });
                 });
                 // Sort by prompt price
@@ -1557,7 +1631,7 @@ electron_1.ipcMain.handle('models:list', function () { return __awaiter(void 0, 
 // Template variable replacement
 function processTemplateVariables(text) {
     var now = new Date();
-    var user = require('os').userInfo().username;
+    var user = require("os").userInfo().username;
     return text
         .replace(/\{\{today\}\}/g, now.toLocaleDateString())
         .replace(/\{\{time\}\}/g, now.toLocaleTimeString())
@@ -1566,7 +1640,7 @@ function processTemplateVariables(text) {
         .replace(/\{\{clipboard\}\}/g, electron_1.clipboard.readText());
 }
 // Streaming task runner
-electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
     var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_5, errorDetails, errorMessage;
     var _a, _b, _c, _d, _f, _g, _h, _j;
     return __generator(this, function (_k) {
@@ -1578,18 +1652,18 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 // Check if model is configured
                 if (!(roleConfig === null || roleConfig === void 0 ? void 0 : roleConfig.model)) {
                     error = "No model configured for \"".concat(taskType, "\". Please configure a model in Settings tab.");
-                    console.error('[task:runStream]', error);
-                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: error });
+                    console.error("[task:runStream]", error);
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:error", { requestId: requestId, error: error });
                     throw new Error(error);
                 }
                 apiKey = config.openrouterApiKey;
                 if (!apiKey) {
-                    error = 'No API key configured. Please add your API key in Settings tab.';
-                    console.error('[task:runStream]', error);
-                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: error });
+                    error = "No API key configured. Please add your API key in Settings tab.";
+                    console.error("[task:runStream]", error);
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:error", { requestId: requestId, error: error });
                     throw new Error(error);
                 }
-                apiEndpoint = config.apiEndpoint || 'https://openrouter.ai/api/v1';
+                apiEndpoint = config.apiEndpoint || "https://openrouter.ai/api/v1";
                 console.log("[task:runStream] Model: ".concat(roleConfig.model, ", TaskType: ").concat(taskType));
                 processedPrompt = processTemplateVariables(prompt);
                 _k.label = 1;
@@ -1599,51 +1673,69 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                         model: roleConfig.model,
                         messages: [
                             {
-                                role: 'system',
-                                content: "You are a helpful AI assistant integrated into Workbench - a desktop application with tools.\n\nCRITICAL: When users say \"build\", \"create a tool\", or \"make an artifact\", you should IMMEDIATELY generate the complete code for a Workbench plugin. Don't ask for confirmation or details - just build it based on their request.\n\nWorkbench Plugin Format:\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'category.toolName',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        // input parameters\n      },\n      required: []\n    },\n    run: async (input) => {\n      // Tool logic here\n      // For API calls, return the data or result\n      return { result: 'data' };\n    }\n  });\n};\n```\n\nWhen user asks you to build something:\n1. Generate the COMPLETE plugin code immediately\n2. Explain what it does briefly\n3. Tell them to save it in the plugins folder\n\nExample:\nUser: \"Build a tool that tells me the temperature\"\nYou: \"Here's a weather temperature tool for Workbench:\n\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'weather.temperature',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        city: { type: 'string', description: 'City name' }\n      },\n      required: ['city']\n    },\n    run: async (input) => {\n      // In production, you'd call a real weather API\n      return { \n        temperature: 72,\n        city: input.city,\n        message: `Temperature in ${input.city} is 72\u00B0F`\n      };\n    }\n  });\n};\n```\n\nThis tool fetches temperature data. Save this as `plugins/weather_temperature/index.js` and restart Workbench to use it.\"\n\nBE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked."
+                                role: "system",
+                                content: "You are a helpful AI assistant integrated into Workbench - a desktop application with tools.\n\nCRITICAL: When users say \"build\", \"create a tool\", or \"make an artifact\", you should IMMEDIATELY generate the complete code for a Workbench plugin. Don't ask for confirmation or details - just build it based on their request.\n\nWorkbench Plugin Format:\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'category.toolName',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        // input parameters\n      },\n      required: []\n    },\n    run: async (input) => {\n      // Tool logic here\n      // For API calls, return the data or result\n      return { result: 'data' };\n    }\n  });\n};\n```\n\nWhen user asks you to build something:\n1. Generate the COMPLETE plugin code immediately\n2. Explain what it does briefly\n3. Tell them to save it in the plugins folder\n\nExample:\nUser: \"Build a tool that tells me the temperature\"\nYou: \"Here's a weather temperature tool for Workbench:\n\n```javascript\nmodule.exports.register = (api) => {\n  api.registerTool({\n    name: 'weather.temperature',\n    inputSchema: {\n      type: 'object',\n      properties: {\n        city: { type: 'string', description: 'City name' }\n      },\n      required: ['city']\n    },\n    run: async (input) => {\n      // In production, you'd call a real weather API\n      return { \n        temperature: 72,\n        city: input.city,\n        message: `Temperature in ${input.city} is 72\u00B0F`\n      };\n    }\n  });\n};\n```\n\nThis tool fetches temperature data. Save this as `plugins/weather_temperature/index.js` and restart Workbench to use it.\"\n\nBE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.",
                             },
-                            { role: 'user', content: processedPrompt }
+                            { role: "user", content: processedPrompt },
                         ],
-                        stream: true
+                        stream: true,
                     }, {
                         headers: {
-                            'Authorization': "Bearer ".concat(apiKey),
-                            'Content-Type': 'application/json',
+                            Authorization: "Bearer ".concat(apiKey),
+                            "Content-Type": "application/json",
                         },
-                        responseType: 'stream'
+                        responseType: "stream",
                     })];
             case 2:
                 res = _k.sent();
-                fullContent_1 = '';
+                fullContent_1 = "";
                 promptTokens_1 = 0;
                 completionTokens_1 = 0;
-                res.data.on('data', function (chunk) {
+                res.data.on("data", function (chunk) {
                     var _a, _b, _c;
-                    var lines = chunk.toString().split('\n').filter(function (line) { return line.trim().startsWith('data:'); });
+                    var lines = chunk
+                        .toString()
+                        .split("\n")
+                        .filter(function (line) { return line.trim().startsWith("data:"); });
                     for (var _i = 0, lines_2 = lines; _i < lines_2.length; _i++) {
                         var line = lines_2[_i];
-                        var data = line.replace('data:', '').trim();
-                        if (data === '[DONE]') {
+                        var data = line.replace("data:", "").trim();
+                        if (data === "[DONE]") {
                             // Track costs
                             var cost = calculateCost(roleConfig.model, promptTokens_1, completionTokens_1);
                             sessionCosts.total += cost;
                             sessionCosts.requests += 1;
                             if (!sessionCosts.byModel[roleConfig.model]) {
-                                sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+                                sessionCosts.byModel[roleConfig.model] = {
+                                    cost: 0,
+                                    requests: 0,
+                                    tokens: { prompt: 0, completion: 0 },
+                                };
                             }
                             sessionCosts.byModel[roleConfig.model].cost += cost;
                             sessionCosts.byModel[roleConfig.model].requests += 1;
-                            sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens_1;
-                            sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens_1;
-                            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1, cost: cost, tokens: { prompt: promptTokens_1, completion: completionTokens_1 } });
+                            sessionCosts.byModel[roleConfig.model].tokens.prompt +=
+                                promptTokens_1;
+                            sessionCosts.byModel[roleConfig.model].tokens.completion +=
+                                completionTokens_1;
+                            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:done", {
+                                requestId: requestId,
+                                content: fullContent_1,
+                                cost: cost,
+                                tokens: { prompt: promptTokens_1, completion: completionTokens_1 },
+                            });
                             return;
                         }
                         try {
                             var parsed = JSON.parse(data);
-                            var delta = ((_c = (_b = (_a = parsed.choices) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.delta) === null || _c === void 0 ? void 0 : _c.content) || '';
+                            var delta = ((_c = (_b = (_a = parsed.choices) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.delta) === null || _c === void 0 ? void 0 : _c.content) || "";
                             if (delta) {
                                 fullContent_1 += delta;
-                                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:chunk', { requestId: requestId, chunk: delta, content: fullContent_1 });
+                                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:chunk", {
+                                    requestId: requestId,
+                                    chunk: delta,
+                                    content: fullContent_1,
+                                });
                             }
                             // Track usage if available
                             if (parsed.usage) {
@@ -1656,24 +1748,37 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                         }
                     }
                 });
-                res.data.on('end', function () {
+                res.data.on("end", function () {
                     // Track costs even if no [DONE] received
                     if (promptTokens_1 > 0 || completionTokens_1 > 0) {
                         var cost = calculateCost(roleConfig.model, promptTokens_1, completionTokens_1);
                         sessionCosts.total += cost;
                         sessionCosts.requests += 1;
                         if (!sessionCosts.byModel[roleConfig.model]) {
-                            sessionCosts.byModel[roleConfig.model] = { cost: 0, requests: 0, tokens: { prompt: 0, completion: 0 } };
+                            sessionCosts.byModel[roleConfig.model] = {
+                                cost: 0,
+                                requests: 0,
+                                tokens: { prompt: 0, completion: 0 },
+                            };
                         }
                         sessionCosts.byModel[roleConfig.model].cost += cost;
                         sessionCosts.byModel[roleConfig.model].requests += 1;
                         sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens_1;
-                        sessionCosts.byModel[roleConfig.model].tokens.completion += completionTokens_1;
+                        sessionCosts.byModel[roleConfig.model].tokens.completion +=
+                            completionTokens_1;
                     }
-                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:done', { requestId: requestId, content: fullContent_1, cost: sessionCosts.total, tokens: { prompt: promptTokens_1, completion: completionTokens_1 } });
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:done", {
+                        requestId: requestId,
+                        content: fullContent_1,
+                        cost: sessionCosts.total,
+                        tokens: { prompt: promptTokens_1, completion: completionTokens_1 },
+                    });
                 });
-                res.data.on('error', function (err) {
-                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: err.message });
+                res.data.on("error", function (err) {
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:error", {
+                        requestId: requestId,
+                        error: err.message,
+                    });
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
@@ -1682,10 +1787,10 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                     status: (_a = e_5.response) === null || _a === void 0 ? void 0 : _a.status,
                     statusText: (_b = e_5.response) === null || _b === void 0 ? void 0 : _b.statusText,
                     data: (_c = e_5.response) === null || _c === void 0 ? void 0 : _c.data,
-                    message: e_5.message
+                    message: e_5.message,
                 };
-                console.error('[task:runStream] Full error:', JSON.stringify(errorDetails, null, 2));
-                errorMessage = 'Request failed';
+                console.error("[task:runStream] Full error:", JSON.stringify(errorDetails, null, 2));
+                errorMessage = "Request failed";
                 if ((_g = (_f = (_d = e_5.response) === null || _d === void 0 ? void 0 : _d.data) === null || _f === void 0 ? void 0 : _f.error) === null || _g === void 0 ? void 0 : _g.message) {
                     errorMessage = e_5.response.data.error.message;
                 }
@@ -1695,14 +1800,17 @@ electron_1.ipcMain.handle('task:runStream', function (_e, taskType, prompt, requ
                 else if (((_j = e_5.response) === null || _j === void 0 ? void 0 : _j.status) === 400) {
                     errorMessage = "Bad request. The model \"".concat(roleConfig.model, "\" may not support this request format.");
                 }
-                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('stream:error', { requestId: requestId, error: errorMessage });
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:error", {
+                    requestId: requestId,
+                    error: errorMessage,
+                });
                 throw new Error(errorMessage);
             case 4: return [2 /*return*/];
         }
     });
 }); });
 // Tool chaining
-electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("chain:run", function (_e, steps) { return __awaiter(void 0, void 0, void 0, function () {
     var results, context, executionLog, i, step, tool, errorMsg, resolvedInput, result, normalized, error_2;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -1721,8 +1829,8 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                     executionLog.push({
                         step: i + 1,
                         tool: step.tool,
-                        status: 'failed',
-                        error: errorMsg
+                        status: "failed",
+                        error: errorMsg,
                     });
                     return [2 /*return*/, {
                             success: false,
@@ -1730,7 +1838,7 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                             error: errorMsg,
                             results: results,
                             context: context,
-                            executionLog: executionLog
+                            executionLog: executionLog,
                         }];
                 }
                 _a.label = 2;
@@ -1747,9 +1855,9 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                     executionLog.push({
                         step: i + 1,
                         tool: step.tool,
-                        status: 'failed',
+                        status: "failed",
                         error: normalized.error,
-                        output: normalized
+                        output: normalized,
                     });
                     return [2 /*return*/, {
                             success: false,
@@ -1757,15 +1865,15 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                             error: "Tool \"".concat(step.tool, "\" failed: ").concat(normalized.error),
                             results: results,
                             context: context,
-                            executionLog: executionLog
+                            executionLog: executionLog,
                         }];
                 }
                 results.push({ tool: step.tool, result: normalized });
                 executionLog.push({
                     step: i + 1,
                     tool: step.tool,
-                    status: 'success',
-                    output: normalized
+                    status: "success",
+                    output: normalized,
                 });
                 // Store result in context for next steps
                 if (step.outputKey) {
@@ -1779,8 +1887,8 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                 executionLog.push({
                     step: i + 1,
                     tool: step.tool,
-                    status: 'failed',
-                    error: error_2.message
+                    status: "failed",
+                    error: error_2.message,
                 });
                 return [2 /*return*/, {
                         success: false,
@@ -1788,7 +1896,7 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                         error: "Step ".concat(i + 1, " (").concat(step.tool, ") threw exception: ").concat(error_2.message),
                         results: results,
                         context: context,
-                        executionLog: executionLog
+                        executionLog: executionLog,
                     }];
             case 5:
                 i++;
@@ -1797,23 +1905,29 @@ electron_1.ipcMain.handle('chain:run', function (_e, steps) { return __awaiter(v
                     success: true,
                     results: results,
                     context: context,
-                    executionLog: executionLog
+                    executionLog: executionLog,
                 }];
         }
     });
 }); });
 function interpolateContext(input, context) {
-    if (typeof input === 'string') {
+    if (typeof input === "string") {
         // Replace {{key}} or {{key.subkey}} patterns
         return input.replace(/\{\{([^}]+)\}\}/g, function (_, key) {
-            var value = key.split('.').reduce(function (obj, k) { return obj === null || obj === void 0 ? void 0 : obj[k]; }, context);
-            return value !== undefined ? (typeof value === 'string' ? value : JSON.stringify(value)) : "{{".concat(key, "}}");
+            var value = key
+                .split(".")
+                .reduce(function (obj, k) { return obj === null || obj === void 0 ? void 0 : obj[k]; }, context);
+            return value !== undefined
+                ? typeof value === "string"
+                    ? value
+                    : JSON.stringify(value)
+                : "{{".concat(key, "}}");
         });
     }
     if (Array.isArray(input)) {
         return input.map(function (item) { return interpolateContext(item, context); });
     }
-    if (typeof input === 'object' && input !== null) {
+    if (typeof input === "object" && input !== null) {
         var result = {};
         for (var _i = 0, _a = Object.entries(input); _i < _a.length; _i++) {
             var _b = _a[_i], key = _b[0], value = _b[1];
@@ -1824,29 +1938,29 @@ function interpolateContext(input, context) {
     return input;
 }
 // MCP Management
-electron_1.ipcMain.handle('mcp:list', function () {
+electron_1.ipcMain.handle("mcp:list", function () {
     return Array.from(mcpClients.entries()).map(function (_a) {
         var name = _a[0], client = _a[1];
         return ({
             name: name,
             status: client.status,
             toolCount: client.tools.length,
-            tools: client.tools.map(function (t) { return t.name; })
+            tools: client.tools.map(function (t) { return t.name; }),
         });
     });
 });
-electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("mcp:add", function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
     var servers, transport, proxyPort, client, e_6;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
-                console.log('[mcp:add] Adding server:', config);
-                servers = store.get('mcpServers') || [];
+                console.log("[mcp:add] Adding server:", config);
+                servers = store.get("mcpServers") || [];
                 servers.push(config);
-                store.set('mcpServers', servers);
-                transport = config.transport || 'stdio';
-                proxyPort = store.get('pipewrenchPort', 9999);
-                if (transport === 'pipewrench') {
+                store.set("mcpServers", servers);
+                transport = config.transport || "stdio";
+                proxyPort = store.get("pipewrenchPort", 9999);
+                if (transport === "pipewrench") {
                     console.log("[mcp:add] Using PipeWrench proxy on port ".concat(proxyPort));
                     client = new MCPProxyClient(config.name, config.command, config.args || [], proxyPort);
                 }
@@ -1857,11 +1971,11 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
-                console.log('[mcp:add] Connecting to server...');
+                console.log("[mcp:add] Connecting to server...");
                 return [4 /*yield*/, client.connect()];
             case 2:
                 _a.sent();
-                console.log('[mcp:add] Connected! Tools:', client.tools.length);
+                console.log("[mcp:add] Connected! Tools:", client.tools.length);
                 client.tools.forEach(function (tool) {
                     var toolName = "mcp.".concat(config.name, ".").concat(tool.name);
                     tools.set(toolName, {
@@ -1870,21 +1984,21 @@ electron_1.ipcMain.handle('mcp:add', function (_e, config) { return __awaiter(vo
                         inputSchema: tool.inputSchema,
                         run: function (input) { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                             return [2 /*return*/, client.callTool(tool.name, input)];
-                        }); }); }
+                        }); }); },
                     });
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length, transport: transport }];
             case 3:
                 e_6 = _a.sent();
-                console.error('[mcp:add] Connection failed:', e_6.message);
+                console.error("[mcp:add] Connection failed:", e_6.message);
                 client.disconnect(); // Clean up failed connection
                 mcpClients.delete(config.name); // Remove from map
-                return [2 /*return*/, { success: false, error: e_6.message || 'Connection failed' }];
+                return [2 /*return*/, { success: false, error: e_6.message || "Connection failed" }];
             case 4: return [2 /*return*/];
         }
     });
 }); });
-electron_1.ipcMain.handle('mcp:remove', function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("mcp:remove", function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
     var client, servers;
     return __generator(this, function (_a) {
         client = mcpClients.get(name);
@@ -1898,12 +2012,12 @@ electron_1.ipcMain.handle('mcp:remove', function (_e, name) { return __awaiter(v
                 }
             });
         }
-        servers = (store.get('mcpServers') || []).filter(function (s) { return s.name !== name; });
-        store.set('mcpServers', servers);
+        servers = (store.get("mcpServers") || []).filter(function (s) { return s.name !== name; });
+        store.set("mcpServers", servers);
         return [2 /*return*/, { success: true }];
     });
 }); });
-electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
+electron_1.ipcMain.handle("mcp:reconnect", function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
     var client, e_7;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -1926,7 +2040,7 @@ electron_1.ipcMain.handle('mcp:reconnect', function (_e, name) { return __awaite
                         inputSchema: tool.inputSchema,
                         run: function (input) { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                             return [2 /*return*/, client.callTool(tool.name, input)];
-                        }); }); }
+                        }); }); },
                     });
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];

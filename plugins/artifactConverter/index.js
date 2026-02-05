@@ -2,11 +2,18 @@
 // Converts React/Claude artifacts into Workbench-compatible tool definitions
 
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 
+// Store API reference for use in tool run function
+let pluginApi = null;
+
 module.exports.register = (api) => {
+  pluginApi = api;
+  
   api.registerTool({
     name: "workbench.convertArtifact",
+    description: "Convert code or React artifacts into Workbench tool plugins",
     inputSchema: {
       type: "object",
       properties: {
@@ -28,6 +35,15 @@ module.exports.register = (api) => {
     run: async (input) => {
       const { code, toolName, description } = input;
 
+      // Get plugins directory from API
+      let pluginsDir;
+      if (pluginApi && typeof pluginApi.getPluginsDir === 'function') {
+        pluginsDir = pluginApi.getPluginsDir();
+      } else {
+        // Fallback - try to find plugins relative to this file
+        pluginsDir = path.join(__dirname, '..');
+      }
+
       // Extract parameters from the code
       const params = extractParameters(code);
       
@@ -35,26 +51,40 @@ module.exports.register = (api) => {
       const toolCode = generateToolCode(toolName, description || "Generated tool", params, code);
       
       // Create the plugin directory
-      const pluginDir = path.join(process.cwd(), 'plugins', toolName.replace('.', '_'));
-      await fs.mkdir(pluginDir, { recursive: true });
+      const safeName = toolName.replace(/\./g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
+      const pluginDir = path.join(pluginsDir, safeName);
       
-      // Write the index.js file
-      const indexPath = path.join(pluginDir, 'index.js');
-      await fs.writeFile(indexPath, toolCode, 'utf-8');
-      
-      // Write the package.json file
-      const packageJson = {
-        type: "commonjs"
-      };
-      const packagePath = path.join(pluginDir, 'package.json');
-      await fs.writeFile(packagePath, JSON.stringify(packageJson, null, 2), 'utf-8');
-      
-      return {
-        content: [{
-          type: "text",
-          text: `✅ Tool created successfully!\n\nLocation: ${pluginDir}\nTool name: ${toolName}\n\nThe tool has been generated and saved. Restart the application to load the new plugin.`
-        }]
-      };
+      try {
+        await fs.mkdir(pluginDir, { recursive: true });
+        
+        // Write the index.js file
+        const indexPath = path.join(pluginDir, 'index.js');
+        await fs.writeFile(indexPath, toolCode, 'utf-8');
+        
+        // Write the package.json file
+        const packageJson = { type: "commonjs" };
+        const packagePath = path.join(pluginDir, 'package.json');
+        await fs.writeFile(packagePath, JSON.stringify(packageJson, null, 2), 'utf-8');
+        
+        // Reload plugins to pick up the new tool
+        if (pluginApi && typeof pluginApi.reloadPlugins === 'function') {
+          pluginApi.reloadPlugins();
+        }
+        
+        return {
+          content: [{
+            type: "text",
+            text: `✅ Tool created successfully!\n\nLocation: ${pluginDir}\nTool name: ${toolName}\n\nThe plugin has been created and loaded. You can now use the tool immediately.`
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ Failed to create tool: ${error.message}\n\nPlugins directory: ${pluginsDir}\nTarget directory: ${pluginDir}`
+          }]
+        };
+      }
     },
   });
 };
@@ -161,13 +191,14 @@ function generateToolCode(toolName, description, params, originalCode) {
 module.exports.register = (api) => {
   api.registerTool({
     name: '${toolName}',
+    description: '${description}',
     inputSchema: ${inputSchemaStr},
     run: async (input) => {
       // Build the prompt from the input parameters
       const prompt = \`Process the following data: ${promptInputs}\`;
       
       return {
-        prompt,
+        content: prompt,
         metadata: {
           toolName: '${toolName}',
           originalInputs: input
