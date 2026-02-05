@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type {} from 'react/jsx-runtime';
 
-const TABS = ['Chat', 'Tools', 'Files', 'Chains', 'Settings'] as const;
+const TABS = ['Chat', 'Tools', 'Running', 'Files', 'Chains', 'Settings'] as const;
 type Tab = typeof TABS[number];
 
 type Tool = { 
@@ -210,6 +210,7 @@ export default function App() {
           />
         )}
         {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} />}
+        {tab === 'Running' && <RunningTab />}
         {tab === 'Files' && <FilesTab />}
         {tab === 'Chains' && <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />}
 
@@ -2142,6 +2143,397 @@ function DoctorPanel() {
         <div style={{ textAlign: 'center', color: colors.textMuted, padding: 16 }}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>🔍</div>
           <div style={{ fontSize: 13 }}>Click "Run Diagnostics" to check your system</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// RUNNING TAB - Execution Tracking & Process Control
+// ============================================================================
+
+function RunningTab() {
+  const [activeRuns, setActiveRuns] = useState<any[]>([]);
+  const [history, setHistory] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [selectedRun, setSelectedRun] = useState<any>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Load initial data
+  useEffect(() => {
+    loadData();
+    
+    // Set up real-time listeners
+    const unsubUpdate = window.workbench.runs.onUpdate((run: any) => {
+      console.log('[RunningTab] Run update:', run);
+      loadData();
+    });
+    
+    const unsubStats = window.workbench.runs.onStatsUpdate((newStats: any) => {
+      console.log('[RunningTab] Stats update:', newStats);
+      setStats(newStats);
+    });
+
+    return () => {
+      unsubUpdate();
+      unsubStats();
+    };
+  }, []);
+
+  const loadData = async () => {
+    const [active, hist, st] = await Promise.all([
+      window.workbench.runs.getActive(),
+      window.workbench.runs.getHistory(50),
+      window.workbench.runs.getStats(),
+    ]);
+    setActiveRuns(active);
+    setHistory(hist);
+    setStats(st);
+  };
+
+  const killRun = async (runId: string) => {
+    await window.workbench.runs.kill(runId);
+    loadData();
+  };
+
+  const clearHistory = async () => {
+    await window.workbench.runs.clearHistory();
+    loadData();
+  };
+
+  const formatDuration = (ms: number) => {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${minutes}m ${secs}s`;
+  };
+
+  const formatTimestamp = (ts: number) => {
+    const date = new Date(ts);
+    return date.toLocaleTimeString();
+  };
+
+  const getStateIcon = (state: string) => {
+    switch (state) {
+      case 'queued': return '⏳';
+      case 'running': return '▶️';
+      case 'completed': return '✅';
+      case 'failed': return '❌';
+      case 'killed': return '🛑';
+      case 'timed-out': return '⏱️';
+      default: return '❓';
+    }
+  };
+
+  const getStateColor = (state: string) => {
+    switch (state) {
+      case 'queued': return colors.textMuted;
+      case 'running': return colors.primary;
+      case 'completed': return colors.success;
+      case 'failed': return colors.danger;
+      case 'killed': return colors.warning;
+      case 'timed-out': return colors.warning;
+      default: return colors.textMuted;
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      {/* Stats summary */}
+      {stats && (
+        <div style={{ ...styles.card, marginBottom: 16 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 16 }}>📊 Execution Stats</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
+            <StatCard label="Running" value={stats.running} color={colors.primary} />
+            <StatCard label="Queued" value={stats.queued} color={colors.textMuted} />
+            <StatCard label="Completed" value={stats.completed} color={colors.success} />
+            <StatCard label="Failed" value={stats.failed} color={colors.danger} />
+            <StatCard label="Killed" value={stats.killed} color={colors.warning} />
+            <StatCard label="Timed Out" value={stats.timedOut} color={colors.warning} />
+          </div>
+        </div>
+      )}
+
+      {/* Active runs */}
+      {activeRuns.length > 0 && (
+        <div style={{ ...styles.card, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 16 }}>▶️ Active Runs ({activeRuns.length})</h3>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {activeRuns.map(run => (
+              <RunCard 
+                key={run.runId} 
+                run={run} 
+                onKill={killRun}
+                onSelect={setSelectedRun}
+                isActive={true}
+                getStateIcon={getStateIcon}
+                getStateColor={getStateColor}
+                formatDuration={formatDuration}
+                formatTimestamp={formatTimestamp}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* No active runs */}
+      {activeRuns.length === 0 && (
+        <div style={{ ...styles.card, marginBottom: 16, textAlign: 'center', padding: 32 }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>💤</div>
+          <div style={{ color: colors.textMuted }}>No active runs</div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            Tool executions will appear here when running
+          </div>
+        </div>
+      )}
+
+      {/* History toggle */}
+      <div style={{ marginBottom: 12 }}>
+        <button 
+          onClick={() => setShowHistory(!showHistory)}
+          style={{ ...styles.button, ...styles.buttonGhost }}
+        >
+          {showHistory ? '▼' : '▶'} Run History ({history.length})
+        </button>
+        {showHistory && history.length > 0 && (
+          <button 
+            onClick={clearHistory}
+            style={{ ...styles.button, ...styles.buttonGhost, marginLeft: 8 }}
+          >
+            Clear History
+          </button>
+        )}
+      </div>
+
+      {/* History */}
+      {showHistory && history.length > 0 && (
+        <div style={styles.card}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {history.map(run => (
+              <RunCard 
+                key={run.runId} 
+                run={run} 
+                onKill={killRun}
+                onSelect={setSelectedRun}
+                isActive={false}
+                getStateIcon={getStateIcon}
+                getStateColor={getStateColor}
+                formatDuration={formatDuration}
+                formatTimestamp={formatTimestamp}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showHistory && history.length === 0 && (
+        <div style={{ ...styles.card, textAlign: 'center', padding: 32 }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>📜</div>
+          <div style={{ color: colors.textMuted }}>No run history</div>
+        </div>
+      )}
+
+      {/* Run detail modal */}
+      {selectedRun && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => setSelectedRun(null)}
+        >
+          <div 
+            style={{ 
+              ...styles.card, 
+              maxWidth: 700, 
+              maxHeight: '80vh', 
+              overflow: 'auto',
+              margin: 16,
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 18 }}>
+                {getStateIcon(selectedRun.state)} {selectedRun.toolName}
+              </h3>
+              <button onClick={() => setSelectedRun(null)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}>✕</button>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ ...styles.label, marginBottom: 8 }}>Status</div>
+              <div style={{ color: getStateColor(selectedRun.state), fontWeight: 600 }}>
+                {selectedRun.state.toUpperCase()}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ ...styles.label, marginBottom: 8 }}>Duration</div>
+              <div>{selectedRun.duration ? formatDuration(selectedRun.duration) : 'In progress...'}</div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ ...styles.label, marginBottom: 8 }}>Started</div>
+              <div>{new Date(selectedRun.startTime).toLocaleString()}</div>
+            </div>
+
+            {selectedRun.triggerSource && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ ...styles.label, marginBottom: 8 }}>Triggered By</div>
+                <div>{selectedRun.triggerSource}</div>
+              </div>
+            )}
+
+            {selectedRun.toolInput && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ ...styles.label, marginBottom: 8 }}>Input</div>
+                <pre style={{ 
+                  background: colors.bgTertiary, 
+                  padding: 12, 
+                  borderRadius: 6, 
+                  fontSize: 12, 
+                  overflow: 'auto',
+                  maxHeight: 200,
+                }}>
+                  {JSON.stringify(selectedRun.toolInput, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {selectedRun.output && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ ...styles.label, marginBottom: 8 }}>Output</div>
+                <pre style={{ 
+                  background: colors.bgTertiary, 
+                  padding: 12, 
+                  borderRadius: 6, 
+                  fontSize: 12, 
+                  overflow: 'auto',
+                  maxHeight: 200,
+                }}>
+                  {typeof selectedRun.output === 'string' ? selectedRun.output : JSON.stringify(selectedRun.output, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {selectedRun.error && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ ...styles.label, marginBottom: 8 }}>Error</div>
+                <div style={{ 
+                  background: colors.bgTertiary, 
+                  padding: 12, 
+                  borderRadius: 6, 
+                  fontSize: 12,
+                  color: colors.danger,
+                }}>
+                  {selectedRun.error}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{ textAlign: 'center', padding: 12, background: colors.bgTertiary, borderRadius: 6 }}>
+      <div style={{ fontSize: 24, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>{label}</div>
+    </div>
+  );
+}
+
+function RunCard({ 
+  run, 
+  onKill, 
+  onSelect, 
+  isActive,
+  getStateIcon,
+  getStateColor,
+  formatDuration,
+  formatTimestamp,
+}: { 
+  run: any; 
+  onKill: (id: string) => void;
+  onSelect: (run: any) => void;
+  isActive: boolean;
+  getStateIcon: (state: string) => string;
+  getStateColor: (state: string) => string;
+  formatDuration: (ms: number) => string;
+  formatTimestamp: (ts: number) => string;
+}) {
+  const elapsed = run.duration || (Date.now() - run.startTime);
+  
+  return (
+    <div 
+      style={{ 
+        background: colors.bgTertiary, 
+        padding: 12, 
+        borderRadius: 6,
+        border: `1px solid ${colors.border}`,
+        cursor: 'pointer',
+        transition: 'all 0.15s',
+      }}
+      onClick={() => onSelect(run)}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = colors.primary)}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = colors.border)}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+            {getStateIcon(run.state)} {run.toolName}
+          </div>
+          <div style={{ fontSize: 12, color: colors.textMuted }}>
+            Started: {formatTimestamp(run.startTime)} • Duration: {formatDuration(elapsed)}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ 
+            fontSize: 11, 
+            fontWeight: 600, 
+            color: getStateColor(run.state),
+            textTransform: 'uppercase',
+          }}>
+            {run.state}
+          </div>
+          {isActive && run.state === 'running' && (
+            <button 
+              onClick={(e) => { e.stopPropagation(); onKill(run.runId); }}
+              style={{ ...styles.button, ...styles.buttonDanger, padding: '4px 8px', fontSize: 11 }}
+            >
+              Kill
+            </button>
+          )}
+        </div>
+      </div>
+      
+      {run.lastOutputSnippet && (
+        <div style={{ 
+          fontSize: 11, 
+          color: colors.textMuted, 
+          fontFamily: 'monospace',
+          background: colors.bg,
+          padding: 6,
+          borderRadius: 4,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {run.lastOutputSnippet}
         </div>
       )}
     </div>
