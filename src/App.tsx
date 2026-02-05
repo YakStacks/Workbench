@@ -13,6 +13,17 @@ type Tool = {
   _sourcePath?: string;
 };
 
+type ToolRunStatus = 'running' | 'success' | 'failed' | 'killed' | 'timeout';
+
+type Artifact = {
+  id: string;
+  filename: string;
+  mimeType?: string;
+  size?: number;
+  content?: string;
+  isFile?: boolean;
+};
+
 type Message = {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
@@ -22,6 +33,8 @@ type Message = {
   toolOutput?: any;
   timestamp: Date;
   isStreaming?: boolean;
+  status?: ToolRunStatus;
+  artifacts?: Artifact[];
 };
 
 type FileEntry = {
@@ -59,6 +72,8 @@ const colors = {
   success: '#22c55e',
   danger: '#ef4444',
   warning: '#f59e0b',
+  killed: '#a855f7',
+  timeout: '#f97316',
 };
 
 const styles = {
@@ -150,6 +165,17 @@ export default function App() {
 
   const onRequestPermission = useCallback((toolName: string, retry: () => void) => {
     setPermissionRequest({ toolName, retry });
+  }, []);
+
+  // Inject keyframes for status spinner animation
+  useEffect(() => {
+    const styleId = 'wb-polish-keyframes';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `@keyframes wb-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
+      document.head.appendChild(style);
+    }
   }, []);
 
   useEffect(() => {
@@ -374,7 +400,32 @@ function ChatTab({
               }
             }
           }
-          
+
+          // Detect tool suggestions in LLM response: [TOOL:toolname] or /toolname patterns
+          const toolSuggestMatch = fullResponse.match(/\[TOOL:([^\]]+)\]/i);
+          if (toolSuggestMatch) {
+            const suggestedName = toolSuggestMatch[1].trim();
+            const matchedTool = tools.find(t =>
+              t.name === suggestedName || t.name.endsWith('.' + suggestedName)
+            );
+            if (matchedTool) {
+              // Extract any JSON input suggestion from the response
+              let suggestedInput: any = {};
+              const inputMatch = fullResponse.match(/\[TOOL_INPUT\]([\s\S]*?)\[\/TOOL_INPUT\]/i);
+              if (inputMatch) {
+                try { suggestedInput = JSON.parse(inputMatch[1].trim()); } catch {}
+              }
+              // Show proposal - don't auto-run
+              const proposalMsg: Message = {
+                id: `msg_${Date.now()}_proposal`,
+                role: 'system',
+                content: `__TOOL_PROPOSAL__${JSON.stringify({ toolName: matchedTool.name, input: suggestedInput })}`,
+                timestamp: new Date(),
+              };
+              setHistory(prev => [...prev, proposalMsg]);
+            }
+          }
+
           setIsStreaming(false);
         },
         onError: (data: any) => {
@@ -404,31 +455,60 @@ function ChatTab({
     }
   };
 
+  // Extract file artifacts from tool input/output
+  const extractArtifacts = (toolInput: any, result: any): Artifact[] => {
+    const artifacts: Artifact[] = [];
+    // Check input for file paths
+    if (toolInput?.path && typeof toolInput.path === 'string') {
+      const filename = toolInput.path.split(/[/\\]/).pop() || toolInput.path;
+      artifacts.push({
+        id: `art_${Date.now()}_input`,
+        filename,
+        content: typeof result?.content === 'string' ? result.content.slice(0, 2000) : undefined,
+        isFile: true,
+        size: typeof result?.content === 'string' ? result.content.length : undefined,
+      });
+    }
+    // Check output for file references
+    if (result?.metadata?.outputFile) {
+      const filename = result.metadata.outputFile.split(/[/\\]/).pop() || result.metadata.outputFile;
+      artifacts.push({
+        id: `art_${Date.now()}_output`,
+        filename,
+        isFile: true,
+      });
+    }
+    return artifacts;
+  };
+
   const runToolInChat = async (tool: Tool, toolInput: any) => {
     const runningMsgId = `msg_${Date.now()}_running`;
     const runningMsg: Message = {
       id: runningMsgId,
-      role: 'system',
+      role: 'tool',
       content: `Running ${tool.name}...`,
+      toolName: tool.name,
+      toolInput: toolInput,
       timestamp: new Date(),
+      status: 'running',
     };
     setHistory(prev => [...prev, runningMsg]);
     setPendingTool(null);
 
     try {
       const result = await window.workbench.runTool(tool.name, toolInput);
-      
+
       // Result is now standardized: { content, metadata?, error? }
       setHistory(prev => prev.filter(m => m.id !== runningMsgId));
-      
+
       // Check if this tool returns a prompt that should be sent to LLM
       const hasPromptFlag = result.metadata?.suggestedRole || result.metadata?.note?.includes('LLM');
       const isPromptTool = hasPromptFlag || result.prompt;
-      
+
       if (isPromptTool && !result.error) {
         // This is a prompt-based tool (like ASAM) - send to LLM automatically
         const promptText = result.prompt || (typeof result.content === 'string' ? result.content : null);
-        
+
         if (promptText) {
           // Update status message
           setHistory(prev => [...prev, {
@@ -436,17 +516,18 @@ function ChatTab({
             role: 'system',
             content: `Processing through LLM (${result.metadata?.suggestedRole || 'writer_cheap'})...`,
             timestamp: new Date(),
+            status: 'running' as ToolRunStatus,
           }]);
-          
+
           // Send to LLM
           const llmResult = await window.workbench.runTask(
             result.metadata?.suggestedRole || 'writer_cheap',
             promptText
           );
-          
+
           // Remove status and add final result
           setHistory(prev => prev.filter(m => !m.id.includes('_llm')));
-          
+
           const toolMsg: Message = {
             id: `msg_${Date.now()}`,
             role: 'tool',
@@ -455,12 +536,14 @@ function ChatTab({
             toolInput: toolInput,
             toolOutput: llmResult,
             timestamp: new Date(),
+            status: 'success',
+            artifacts: extractArtifacts(toolInput, result),
           };
           setHistory(prev => [...prev, toolMsg]);
           return;
         }
       }
-      
+
       // Standard tool output (not a prompt)
       let displayContent = '';
       if (typeof result.content === 'string') {
@@ -468,12 +551,12 @@ function ChatTab({
       } else if (Array.isArray(result.content)) {
         displayContent = result.content.map((c: any) => c.text || JSON.stringify(c)).join('\n');
       }
-      
-      // Check if there's an error
-      if (result.error) {
-        displayContent = `❌ Error: ${displayContent}`;
+
+      const hasError = !!result.error;
+      if (hasError) {
+        displayContent = `Error: ${displayContent}`;
       }
-      
+
       const toolMsg: Message = {
         id: `msg_${Date.now()}`,
         role: 'tool',
@@ -482,17 +565,25 @@ function ChatTab({
         toolInput: toolInput,
         toolOutput: result,
         timestamp: new Date(),
+        status: hasError ? 'failed' : 'success',
+        artifacts: extractArtifacts(toolInput, result),
       };
       setHistory(prev => [...prev, toolMsg]);
-      
+
     } catch (e: any) {
       if (e.message.includes('PERMISSION_REQUIRED:')) {
          const name = e.message.split('PERMISSION_REQUIRED:')[1].trim();
          onRequestPermission(name, () => runToolInChat(tool, toolInput));
          return;
       }
-      setHistory(prev => prev.map(m => 
-        m.id === runningMsgId ? { ...m, content: `Error: ${e.message}` } : m
+      const isTimeout = e.message.toLowerCase().includes('timeout');
+      const isKilled = e.message.toLowerCase().includes('killed') || e.message.toLowerCase().includes('abort');
+      setHistory(prev => prev.map(m =>
+        m.id === runningMsgId ? {
+          ...m,
+          content: `Error: ${e.message}`,
+          status: (isTimeout ? 'timeout' : isKilled ? 'killed' : 'failed') as ToolRunStatus,
+        } : m
       ));
     }
   };
@@ -523,9 +614,34 @@ function ChatTab({
           </div>
         )}
         
-        {history.map(msg => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {history.map(msg => {
+          // Tool proposal messages get a special card
+          if (msg.role === 'system' && msg.content.startsWith('__TOOL_PROPOSAL__')) {
+            try {
+              const proposal = JSON.parse(msg.content.replace('__TOOL_PROPOSAL__', ''));
+              const matchedTool = tools.find(t => t.name === proposal.toolName);
+              return (
+                <ToolProposalCard
+                  key={msg.id}
+                  toolName={proposal.toolName}
+                  suggestedInput={proposal.input}
+                  onConfirm={() => {
+                    if (matchedTool) {
+                      setPendingTool({ tool: matchedTool, input: proposal.input || {} });
+                    }
+                    setHistory(prev => prev.filter(m => m.id !== msg.id));
+                  }}
+                  onDismiss={() => {
+                    setHistory(prev => prev.filter(m => m.id !== msg.id));
+                  }}
+                />
+              );
+            } catch {
+              return <MessageBubble key={msg.id} message={msg} />;
+            }
+          }
+          return <MessageBubble key={msg.id} message={msg} />;
+        })}
         
         <div ref={messagesEndRef} />
       </div>
@@ -694,11 +810,260 @@ function ChatTab({
   );
 }
 
+// Tool proposal card - shown when LLM suggests a tool, user must confirm
+function ToolProposalCard({ toolName, suggestedInput, onConfirm, onDismiss }: {
+  toolName: string;
+  suggestedInput: any;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  const inputKeys = Object.keys(suggestedInput || {});
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{
+        maxWidth: '88%', borderRadius: 8, overflow: 'hidden',
+        background: colors.bgSecondary,
+        border: `1px solid ${colors.primary}`,
+        borderLeft: `3px solid ${colors.primary}`,
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 14px', borderBottom: `1px solid ${colors.border}`,
+          background: colors.primary + '12',
+        }}>
+          <span style={{ fontSize: 14 }}>&#9881;</span>
+          <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>Tool Suggested: {toolName}</span>
+          <span style={{
+            fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+            background: colors.primary + '22', color: colors.primary,
+          }}>
+            Needs Confirmation
+          </span>
+        </div>
+        <div style={{ padding: '10px 14px' }}>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
+            The assistant wants to run this tool. Review and confirm:
+          </div>
+          {inputKeys.length > 0 && (
+            <pre style={{
+              margin: 0, padding: 8, background: colors.bg, borderRadius: 4,
+              fontSize: 11, lineHeight: 1.4, overflow: 'auto', maxHeight: 120,
+            }}>
+              {JSON.stringify(suggestedInput, null, 2)}
+            </pre>
+          )}
+          {inputKeys.length === 0 && (
+            <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: 'italic' }}>
+              No parameters specified
+            </div>
+          )}
+        </div>
+        <div style={{
+          display: 'flex', gap: 8, padding: '8px 14px',
+          borderTop: `1px solid ${colors.border}`, background: colors.bgTertiary,
+        }}>
+          <button
+            onClick={onConfirm}
+            style={{ ...styles.button, ...styles.buttonPrimary, padding: '6px 16px', fontSize: 12 }}
+          >
+            Review & Run
+          </button>
+          <button
+            onClick={onDismiss}
+            style={{ ...styles.button, ...styles.buttonGhost, padding: '6px 12px', fontSize: 12 }}
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Status badge helper
+function StatusBadge({ status }: { status?: ToolRunStatus }) {
+  if (!status) return null;
+  const config: Record<ToolRunStatus, { label: string; color: string; icon: string }> = {
+    running: { label: 'Running', color: colors.primary, icon: '⟳' },
+    success: { label: 'Done', color: colors.success, icon: '✓' },
+    failed:  { label: 'Failed', color: colors.danger, icon: '✕' },
+    killed:  { label: 'Killed', color: colors.killed, icon: '■' },
+    timeout: { label: 'Timeout', color: colors.timeout, icon: '⏱' },
+  };
+  const c = config[status];
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+      background: c.color + '18', color: c.color, letterSpacing: 0.3,
+    }}>
+      <span style={status === 'running' ? {
+        display: 'inline-block', animation: 'wb-spin 1s linear infinite',
+      } : undefined}>{c.icon}</span>
+      {c.label}
+    </span>
+  );
+}
+
+// Artifact card for file references
+function ArtifactCard({ artifact }: { artifact: Artifact }) {
+  const [expanded, setExpanded] = useState(false);
+  const ext = artifact.filename.split('.').pop()?.toLowerCase() || '';
+  const iconMap: Record<string, string> = {
+    js: '📜', ts: '📜', json: '📋', csv: '📊', txt: '📄', md: '📝',
+    html: '🌐', css: '🎨', py: '🐍', yml: '⚙️', yaml: '⚙️',
+  };
+  const icon = iconMap[ext] || '📎';
+
+  return (
+    <div style={{
+      background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6,
+      padding: '8px 12px', marginTop: 8, fontSize: 12,
+    }}>
+      <div
+        onClick={() => artifact.content && setExpanded(!expanded)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          cursor: artifact.content ? 'pointer' : 'default',
+        }}
+      >
+        <span>{icon}</span>
+        <span style={{ fontWeight: 500, flex: 1 }}>{artifact.filename}</span>
+        {artifact.size != null && (
+          <span style={{ color: colors.textMuted, fontSize: 11 }}>
+            {artifact.size > 1024 ? `${(artifact.size / 1024).toFixed(1)} KB` : `${artifact.size} B`}
+          </span>
+        )}
+        {artifact.content && (
+          <span style={{ color: colors.textMuted, fontSize: 10 }}>{expanded ? '▾' : '▸'}</span>
+        )}
+      </div>
+      {expanded && artifact.content && (
+        <pre style={{
+          marginTop: 8, padding: 8, background: colors.bgTertiary, borderRadius: 4,
+          overflow: 'auto', maxHeight: 200, fontSize: 11, lineHeight: 1.4,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        }}>
+          {artifact.content.length > 2000 ? artifact.content.slice(0, 2000) + '\n\n... (truncated)' : artifact.content}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({ message }: { message: Message }) {
+  const [outputExpanded, setOutputExpanded] = useState(false);
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const isSystem = message.role === 'system';
 
+  // Tool messages get a redesigned run card layout
+  if (isTool) {
+    const statusColor = message.status === 'running' ? colors.primary
+      : message.status === 'failed' ? colors.danger
+      : message.status === 'killed' ? colors.killed
+      : message.status === 'timeout' ? colors.timeout
+      : message.status === 'success' ? colors.success
+      : colors.border;
+
+    const contentLines = message.content?.split('\n') || [];
+    const isLongOutput = contentLines.length > 6 || (message.content?.length || 0) > 400;
+
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{
+          maxWidth: '88%', borderRadius: 8, overflow: 'hidden',
+          background: colors.bgSecondary, border: `1px solid ${colors.border}`,
+          borderLeft: `3px solid ${statusColor}`,
+        }}>
+          {/* Tool card header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 14px', borderBottom: `1px solid ${colors.border}`,
+            background: colors.bgTertiary,
+          }}>
+            <span style={{ fontSize: 13 }}>&#9881;</span>
+            <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{message.toolName}</span>
+            <StatusBadge status={message.status} />
+          </div>
+
+          {/* Tool card body */}
+          <div style={{ padding: '10px 14px' }}>
+            {message.status === 'running' ? (
+              <div style={{ color: colors.textMuted, fontSize: 13, fontStyle: 'italic' }}>
+                Executing...
+              </div>
+            ) : (
+              <>
+                <div style={{
+                  whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, fontFamily: 'monospace',
+                  maxHeight: isLongOutput && !outputExpanded ? 140 : 'none',
+                  overflow: 'hidden', wordBreak: 'break-word',
+                }}>
+                  {message.content}
+                </div>
+                {isLongOutput && (
+                  <button
+                    onClick={() => setOutputExpanded(!outputExpanded)}
+                    style={{
+                      background: 'none', border: 'none', color: colors.primary,
+                      cursor: 'pointer', fontSize: 12, padding: '6px 0 0', fontWeight: 500,
+                    }}
+                  >
+                    {outputExpanded ? 'Show less' : `Show more (${contentLines.length} lines)`}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Artifacts */}
+          {message.artifacts && message.artifacts.length > 0 && (
+            <div style={{ padding: '0 14px 10px' }}>
+              {message.artifacts.map(art => (
+                <ArtifactCard key={art.id} artifact={art} />
+              ))}
+            </div>
+          )}
+
+          {/* Tool card footer */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '6px 14px', borderTop: `1px solid ${colors.border}`,
+            background: colors.bgTertiary, fontSize: 10, color: colors.textMuted,
+          }}>
+            <span>{message.timestamp.toLocaleTimeString()}</span>
+            {message.toolInput && Object.keys(message.toolInput).length > 0 && (
+              <span style={{ fontFamily: 'monospace' }}>
+                {Object.keys(message.toolInput).length} param{Object.keys(message.toolInput).length !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // System messages (status updates) with optional status
+  if (isSystem) {
+    return (
+      <div style={{
+        display: 'flex', justifyContent: 'center', marginBottom: 10,
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 14px', borderRadius: 16,
+          background: colors.bgTertiary, fontSize: 12, color: colors.textMuted,
+          fontStyle: 'italic',
+        }}>
+          {message.status && <StatusBadge status={message.status} />}
+          <span>{message.content}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // User and assistant messages
   return (
     <div style={{
       display: 'flex',
@@ -709,21 +1074,15 @@ function MessageBubble({ message }: { message: Message }) {
         maxWidth: '80%',
         padding: '10px 14px',
         borderRadius: 12,
-        background: isUser ? colors.primary : isTool ? colors.bgTertiary : isSystem ? 'transparent' : colors.bgSecondary,
-        border: isTool ? `1px solid ${colors.border}` : isSystem ? 'none' : `1px solid ${colors.border}`,
-        color: isSystem ? colors.textMuted : colors.text,
-        fontStyle: isSystem ? 'italic' : 'normal',
+        background: isUser ? colors.primary : colors.bgSecondary,
+        border: `1px solid ${isUser ? 'transparent' : colors.border}`,
+        color: colors.text,
       }}>
-        {isTool && (
-          <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>
-            🔧 {message.toolName}
-          </div>
-        )}
         <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.5 }}>
           {message.content}
-          {message.isStreaming && <span style={{ opacity: 0.5 }}>▊</span>}
+          {message.isStreaming && <span style={{ opacity: 0.5 }}>&#9612;</span>}
         </div>
-        <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
+        <div style={{ fontSize: 10, color: isUser ? 'rgba(255,255,255,0.6)' : colors.textMuted, marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
           {message.timestamp.toLocaleTimeString()}
         </div>
       </div>
