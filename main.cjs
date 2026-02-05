@@ -525,9 +525,13 @@ function registerBuiltinTools() {
                         var stderr = "";
                         (_a = proc.stdout) === null || _a === void 0 ? void 0 : _a.on("data", function (data) {
                             stdout += data.toString();
+                            if (proc.pid)
+                                processRegistry.recordActivity(proc.pid);
                         });
                         (_b = proc.stderr) === null || _b === void 0 ? void 0 : _b.on("data", function (data) {
                             stderr += data.toString();
+                            if (proc.pid)
+                                processRegistry.recordActivity(proc.pid);
                         });
                         proc.on("close", function (code) {
                             resolve({ exitCode: code, stdout: stdout, stderr: stderr, command: input.command });
@@ -1727,14 +1731,14 @@ function buildDiagnosticSuggestions(toolName, errorText) {
         });
     }
     if (/(timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network)/i.test(text)) {
+        var toolHints = getTimeoutHintsForTool(toolName);
         pushSuggestion({
             classifier: "network_timeout",
             doctorSections: ["Localhost Network", "Proxy/Firewall"],
             explanation: "The failure pattern suggests a network or timeout issue.",
-            suggestions: [
-                "Retry with smaller input.",
+            suggestions: __spreadArray(__spreadArray([], toolHints, true), [
                 "Check proxy/firewall settings and local network diagnostics.",
-            ],
+            ], false),
             safeFixes: [],
         });
     }
@@ -1944,13 +1948,17 @@ electron_1.ipcMain.handle("toolHealth:removeKnownIssue", function (_e, toolName,
     return { success: true, issues: current };
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, runId, message, runInput, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1;
+    var tool, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                // Concurrency cap check
+                if (!processRegistry.canSpawn()) {
+                    throw new Error("Concurrency limit reached (".concat(processRegistry.getCount(), " processes running). Wait for existing tools to finish or kill some first."));
+                }
                 runId = runManager.createRun(name, input, 'user');
                 try {
                     enforceToolPermissions(name);
@@ -1968,10 +1976,14 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                     ? input && typeof input === "object" && !Array.isArray(input)
                         ? __assign(__assign({}, input), { __runId: runId }) : { __runId: runId }
                     : input;
-                TOOL_TIMEOUT = 30000;
+                DEFAULT_TOOL_TIMEOUT = 30000;
+                manifest = manifestRegistry.get(name);
+                TOOL_TIMEOUT = ((manifest === null || manifest === void 0 ? void 0 : manifest.timeoutMs) && manifest.timeoutMs > 0)
+                    ? manifest.timeoutMs
+                    : DEFAULT_TOOL_TIMEOUT;
                 MAX_OUTPUT_SIZE = 500000;
                 timeoutPromise = new Promise(function (_, reject) {
-                    setTimeout(function () { return reject(new Error("Tool execution timeout (30s limit)")); }, TOOL_TIMEOUT);
+                    setTimeout(function () { return reject(new Error("Tool execution timeout (".concat(Math.round(TOOL_TIMEOUT / 1000), "s limit)"))); }, TOOL_TIMEOUT);
                 });
                 _a.label = 1;
             case 1:
@@ -2733,14 +2745,18 @@ electron_1.ipcMain.handle("doctor:export", function (_e_1) {
         });
     });
 });
-// Smart Auto-Diagnostics (M) - lightweight failure classifier
+// Auto-Diagnostics - basic suggestions always enabled (V2.0 Trust Core).
+// Safe-fix preview flow is gated behind M_SMART_AUTO_DIAGNOSTICS.
 electron_1.ipcMain.handle("doctor:suggestFailure", function (_e, toolName, errorText) {
-    if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
-        return { enabled: false, suggestions: [] };
-    }
+    var suggestions = buildDiagnosticSuggestions(toolName || "", errorText || "");
+    var smartEnabled = isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS");
+    // Strip safeFixes when M flag is off so safe-fix UI stays hidden
+    var cleaned = smartEnabled
+        ? suggestions
+        : suggestions.map(function (s) { return (__assign(__assign({}, s), { safeFixes: [] })); });
     return {
         enabled: true,
-        suggestions: buildDiagnosticSuggestions(toolName || "", errorText || ""),
+        suggestions: cleaned,
     };
 });
 electron_1.ipcMain.handle("safeFix:preview", function (_e, fixId) {
@@ -2876,17 +2892,24 @@ electron_1.ipcMain.handle("runs:get", function (_e, runId) {
 electron_1.ipcMain.handle("runs:getStats", function () {
     return runManager.getStats();
 });
-// Kill a run
-electron_1.ipcMain.handle("runs:kill", function (_e, runId) {
-    var run = runManager.getRun(runId);
-    if (!run)
-        return { success: false, error: 'Run not found' };
-    // Kill all processes associated with this run
-    var killed = processRegistry.killRun(runId);
-    console.log("[runs:kill] Killed ".concat(killed, " processes for run ").concat(runId));
-    runManager.killRun(runId);
-    return { success: true, processesKilled: killed };
-});
+// Kill a run (graceful: SIGTERM then SIGKILL after 3s)
+electron_1.ipcMain.handle("runs:kill", function (_e, runId) { return __awaiter(void 0, void 0, void 0, function () {
+    var run, killed;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                run = runManager.getRun(runId);
+                if (!run)
+                    return [2 /*return*/, { success: false, error: 'Run not found' }];
+                return [4 /*yield*/, processRegistry.gracefulKillRun(runId, 3000)];
+            case 1:
+                killed = _a.sent();
+                console.log("[runs:kill] Killed ".concat(killed, " processes for run ").concat(runId));
+                runManager.killRun(runId);
+                return [2 /*return*/, { success: true, processesKilled: killed }];
+        }
+    });
+}); });
 // Clear run history
 electron_1.ipcMain.handle("runs:clearHistory", function () {
     runManager.clearHistory();

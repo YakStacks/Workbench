@@ -14,6 +14,7 @@ export interface ProcessInfo {
   runId?: string;
   toolName?: string;
   startTime: number;
+  lastActivityTime: number;
   command?: string;
   type: 'tool' | 'mcp' | 'other';
 }
@@ -25,23 +26,40 @@ export interface ProcessInfo {
 export class ProcessRegistry {
   private processes: Map<number, ProcessInfo> = new Map();
   private childProcesses: Map<number, ChildProcess> = new Map();
+  private maxConcurrent: number = 20;
+
+  /**
+   * Set maximum concurrent processes (concurrency cap)
+   */
+  setMaxConcurrent(max: number): void {
+    this.maxConcurrent = max;
+  }
+
+  /**
+   * Check if we can spawn another process (concurrency cap)
+   */
+  canSpawn(): boolean {
+    return this.processes.size < this.maxConcurrent;
+  }
 
   /**
    * Register a process
    */
   register(
     proc: ChildProcess,
-    info: Omit<ProcessInfo, 'processId' | 'startTime'>
+    info: Omit<ProcessInfo, 'processId' | 'startTime' | 'lastActivityTime'>
   ): void {
     if (!proc.pid) {
       console.warn('[ProcessRegistry] Cannot register process without PID');
       return;
     }
     const pid = proc.pid;
+    const now = Date.now();
 
     const processInfo: ProcessInfo = {
       processId: pid,
-      startTime: Date.now(),
+      startTime: now,
+      lastActivityTime: now,
       ...info,
     };
 
@@ -64,6 +82,16 @@ export class ProcessRegistry {
     this.processes.delete(pid);
     this.childProcesses.delete(pid);
     console.log(`[ProcessRegistry] Unregistered process ${pid}`);
+  }
+
+  /**
+   * Record activity for a process (updates lastActivityTime for hung detection)
+   */
+  recordActivity(pid: number): void {
+    const info = this.processes.get(pid);
+    if (info) {
+      info.lastActivityTime = Date.now();
+    }
   }
 
   /**
@@ -215,13 +243,42 @@ export class ProcessRegistry {
   }
 
   /**
-   * Check for hung processes (no activity for X seconds)
-   * Note: This requires external monitoring to update activity
+   * Check for hung processes (no output/activity for X seconds)
    */
   getHungProcesses(inactivityMs: number = 60000): ProcessInfo[] {
     const now = Date.now();
     return Array.from(this.processes.values()).filter(
-      info => (now - info.startTime) > inactivityMs
+      info => (now - info.lastActivityTime) > inactivityMs
     );
+  }
+
+  /**
+   * Graceful kill for a specific run: SIGTERM then SIGKILL after timeout
+   */
+  async gracefulKillRun(runId: string, timeoutMs: number = 3000): Promise<number> {
+    const procs = this.getByRunId(runId);
+    if (procs.length === 0) return 0;
+
+    this.killRun(runId, 'SIGTERM');
+
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (this.getByRunId(runId).length === 0) {
+          clearInterval(check);
+          clearTimeout(force);
+          resolve();
+        }
+      }, 100);
+      const force = setTimeout(() => {
+        clearInterval(check);
+        const remaining = this.getByRunId(runId);
+        for (const p of remaining) {
+          this.forceKill(p.processId);
+        }
+        resolve();
+      }, timeoutMs);
+    });
+
+    return procs.length;
   }
 }

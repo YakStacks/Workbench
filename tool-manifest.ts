@@ -52,6 +52,9 @@ export interface ToolManifest {
   supportsPreview?: boolean; // Can this tool do dry-run?
   isIdempotent?: boolean; // Safe to run multiple times?
 
+  // Execution limits
+  timeoutMs?: number; // Per-tool timeout override (default: 30000)
+
   // Metadata
   homepage?: string;
   repository?: string;

@@ -23,6 +23,7 @@ export interface EnvironmentInfo {
   freeMemory: number;
   cpuCores: number;
   supported: boolean;
+  elevatedPrivileges: boolean;
   risks: EnvironmentRisk[];
   capabilities: EnvironmentCapability[];
 }
@@ -49,6 +50,7 @@ export class EnvironmentDetector {
    * Get comprehensive environment information
    */
   async getEnvironmentInfo(): Promise<EnvironmentInfo> {
+    const elevated = this.isElevated();
     const info: EnvironmentInfo = {
       platform: process.platform,
       arch: process.arch,
@@ -59,9 +61,19 @@ export class EnvironmentDetector {
       freeMemory: os.freemem(),
       cpuCores: os.cpus().length,
       supported: true,
+      elevatedPrivileges: elevated,
       risks: [],
       capabilities: [],
     };
+
+    if (elevated) {
+      info.risks.push({
+        level: 'warning',
+        category: 'security',
+        message: 'Running with elevated privileges (admin/root)',
+        recommendation: 'Consider running without admin privileges for safer operation',
+      });
+    }
 
     // Check if platform is supported
     if (!this.isSupportedPlatform(info.platform)) {
@@ -108,6 +120,22 @@ export class EnvironmentDetector {
   /**
    * Check if platform is supported
    */
+  /**
+   * Check if running with elevated privileges (root/admin)
+   */
+  private isElevated(): boolean {
+    try {
+      if (process.platform === 'win32') {
+        // On Windows, check if UID is 0 (not reliable) or use env hint
+        return process.env.ELEVATED === '1' || false;
+      }
+      // Unix: check if running as root (uid 0)
+      return process.getuid?.() === 0;
+    } catch {
+      return false;
+    }
+  }
+
   private isSupportedPlatform(platform: string): boolean {
     return ['win32', 'darwin', 'linux'].includes(platform);
   }

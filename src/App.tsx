@@ -899,10 +899,6 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission, feature
   }, [selected, featureFlags.L_TOOL_HEALTH_SIGNALS]);
 
   const loadDiagnosticSuggestions = async (toolName: string, errorMessage: string) => {
-    if (!featureFlags.M_SMART_AUTO_DIAGNOSTICS) {
-      setDiagnosticSuggestions([]);
-      return;
-    }
     try {
       const result = await window.workbench.doctor.suggestFailure(toolName, errorMessage);
       setDiagnosticSuggestions(result?.suggestions || []);
@@ -1303,9 +1299,9 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission, feature
               </div>
             )}
 
-            {featureFlags.M_SMART_AUTO_DIAGNOSTICS && diagnosticSuggestions.length > 0 && (
+            {diagnosticSuggestions.length > 0 && (
               <div style={styles.card}>
-                <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Smart Auto-Diagnostics</h3>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Diagnostics</h3>
                 {diagnosticSuggestions.map((suggestion: any, idx: number) => (
                   <div key={`diag-${idx}`} style={{
                     background: colors.bgTertiary,
@@ -2143,7 +2139,16 @@ function CrashRecoveryModal({ runs, onClose }: { runs: any[]; onClose: () => voi
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button 
+          <button
+            onClick={async () => {
+              await window.workbench.runs.clearInterrupted();
+              onClose();
+            }}
+            style={{ ...styles.button, ...styles.buttonGhost }}
+          >
+            Cleanup &amp; Dismiss
+          </button>
+          <button
             onClick={onClose}
             style={{ ...styles.button, ...styles.buttonPrimary }}
           >
@@ -2246,9 +2251,30 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
   }
 
   if (!permissionInfo) {
-    // No permissions declared - allow by default
-    onAllow(false);
-    return null;
+    // No permissions declared - still prompt with basic notice
+    return (
+      <div style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+      }} onClick={onClose}>
+        <div style={{ ...styles.card, maxWidth: 400, minWidth: 300 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 32 }}>🔐</div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 18 }}>Permission Required</h3>
+              <div style={{ fontSize: 13, color: colors.textMuted }}>{toolName}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 16 }}>
+            This tool has no declared permissions. Allow it to run?
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onDeny} style={{ ...styles.button, flex: 1, background: colors.bgTertiary }}>Deny</button>
+            <button onClick={() => onAllow(false)} style={{ ...styles.button, ...styles.buttonPrimary, flex: 1 }}>Allow Once</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -2548,6 +2574,7 @@ function RunningTab({ featureFlags }: { featureFlags: FeatureFlags }) {
   const [selectedRun, setSelectedRun] = useState<any>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [exportingBundle, setExportingBundle] = useState(false);
+  const [logsCopied, setLogsCopied] = useState(false);
 
   // Load initial data
   useEffect(() => {
@@ -2820,6 +2847,36 @@ function RunningTab({ featureFlags }: { featureFlags: FeatureFlags }) {
                 {getStateIcon(selectedRun.state)} {selectedRun.toolName}
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={async () => {
+                    const lines: string[] = [];
+                    lines.push(`Tool: ${selectedRun.toolName}`);
+                    lines.push(`State: ${selectedRun.state}`);
+                    lines.push(`Started: ${new Date(selectedRun.startTime).toLocaleString()}`);
+                    if (selectedRun.duration) lines.push(`Duration: ${formatDuration(selectedRun.duration)}`);
+                    if (selectedRun.triggerSource) lines.push(`Trigger: ${selectedRun.triggerSource}`);
+                    if (selectedRun.output) {
+                      lines.push('\n--- Output ---');
+                      lines.push(typeof selectedRun.output === 'string' ? selectedRun.output : JSON.stringify(selectedRun.output, null, 2));
+                    }
+                    if (selectedRun.error) {
+                      lines.push('\n--- Error ---');
+                      lines.push(selectedRun.error);
+                    }
+                    // Sanitize: redact paths that look like home dirs
+                    let text = lines.join('\n');
+                    try {
+                      const redacted = await window.workbench.secrets.redact(text);
+                      text = typeof redacted === 'string' ? redacted : text;
+                    } catch { /* redaction best-effort */ }
+                    await navigator.clipboard.writeText(text);
+                    setLogsCopied(true);
+                    setTimeout(() => setLogsCopied(false), 2000);
+                  }}
+                  style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}
+                >
+                  {logsCopied ? 'Copied!' : 'Copy Logs'}
+                </button>
                 {featureFlags.N_EXPORT_RUN_BUNDLE && (
                   <button
                     onClick={exportRunBundle}
@@ -3382,6 +3439,30 @@ function SettingsTab({ featureFlags, setFeatureFlags }: {
             </button>
             <button onClick={() => window.workbench.reloadPlugins()} style={{ ...styles.button, ...styles.buttonGhost, marginLeft: 8 }}>
               Reload Plugins
+            </button>
+          </div>
+
+          <div style={{ ...styles.card, borderColor: colors.danger }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, color: colors.danger }}>Reset Workbench Data</h3>
+            <p style={{ fontSize: 12, color: colors.textMuted, margin: '0 0 12px' }}>
+              Clear all run history, chat history, and permission policies. This cannot be undone.
+            </p>
+            <button
+              onClick={async () => {
+                if (!confirm('Are you sure you want to reset ALL Workbench data? This cannot be undone.')) return;
+                try {
+                  await window.workbench.runs.clearAll();
+                  await window.workbench.chat.clear();
+                  await window.workbench.permissions.resetAll();
+                  alert('All data has been cleared. The app will reload.');
+                  window.location.reload();
+                } catch (e: any) {
+                  alert('Reset failed: ' + e.message);
+                }
+              }}
+              style={{ ...styles.button, ...styles.buttonDanger }}
+            >
+              Reset All Data
             </button>
           </div>
         </div>

@@ -523,9 +523,11 @@ function registerBuiltinTools() {
 
         proc.stdout?.on("data", (data) => {
           stdout += data.toString();
+          if (proc.pid) processRegistry.recordActivity(proc.pid);
         });
         proc.stderr?.on("data", (data) => {
           stderr += data.toString();
+          if (proc.pid) processRegistry.recordActivity(proc.pid);
         });
 
         proc.on("close", (code) => {
@@ -1901,12 +1903,13 @@ function buildDiagnosticSuggestions(
       text,
     )
   ) {
+    const toolHints = getTimeoutHintsForTool(toolName);
     pushSuggestion({
       classifier: "network_timeout",
       doctorSections: ["Localhost Network", "Proxy/Firewall"],
       explanation: "The failure pattern suggests a network or timeout issue.",
       suggestions: [
-        "Retry with smaller input.",
+        ...toolHints,
         "Check proxy/firewall settings and local network diagnostics.",
       ],
       safeFixes: [],
@@ -2159,6 +2162,13 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 
+  // Concurrency cap check
+  if (!processRegistry.canSpawn()) {
+    throw new Error(
+      `Concurrency limit reached (${processRegistry.getCount()} processes running). Wait for existing tools to finish or kill some first.`
+    );
+  }
+
   // Create run tracking
   const runId = runManager.createRun(name, input, 'user');
 
@@ -2185,13 +2195,17 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
         : { __runId: runId }
       : input;
 
-  // Safety: Tool timeout (30 seconds)
-  const TOOL_TIMEOUT = 30000;
+  // Per-tool timeout: check manifest, fallback to global default (30s)
+  const DEFAULT_TOOL_TIMEOUT = 30000;
+  const manifest = manifestRegistry.get(name) as any;
+  const TOOL_TIMEOUT = (manifest?.timeoutMs && manifest.timeoutMs > 0)
+    ? manifest.timeoutMs
+    : DEFAULT_TOOL_TIMEOUT;
   const MAX_OUTPUT_SIZE = 500000; // 500KB max output
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
-      () => reject(new Error("Tool execution timeout (30s limit)")),
+      () => reject(new Error(`Tool execution timeout (${Math.round(TOOL_TIMEOUT / 1000)}s limit)`)),
       TOOL_TIMEOUT,
     );
   });
@@ -3035,16 +3049,20 @@ ipcMain.handle("doctor:export", async (_e, sanitize: boolean = true) => {
   return { success: true, filePath };
 });
 
-// Smart Auto-Diagnostics (M) - lightweight failure classifier
+// Auto-Diagnostics - basic suggestions always enabled (V2.0 Trust Core).
+// Safe-fix preview flow is gated behind M_SMART_AUTO_DIAGNOSTICS.
 ipcMain.handle(
   "doctor:suggestFailure",
   (_e, toolName: string, errorText: string) => {
-    if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
-      return { enabled: false, suggestions: [] };
-    }
+    const suggestions = buildDiagnosticSuggestions(toolName || "", errorText || "");
+    const smartEnabled = isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS");
+    // Strip safeFixes when M flag is off so safe-fix UI stays hidden
+    const cleaned = smartEnabled
+      ? suggestions
+      : suggestions.map((s) => ({ ...s, safeFixes: [] }));
     return {
       enabled: true,
-      suggestions: buildDiagnosticSuggestions(toolName || "", errorText || ""),
+      suggestions: cleaned,
     };
   },
 );
@@ -3199,15 +3217,15 @@ ipcMain.handle("runs:getStats", () => {
   return runManager.getStats();
 });
 
-// Kill a run
-ipcMain.handle("runs:kill", (_e, runId: string) => {
+// Kill a run (graceful: SIGTERM then SIGKILL after 3s)
+ipcMain.handle("runs:kill", async (_e, runId: string) => {
   const run = runManager.getRun(runId);
   if (!run) return { success: false, error: 'Run not found' };
-  
-  // Kill all processes associated with this run
-  const killed = processRegistry.killRun(runId);
+
+  // Graceful kill: SIGTERM → wait 3s → SIGKILL remaining
+  const killed = await processRegistry.gracefulKillRun(runId, 3000);
   console.log(`[runs:kill] Killed ${killed} processes for run ${runId}`);
-  
+
   runManager.killRun(runId);
   return { success: true, processesKilled: killed };
 });
