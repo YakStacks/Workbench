@@ -4,9 +4,25 @@ Local-first AI task runner. Build automations by chatting.
 
 No cloud. No subscription. Your tools, your data, your machine.
 
-![Workbench v0.1.0](https://img.shields.io/badge/version-0.1.0-blue)
+![Workbench v2.0.0-dev](https://img.shields.io/badge/version-2.0.0--dev-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform Windows](https://img.shields.io/badge/platform-Windows%20%7C%20Mac%20%7C%20Linux-lightgrey)
+
+## 🎉 What's New in V2.0
+
+Workbench V2.0 is a major upgrade focused on **Trust, Safety, and User Experience**:
+
+- **🔐 Secrets Safety**: OS-level encrypted credential storage (Windows DPAPI, macOS Keychain, Linux Secret Service)
+- **👁️ Dry Run / Preview Mode**: See what tools will do before they execute
+- **📋 Tool Manifest Standard**: Standardized metadata for ecosystem hygiene
+- **🧠 User Memory**: Opt-in learning system that remembers your preferences
+- **🎯 Natural Language Tool Dispatch**: AI-powered tool selection from plain English
+- **🌍 Environment Detection**: Clear messaging for supported/unsupported platforms
+
+📚 **[Read the V2.0 Features Guide →](./V2_FEATURES_GUIDE.md)**  
+⚡ **[Quick Reference →](./V2_QUICK_REFERENCE.md)**
+
+---
 
 ## Why Workbench?
 

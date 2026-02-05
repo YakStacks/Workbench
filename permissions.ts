@@ -128,9 +128,9 @@ export class PermissionManager {
     const permissions = this.toolPermissions.get(toolName);
     const policy = this.policies.get(toolName);
 
-    // No permissions declared = unrestricted (legacy tools)
+    // No permissions declared = deny by default
     if (!permissions) {
-      return { allowed: true, needsPrompt: false };
+      return { allowed: false, needsPrompt: false };
     }
 
     // Check if tool declares this category

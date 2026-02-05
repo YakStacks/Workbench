@@ -20,11 +20,23 @@ import { DoctorEngine, DoctorReport } from "./doctor";
 import { PermissionManager, ToolPermissions, PermissionCategory, PermissionAction } from "./permissions";
 import { RunManager } from "./run-manager";
 import { ProcessRegistry } from "./process-registry";
+import { SecretsManager } from "./secrets-manager";
+import { ToolManifestRegistry, ToolManifest } from "./tool-manifest";
+import { PreviewManager, PreviewBuilder } from "./dry-run";
+import { MemoryManager } from "./memory-manager";
+import { ToolDispatcher } from "./tool-dispatch";
+import { EnvironmentDetector } from "./environment-detection";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
 const runManager = new RunManager(store);
 const processRegistry = new ProcessRegistry();
+const secretsManager = new SecretsManager(store);
+const manifestRegistry = new ToolManifestRegistry();
+const previewManager = new PreviewManager();
+const memoryManager = new MemoryManager(store);
+const toolDispatcher = new ToolDispatcher(permissionManager, previewManager);
+const environmentDetector = new EnvironmentDetector();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -32,6 +44,32 @@ let tools: Map<string, any> = new Map();
 
 // Add isQuitting flag to app
 let isQuitting = false;
+
+type FeatureFlagKey =
+  | "L_TOOL_HEALTH_SIGNALS"
+  | "M_SMART_AUTO_DIAGNOSTICS"
+  | "N_PERMISSION_PROFILES"
+  | "N_RUN_TIMELINE"
+  | "N_EXPORT_RUN_BUNDLE";
+
+type FeatureFlags = Record<FeatureFlagKey, boolean>;
+
+const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
+  L_TOOL_HEALTH_SIGNALS: false,
+  M_SMART_AUTO_DIAGNOSTICS: false,
+  N_PERMISSION_PROFILES: false,
+  N_RUN_TIMELINE: false,
+  N_EXPORT_RUN_BUNDLE: false,
+};
+
+function getFeatureFlags(): FeatureFlags {
+  const stored = (store.get("featureFlags") as Partial<FeatureFlags>) || {};
+  return { ...DEFAULT_FEATURE_FLAGS, ...stored };
+}
+
+function isFeatureEnabled(flag: FeatureFlagKey): boolean {
+  return Boolean(getFeatureFlags()[flag]);
+}
 
 // Standard tool response format
 interface ToolResponse {
@@ -216,26 +254,6 @@ app.on('before-quit', async (event) => {
   }
 });
 
-// Cleanup processes before quit
-app.on('before-quit', async () => {
-  console.log('[app] Starting cleanup before quit...');
-  isQuitting = true;
-  
-  // Kill all child processes
-  await processRegistry.gracefulShutdown(5000);
-  
-  // Disconnect MCP clients
-  mcpClients.forEach(client => {
-    try {
-      client.disconnect();
-    } catch (error) {
-      console.error('[app] Error disconnecting MCP client:', error);
-    }
-  });
-  
-  console.log('[app] Cleanup complete');
-});
-
 // ============================================================================
 // PLUGIN SYSTEM
 // ============================================================================
@@ -287,12 +305,12 @@ function loadPlugins() {
                 folder,
               );
               tools.set(tool.name, tool);
-              
-              // Register permissions if declared
-              if (tool.permissions) {
-                permissionManager.registerToolPermissions(tool.name, tool.permissions);
-                console.log(`[loadPlugins] Registered permissions for ${tool.name}`);
-              }
+
+              // Ensure every tool has explicit permission metadata
+              permissionManager.registerToolPermissions(
+                tool.name,
+                tool.permissions || {},
+              );
             },
             getPluginsDir: () => pluginsDir,
             reloadPlugins: () => loadPlugins(),
@@ -483,12 +501,22 @@ function registerBuiltinTools() {
         const isWindows = process.platform === "win32";
         const shell = isWindows ? "cmd.exe" : "/bin/sh";
         const shellArg = isWindows ? "/c" : "-c";
+        const runId = (input as any).__runId as string | undefined;
 
         const proc = spawn(shell, [shellArg, input.command], {
           cwd,
           timeout: input.timeout || 30000,
           env: process.env,
         });
+        processRegistry.register(proc, {
+          runId,
+          toolName: "builtin.shell",
+          command: input.command,
+          type: "tool",
+        });
+        if (runId && proc.pid) {
+          runManager.setProcessId(runId, proc.pid);
+        }
 
         let stdout = "";
         let stderr = "";
@@ -565,7 +593,7 @@ function registerBuiltinTools() {
         },
       },
     },
-    run: async (input: { limit?: number }) => {
+    run: async (input: { limit?: number; __runId?: string }) => {
       return new Promise((resolve) => {
         const limit = input.limit || 20;
         const isWindows = process.platform === "win32";
@@ -578,6 +606,15 @@ function registerBuiltinTools() {
             timeout: 10000,
           },
         );
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.processes",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -602,7 +639,7 @@ function registerBuiltinTools() {
     name: "builtin.diskSpace",
     description: "Check disk space usage",
     inputSchema: { type: "object", properties: {} },
-    run: async () => {
+    run: async (input: { __runId?: string } = {}) => {
       return new Promise((resolve) => {
         const isWindows = process.platform === "win32";
         const cmd = isWindows
@@ -616,6 +653,15 @@ function registerBuiltinTools() {
             timeout: 10000,
           },
         );
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.diskSpace",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -695,13 +741,22 @@ function registerBuiltinTools() {
     name: "builtin.installedApps",
     description: "List installed applications (Windows only)",
     inputSchema: { type: "object", properties: {} },
-    run: async () => {
+    run: async (input: { __runId?: string } = {}) => {
       if (process.platform !== "win32") {
         return { error: "This tool only works on Windows" };
       }
       return new Promise((resolve) => {
         const cmd = "wmic product get name,version";
         const proc = spawn("cmd.exe", ["/c", cmd], { timeout: 30000 });
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.installedApps",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -724,33 +779,56 @@ function registerBuiltinTools() {
       });
     },
   });
+
+  // Ensure builtin tools always have declared permission metadata.
+  tools.forEach((_tool, toolName) => {
+    if (
+      toolName.startsWith("builtin.") &&
+      !permissionManager.getToolPermissions(toolName)
+    ) {
+      permissionManager.registerToolPermissions(toolName, {});
+    }
+  });
 }
 
 function resolveSafePath(inputPath: string): string {
   const normalized = inputPath.trim();
   // Allow absolute paths or resolve relative to user's home
   if (path.isAbsolute(normalized)) {
-    return normalized;
+    return path.resolve(normalized);
   }
   const workingDir = (store.get("workingDir") as string) || app.getPath("home");
   return path.resolve(workingDir, normalized);
 }
 
+function normalizePathForComparison(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  const normalized = path.normalize(resolved);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isPathWithinRoot(targetPath: string, rootPath: string): boolean {
+  const target = normalizePathForComparison(targetPath);
+  const root = normalizePathForComparison(rootPath);
+  if (target === root) return true;
+  const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  return target.startsWith(rootWithSep);
+}
+
 function isPathSafe(targetPath: string): boolean {
   const safePaths = (store.get("safePaths") as string[]) || [];
   const workingDir = store.get("workingDir") as string;
+  const resolvedTarget = path.resolve(targetPath);
 
   // If no safe paths configured, allow workingDir and home
   if (safePaths.length === 0) {
     const allowedRoots = [workingDir, app.getPath("home"), process.cwd()].filter(Boolean);
-    return allowedRoots.some((root) => targetPath.startsWith(root));
+    return allowedRoots.some((root) => isPathWithinRoot(resolvedTarget, root));
   }
 
   // Check if path is within any safe path
-  const resolved = path.resolve(targetPath);
   return safePaths.some((safePath) => {
-    const resolvedSafe = path.resolve(safePath);
-    return resolved.startsWith(resolvedSafe);
+    return isPathWithinRoot(resolvedTarget, safePath);
   });
 }
 
@@ -922,6 +1000,13 @@ class MCPClient {
           shell: false,
           detached: false, // Keep process attached
         });
+        if (this.process?.pid) {
+          processRegistry.register(this.process, {
+            toolName: this.name,
+            command: `${command} ${args.join(" ")}`.trim(),
+            type: "mcp",
+          });
+        }
 
         // Prevent stdin from auto-closing
         if (this.process.stdin) {
@@ -1467,6 +1552,45 @@ class MCPProxyClient {
 
 const mcpClients: Map<string, MCPClient | MCPProxyClient> = new Map();
 
+function createMCPClient(config: {
+  name: string;
+  command: string;
+  args?: string[];
+  transport?: "stdio" | "pipewrench";
+}): MCPClient | MCPProxyClient {
+  const transport = config.transport || "stdio";
+  const proxyPort = store.get("pipewrenchPort", 9999) as number;
+  if (transport === "pipewrench") {
+    return new MCPProxyClient(
+      config.name,
+      config.command,
+      config.args || [],
+      proxyPort,
+    );
+  }
+  return new MCPClient(config.name, config.command, config.args || []);
+}
+
+function registerMCPTools(
+  client: MCPClient | MCPProxyClient,
+  serverName: string,
+): void {
+  client.tools.forEach((tool) => {
+    const toolName = `mcp.${serverName}.${tool.name}`;
+    tools.set(toolName, {
+      name: toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      mcpServer: serverName,
+      mcpToolName: tool.name,
+      run: async (input: any) => client.callTool(tool.name, input),
+    });
+
+    // MCP tools are external; we still register explicit metadata.
+    permissionManager.registerToolPermissions(toolName, {});
+  });
+}
+
 function loadMCPServers() {
   const serverConfigs = (store.get("mcpServers") as any[]) || [];
   console.log("[loadMCPServers] Loading MCP servers:", serverConfigs.length);
@@ -1474,29 +1598,13 @@ function loadMCPServers() {
   serverConfigs.forEach(async (config) => {
     if (!config.name || !config.command) return;
 
-    const client = new MCPClient(
-      config.name,
-      config.command,
-      config.args || [],
-    );
+    const client = createMCPClient(config);
     mcpClients.set(config.name, client);
 
     try {
       await client.connect();
       // Register MCP tools with mcp. prefix
-      client.tools.forEach((tool) => {
-        const toolName = `mcp.${config.name}.${tool.name}`;
-        tools.set(toolName, {
-          name: toolName,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          mcpServer: config.name,
-          mcpToolName: tool.name,
-          run: async (input: any) => {
-            return await client.callTool(tool.name, input);
-          },
-        });
-      });
+      registerMCPTools(client, config.name);
       console.log(
         `[MCP] Connected to ${config.name}, registered ${client.tools.length} tools`,
       );
@@ -1504,6 +1612,390 @@ function loadMCPServers() {
       console.error(`[MCP] Failed to connect to ${config.name}:`, e);
     }
   });
+}
+
+type PermissionProfileDecision = "allow" | "ask" | "deny";
+type ToolPermissionProfile = Partial<
+  Record<PermissionAction, PermissionProfileDecision>
+>;
+
+function getPermissionProfileDecision(
+  toolName: string,
+  action: PermissionAction,
+): PermissionProfileDecision | undefined {
+  const profiles =
+    (store.get("permissionProfiles") as Record<string, ToolPermissionProfile>) ||
+    {};
+  const exact = profiles[toolName];
+  const wildcard = profiles["*"];
+  return exact?.[action] ?? wildcard?.[action];
+}
+
+function enforceToolPermissions(toolName: string): void {
+  const permissions = permissionManager.getToolPermissions(toolName);
+
+  // Tools must declare metadata explicitly.
+  if (!permissions) {
+    throw new Error(`Permission metadata missing for tool: ${toolName}`);
+  }
+
+  const categories: PermissionCategory[] = ["filesystem", "network", "process"];
+  for (const category of categories) {
+    const categoryPerms = permissions[category];
+    if (!categoryPerms) continue;
+
+    for (const action of categoryPerms.actions) {
+      if (isFeatureEnabled("N_PERMISSION_PROFILES")) {
+        const profileDecision = getPermissionProfileDecision(toolName, action);
+        if (profileDecision === "allow") {
+          continue;
+        }
+        if (profileDecision === "deny") {
+          throw new Error(`Permission denied by profile for ${category}:${action}`);
+        }
+        if (profileDecision === "ask") {
+          throw new Error(`PERMISSION_REQUIRED:${toolName}`);
+        }
+      }
+
+      const check = permissionManager.checkPermission(toolName, category, action);
+      if (!check.allowed) {
+        if (check.needsPrompt) {
+          throw new Error(`PERMISSION_REQUIRED:${toolName}`);
+        }
+        throw new Error(`Permission denied for ${category}:${action}`);
+      }
+    }
+  }
+}
+
+type HealthSignalStatus = "pass" | "warn" | "fail";
+
+interface ToolHealthSignals {
+  enabled: boolean;
+  toolName: string;
+  totalRuns: number;
+  completed: number;
+  failed: number;
+  timedOut: number;
+  killed: number;
+  timeoutRate: number;
+  frequentTimeout: boolean;
+  timeoutHints: string[];
+  knownIssues: string[];
+  mcpStatus?: {
+    transport: string;
+    rawStatus: string;
+    status: HealthSignalStatus;
+    detail: string;
+  };
+}
+
+interface SafeFixChange {
+  key: string;
+  before: any;
+  after: any;
+}
+
+interface SafeFixPreviewPayload {
+  fixId: string;
+  title: string;
+  description: string;
+  changes: SafeFixChange[];
+}
+
+interface DiagnosticSuggestion {
+  classifier: "PATH" | "permissions" | "AV" | "network_timeout" | "invalid_config";
+  doctorSections: string[];
+  explanation: string;
+  suggestions: string[];
+  safeFixes: Array<{
+    fixId: string;
+    title: string;
+    description: string;
+  }>;
+}
+
+const pendingSafeFixPreviews: Map<
+  string,
+  { fixId: string; createdAt: number; changes: SafeFixChange[] }
+> = new Map();
+
+const TOOL_TIMEOUT_HINTS: Array<{ pattern: RegExp; hints: string[] }> = [
+  {
+    pattern: /^builtin\.shell$/,
+    hints: [
+      "Reduce command output volume.",
+      "Increase tool timeout in tool input if safe.",
+      "Run command in a narrower working directory.",
+    ],
+  },
+  {
+    pattern: /^mcp\./,
+    hints: [
+      "Check MCP server status in Settings.",
+      "If using PipeWrench transport, verify proxy health and port.",
+      "Reconnect the MCP server and retry.",
+    ],
+  },
+  {
+    pattern: /^builtin\.(processes|diskSpace|installedApps)$/,
+    hints: [
+      "Retry when system load is lower.",
+      "Limit scope/size of requested data.",
+    ],
+  },
+];
+
+function getKnownIssuesForTool(toolName: string): string[] {
+  const fromConfig =
+    ((store.get("toolKnownIssues") as Record<string, string[]>) || {})[toolName] ||
+    [];
+  const manifest = manifestRegistry.get(toolName) as any;
+  const fromManifest = Array.isArray(manifest?.knownIssues)
+    ? manifest.knownIssues
+    : [];
+  return Array.from(
+    new Set(
+      [...fromManifest, ...fromConfig]
+        .map((s) => (typeof s === "string" ? s.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getTimeoutHintsForTool(toolName: string): string[] {
+  const match = TOOL_TIMEOUT_HINTS.find((m) => m.pattern.test(toolName));
+  if (match) return match.hints;
+  return [
+    "Try a smaller input payload.",
+    "Verify local system resources and retry.",
+  ];
+}
+
+function toHealthStatus(
+  raw: "disconnected" | "connecting" | "connected" | "error",
+): HealthSignalStatus {
+  if (raw === "connected") return "pass";
+  if (raw === "error") return "fail";
+  return "warn";
+}
+
+function getMCPHealthStatusForTool(toolName: string) {
+  if (!toolName.startsWith("mcp.")) return undefined;
+  const parts = toolName.split(".");
+  if (parts.length < 3) return undefined;
+
+  const serverName = parts[1];
+  const client = mcpClients.get(serverName);
+  const rawStatus =
+    (client?.status as "disconnected" | "connecting" | "connected" | "error") ||
+    "disconnected";
+  const serverConfig =
+    ((store.get("mcpServers") as any[]) || []).find((s) => s.name === serverName) ||
+    {};
+  const transport = serverConfig.transport || "stdio";
+
+  return {
+    transport,
+    rawStatus,
+    status: toHealthStatus(rawStatus),
+    detail:
+      transport === "pipewrench"
+        ? `PipeWrench transport is ${rawStatus}`
+        : `MCP transport is ${rawStatus}`,
+  };
+}
+
+function computeToolHealthSignals(toolName: string): ToolHealthSignals {
+  const runs = runManager.getAllRuns().filter((r) => r.toolName === toolName);
+  const terminal = runs.filter((r) =>
+    ["completed", "failed", "timed-out", "killed"].includes(r.state),
+  );
+  const completed = terminal.filter((r) => r.state === "completed").length;
+  const failed = terminal.filter((r) => r.state === "failed").length;
+  const timedOut = terminal.filter((r) => r.state === "timed-out").length;
+  const killed = terminal.filter((r) => r.state === "killed").length;
+  const timeoutRate = terminal.length > 0 ? timedOut / terminal.length : 0;
+  const frequentTimeout =
+    timedOut >= 2 && terminal.length >= 3 && timeoutRate >= 0.3;
+
+  return {
+    enabled: true,
+    toolName,
+    totalRuns: terminal.length,
+    completed,
+    failed,
+    timedOut,
+    killed,
+    timeoutRate,
+    frequentTimeout,
+    timeoutHints: frequentTimeout ? getTimeoutHintsForTool(toolName) : [],
+    knownIssues: getKnownIssuesForTool(toolName),
+    mcpStatus: getMCPHealthStatusForTool(toolName),
+  };
+}
+
+function buildDiagnosticSuggestions(
+  toolName: string,
+  errorText: string,
+): DiagnosticSuggestion[] {
+  const text = `${toolName} ${errorText}`.toLowerCase();
+  const suggestions: DiagnosticSuggestion[] = [];
+
+  const pushSuggestion = (suggestion: DiagnosticSuggestion) => {
+    if (!suggestions.some((s) => s.classifier === suggestion.classifier)) {
+      suggestions.push(suggestion);
+    }
+  };
+
+  if (
+    /(command not found|is not recognized|enoent|path|cannot find)/i.test(text)
+  ) {
+    pushSuggestion({
+      classifier: "PATH",
+      doctorSections: ["PATH Sanity", "Process Spawn Test"],
+      explanation: "The failure pattern looks like a PATH or binary resolution issue.",
+      suggestions: [
+        "Run Doctor and review PATH Sanity.",
+        "Verify required commands are installed and available to GUI apps.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (/(permission denied|eacces|eperm|access denied)/i.test(text)) {
+    pushSuggestion({
+      classifier: "permissions",
+      doctorSections: ["Config Directory Permissions"],
+      explanation: "The failure pattern indicates a permissions/access problem.",
+      suggestions: [
+        "Review safe paths and tool permissions.",
+        "Try running with narrower file targets.",
+      ],
+      safeFixes: [
+        {
+          fixId: "fix:add-working-dir-to-safe-paths",
+          title: "Add working directory to safe paths",
+          description: "Limited config-only change; no files are modified.",
+        },
+      ],
+    });
+  }
+
+  if (/(defender|antivirus|av|blocked by security|quarantine)/i.test(text)) {
+    pushSuggestion({
+      classifier: "AV",
+      doctorSections: ["Antivirus/Defender", "Process Spawn Test"],
+      explanation: "The failure may be caused by antivirus/endpoint security interference.",
+      suggestions: [
+        "Run Doctor and review Antivirus/Defender section.",
+        "Consider adding Workbench folder exclusions if policy allows.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (
+    /(timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network)/i.test(
+      text,
+    )
+  ) {
+    pushSuggestion({
+      classifier: "network_timeout",
+      doctorSections: ["Localhost Network", "Proxy/Firewall"],
+      explanation: "The failure pattern suggests a network or timeout issue.",
+      suggestions: [
+        "Retry with smaller input.",
+        "Check proxy/firewall settings and local network diagnostics.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (
+    /(no model configured|api key|invalid|bad request|misconfig|configuration|missing)/i.test(
+      text,
+    )
+  ) {
+    pushSuggestion({
+      classifier: "invalid_config",
+      doctorSections: ["PATH Sanity", "Proxy/Firewall"],
+      explanation: "The failure pattern suggests an invalid or incomplete configuration.",
+      suggestions: [
+        "Review Settings values for model/api endpoint/api key.",
+        "Re-run Doctor after configuration updates.",
+      ],
+      safeFixes: [
+        {
+          fixId: "fix:set-default-api-endpoint",
+          title: "Set default API endpoint",
+          description:
+            "Sets `apiEndpoint` to `https://openrouter.ai/api/v1` only if needed.",
+        },
+      ],
+    });
+  }
+
+  return suggestions;
+}
+
+function createSafeFixPreview(fixId: string): SafeFixPreviewPayload | null {
+  const cfg = store.store as any;
+
+  if (fixId === "fix:set-default-api-endpoint") {
+    const before = cfg.apiEndpoint || "";
+    const after = "https://openrouter.ai/api/v1";
+    if (before === after) return null;
+    return {
+      fixId,
+      title: "Set default API endpoint",
+      description: "Config-only update. Reversible by restoring previous value.",
+      changes: [{ key: "apiEndpoint", before, after }],
+    };
+  }
+
+  if (fixId === "fix:add-working-dir-to-safe-paths") {
+    const workingDir = cfg.workingDir || app.getPath("home");
+    const before = Array.isArray(cfg.safePaths) ? cfg.safePaths : [];
+    if (!workingDir || before.includes(workingDir)) return null;
+    const after = [...before, workingDir];
+    return {
+      fixId,
+      title: "Add working directory to safe paths",
+      description: "Config-only update. Reversible by removing the added path.",
+      changes: [{ key: "safePaths", before, after }],
+    };
+  }
+
+  return null;
+}
+
+function applySafeFix(fixId: string, changes: SafeFixChange[]): {
+  success: boolean;
+  error?: string;
+} {
+  try {
+    if (fixId === "fix:set-default-api-endpoint") {
+      const change = changes.find((c) => c.key === "apiEndpoint");
+      if (!change) return { success: false, error: "Preview mismatch for apiEndpoint" };
+      store.set("apiEndpoint", change.after);
+      return { success: true };
+    }
+
+    if (fixId === "fix:add-working-dir-to-safe-paths") {
+      const change = changes.find((c) => c.key === "safePaths");
+      if (!change || !Array.isArray(change.after)) {
+        return { success: false, error: "Preview mismatch for safePaths" };
+      }
+      store.set("safePaths", change.after);
+      return { success: true };
+    }
+
+    return { success: false, error: "Unknown fix ID" };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
 }
 
 // ============================================================================
@@ -1620,6 +2112,49 @@ ipcMain.handle("tools:refresh", () => {
   }));
 });
 
+// Tool Health Signals (L) - optional, local-only
+ipcMain.handle("toolHealth:get", (_e, toolName: string) => {
+  if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+    return { enabled: false, toolName };
+  }
+  return computeToolHealthSignals(toolName);
+});
+
+ipcMain.handle("toolHealth:addKnownIssue", (_e, toolName: string, note: string) => {
+  if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const trimmed = (note || "").trim();
+  if (!trimmed) {
+    return { success: false, error: "Note cannot be empty" };
+  }
+  const allIssues =
+    (store.get("toolKnownIssues") as Record<string, string[]>) || {};
+  const current = Array.isArray(allIssues[toolName]) ? allIssues[toolName] : [];
+  allIssues[toolName] = Array.from(new Set([...current, trimmed]));
+  store.set("toolKnownIssues", allIssues);
+  return { success: true, issues: allIssues[toolName] };
+});
+
+ipcMain.handle(
+  "toolHealth:removeKnownIssue",
+  (_e, toolName: string, index: number) => {
+    if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+      return { success: false, error: "Feature disabled" };
+    }
+    const allIssues =
+      (store.get("toolKnownIssues") as Record<string, string[]>) || {};
+    const current = Array.isArray(allIssues[toolName]) ? allIssues[toolName] : [];
+    if (index < 0 || index >= current.length) {
+      return { success: false, error: "Issue index out of range" };
+    }
+    current.splice(index, 1);
+    allIssues[toolName] = current;
+    store.set("toolKnownIssues", allIssues);
+    return { success: true, issues: current };
+  },
+);
+
 ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
@@ -1627,37 +2162,28 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   // Create run tracking
   const runId = runManager.createRun(name, input, 'user');
 
-  // PERMISSION CHECK
-  // Check all potential actions. For now, check based on tool categories declared
-  // We check if the tool *requires* any permissions
-  const permissions = permissionManager.getToolPermissions(name);
-  if (permissions) {
-    const categories: ('filesystem' | 'network' | 'process')[] = ['filesystem', 'network', 'process'];
-    for (const cat of categories) {
-      if (permissions[cat]) {
-        // Check strict permissions - for now simple check of ANY action in category
-        // In reality we should check specific action but we don't know INTENT here easily
-        // So we prompt if ANY action in that category is restricted
-        // Better approach: Check if tool has 'always allow' or needs prompt for declared capabilities
-        const actions = permissions[cat]!.actions;
-        for (const action of actions) {
-          const check = permissionManager.checkPermission(name, cat, action);
-          if (!check.allowed) {
-            if (check.needsPrompt) {
-               // Special error that frontend can parse to show prompt
-               runManager.failRun(runId, 'Permission required');
-               throw new Error(`PERMISSION_REQUIRED:${name}`);
-            }
-            runManager.failRun(runId, `Permission denied for ${cat}:${action}`);
-            throw new Error(`Permission denied for ${cat}:${action}`);
-          }
-        }
-      }
-    }
+  try {
+    enforceToolPermissions(name);
+  } catch (permissionError: any) {
+    const message = permissionError?.message || "Permission denied";
+    runManager.failRun(
+      runId,
+      message.startsWith("PERMISSION_REQUIRED:")
+        ? "Permission required"
+        : message,
+    );
+    throw permissionError;
   }
 
   // Start the run
   runManager.startRun(runId);
+
+  const runInput =
+    name.startsWith("builtin.")
+      ? input && typeof input === "object" && !Array.isArray(input)
+        ? { ...input, __runId: runId }
+        : { __runId: runId }
+      : input;
 
   // Safety: Tool timeout (30 seconds)
   const TOOL_TIMEOUT = 30000;
@@ -1671,7 +2197,7 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   });
 
   try {
-    const rawOutput = await Promise.race([tool.run(input), timeoutPromise]);
+    const rawOutput = await Promise.race([tool.run(runInput), timeoutPromise]);
 
     const normalized = normalizeToolOutput(rawOutput);
 
@@ -1747,10 +2273,25 @@ function calculateCost(
     "anthropic/claude-3-haiku": { prompt: 0.25, completion: 1.25 },
     "openai/gpt-4o": { prompt: 2.5, completion: 10 },
     "openai/gpt-4o-mini": { prompt: 0.15, completion: 0.6 },
+    // Free models (OpenRouter free tier)
+    "google/gemini-flash-1.5": { prompt: 0, completion: 0 },
+    "google/gemini-pro-1.5": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3.2-3b-instruct:free": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3.1-8b-instruct:free": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3-8b-instruct:free": { prompt: 0, completion: 0 },
+    "phi-3-mini-128k-instruct:free": { prompt: 0, completion: 0 },
+    "qwen/qwen-2-7b-instruct:free": { prompt: 0, completion: 0 },
+    "mistralai/mistral-7b-instruct:free": { prompt: 0, completion: 0 },
     default: { prompt: 1, completion: 2 },
   };
 
-  const rates = pricing[model] || pricing["default"];
+  // Check if model ID contains ":free" suffix (OpenRouter convention for free models)
+  const isFreeModel = model.includes(":free");
+  
+  const rates = isFreeModel 
+    ? { prompt: 0, completion: 0 }
+    : (pricing[model] || pricing["default"]);
+    
   return (
     (promptTokens * rates.prompt) / 1_000_000 +
     (completionTokens * rates.completion) / 1_000_000
@@ -1902,6 +2443,29 @@ function processTemplateVariables(text: string): string {
     .replace(/\{\{clipboard\}\}/g, clipboard.readText());
 }
 
+// Filter out model thinking/reasoning blocks
+function filterThinkingBlocks(text: string): string {
+  // Remove various thinking block patterns
+  let filtered = text;
+  
+  // Remove <thinking>...</thinking> blocks (Claude-style)
+  filtered = filtered.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  
+  // Remove <reasoning>...</reasoning> blocks
+  filtered = filtered.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+  
+  // Remove <analysis>...</analysis> blocks
+  filtered = filtered.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
+  
+  // Remove <internal_thoughts>...</internal_thoughts> blocks
+  filtered = filtered.replace(/<internal_thoughts>[\s\S]*?<\/internal_thoughts>/gi, '');
+  
+  // Clean up any remaining multiple newlines
+  filtered = filtered.replace(/\n{3,}/g, '\n\n').trim();
+  
+  return filtered;
+}
+
 // Streaming task runner
 ipcMain.handle(
   "task:runStream",
@@ -2021,6 +2585,46 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
       let fullContent = "";
       let promptTokens = 0;
       let completionTokens = 0;
+      let requestCost = 0;
+      let costTracked = false;
+      let doneSent = false;
+
+      const trackCostOnce = () => {
+        if (costTracked) return;
+        requestCost = calculateCost(
+          roleConfig.model,
+          promptTokens,
+          completionTokens,
+        );
+        sessionCosts.total += requestCost;
+        sessionCosts.requests += 1;
+        if (!sessionCosts.byModel[roleConfig.model]) {
+          sessionCosts.byModel[roleConfig.model] = {
+            cost: 0,
+            requests: 0,
+            tokens: { prompt: 0, completion: 0 },
+          };
+        }
+        sessionCosts.byModel[roleConfig.model].cost += requestCost;
+        sessionCosts.byModel[roleConfig.model].requests += 1;
+        sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
+        sessionCosts.byModel[roleConfig.model].tokens.completion +=
+          completionTokens;
+        costTracked = true;
+      };
+
+      const emitDoneOnce = () => {
+        if (doneSent) return;
+        doneSent = true;
+        // Filter out thinking blocks before sending final content
+        const filteredContent = filterThinkingBlocks(fullContent);
+        mainWindow?.webContents.send("stream:done", {
+          requestId,
+          content: filteredContent,
+          cost: requestCost,
+          tokens: { prompt: promptTokens, completion: completionTokens },
+        });
+      };
 
       res.data.on("data", (chunk: Buffer) => {
         const lines = chunk
@@ -2031,40 +2635,18 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
         for (const line of lines) {
           const data = line.replace("data:", "").trim();
           if (data === "[DONE]") {
-            // Track costs
-            const cost = calculateCost(
-              roleConfig.model,
-              promptTokens,
-              completionTokens,
-            );
-            sessionCosts.total += cost;
-            sessionCosts.requests += 1;
-            if (!sessionCosts.byModel[roleConfig.model]) {
-              sessionCosts.byModel[roleConfig.model] = {
-                cost: 0,
-                requests: 0,
-                tokens: { prompt: 0, completion: 0 },
-              };
-            }
-            sessionCosts.byModel[roleConfig.model].cost += cost;
-            sessionCosts.byModel[roleConfig.model].requests += 1;
-            sessionCosts.byModel[roleConfig.model].tokens.prompt +=
-              promptTokens;
-            sessionCosts.byModel[roleConfig.model].tokens.completion +=
-              completionTokens;
-
-            mainWindow?.webContents.send("stream:done", {
-              requestId,
-              content: fullContent,
-              cost,
-              tokens: { prompt: promptTokens, completion: completionTokens },
-            });
+            trackCostOnce();
+            emitDoneOnce();
             return;
           }
 
           try {
             const parsed = JSON.parse(data);
+            
+            // Some models send reasoning/thinking in separate fields - ignore those
+            // Only use the actual content field, not reasoning_content or thinking
             const delta = parsed.choices?.[0]?.delta?.content || "";
+            
             if (delta) {
               fullContent += delta;
               mainWindow?.webContents.send("stream:chunk", {
@@ -2085,34 +2667,8 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
       });
 
       res.data.on("end", () => {
-        // Track costs even if no [DONE] received
-        if (promptTokens > 0 || completionTokens > 0) {
-          const cost = calculateCost(
-            roleConfig.model,
-            promptTokens,
-            completionTokens,
-          );
-          sessionCosts.total += cost;
-          sessionCosts.requests += 1;
-          if (!sessionCosts.byModel[roleConfig.model]) {
-            sessionCosts.byModel[roleConfig.model] = {
-              cost: 0,
-              requests: 0,
-              tokens: { prompt: 0, completion: 0 },
-            };
-          }
-          sessionCosts.byModel[roleConfig.model].cost += cost;
-          sessionCosts.byModel[roleConfig.model].requests += 1;
-          sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
-          sessionCosts.byModel[roleConfig.model].tokens.completion +=
-            completionTokens;
-        }
-        mainWindow?.webContents.send("stream:done", {
-          requestId,
-          content: fullContent,
-          cost: sessionCosts.total,
-          tokens: { prompt: promptTokens, completion: completionTokens },
-        });
+        trackCostOnce();
+        emitDoneOnce();
       });
 
       res.data.on("error", (err: Error) => {
@@ -2170,11 +2726,16 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
       
       // Fallbacks for specific status codes if no message found
       if (!detailedMsg) {
-          if (e.response?.status === 404) {
+          if (e.response?.status === 429) {
+            errorMessage = `[429] Rate limit exceeded for model "${roleConfig.model}". Free tier models have limited requests. Try again in a moment or use a different model.`;
+          } else if (e.response?.status === 404) {
             errorMessage = `[404] Model not found: ${roleConfig.model}.`;
           } else if (e.response?.status === 400) {
             errorMessage = `[400] Bad request to model "${roleConfig.model}".`;
           }
+      } else if (e.response?.status === 429 && !detailedMsg.toLowerCase().includes('rate limit')) {
+        // Enhance 429 message even if we got some detail
+        errorMessage = `[429] Rate limit exceeded. ${detailedMsg}. Try again in a moment or use a different model.`;
       }
 
       mainWindow?.webContents.send("stream:error", {
@@ -2225,6 +2786,8 @@ ipcMain.handle(
       try {
         // Interpolate context variables in input
         const resolvedInput = interpolateContext(step.input, context);
+
+        enforceToolPermissions(step.tool);
 
         console.log(`[chain:run] Step ${i + 1}: ${step.tool}`);
         const result = await tool.run(resolvedInput);
@@ -2344,23 +2907,8 @@ ipcMain.handle(
     servers.push(config);
     store.set("mcpServers", servers);
 
-    // Create client based on transport type
     const transport = config.transport || "stdio";
-    const proxyPort = store.get("pipewrenchPort", 9999) as number;
-
-    let client: MCPClient | MCPProxyClient;
-
-    if (transport === "pipewrench") {
-      console.log(`[mcp:add] Using PipeWrench proxy on port ${proxyPort}`);
-      client = new MCPProxyClient(
-        config.name,
-        config.command,
-        config.args || [],
-        proxyPort,
-      );
-    } else {
-      client = new MCPClient(config.name, config.command, config.args || []);
-    }
+    const client = createMCPClient(config);
 
     mcpClients.set(config.name, client);
 
@@ -2369,15 +2917,7 @@ ipcMain.handle(
       await client.connect();
       console.log("[mcp:add] Connected! Tools:", client.tools.length);
 
-      client.tools.forEach((tool) => {
-        const toolName = `mcp.${config.name}.${tool.name}`;
-        tools.set(toolName, {
-          name: toolName,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          run: async (input: any) => client.callTool(tool.name, input),
-        });
-      });
+      registerMCPTools(client, config.name);
       return { success: true, toolCount: client.tools.length, transport };
     } catch (e: any) {
       console.error("[mcp:add] Connection failed:", e.message);
@@ -2417,15 +2957,7 @@ ipcMain.handle("mcp:reconnect", async (_e, name: string) => {
   client.disconnect();
   try {
     await client.connect();
-    client.tools.forEach((tool) => {
-      const toolName = `mcp.${name}.${tool.name}`;
-      tools.set(toolName, {
-        name: toolName,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        run: async (input: any) => client.callTool(tool.name, input),
-      });
-    });
+    registerMCPTools(client, name);
     return { success: true, toolCount: client.tools.length };
   } catch (e: any) {
     return { success: false, error: e.message };
@@ -2501,6 +3033,49 @@ ipcMain.handle("doctor:export", async (_e, sanitize: boolean = true) => {
 
   fs.writeFileSync(filePath, content, "utf-8");
   return { success: true, filePath };
+});
+
+// Smart Auto-Diagnostics (M) - lightweight failure classifier
+ipcMain.handle(
+  "doctor:suggestFailure",
+  (_e, toolName: string, errorText: string) => {
+    if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
+      return { enabled: false, suggestions: [] };
+    }
+    return {
+      enabled: true,
+      suggestions: buildDiagnosticSuggestions(toolName || "", errorText || ""),
+    };
+  },
+);
+
+ipcMain.handle("safeFix:preview", (_e, fixId: string) => {
+  if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const preview = createSafeFixPreview(fixId);
+  if (!preview) {
+    return { success: false, error: "No applicable safe fix changes found" };
+  }
+  const token = `safe_fix_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  pendingSafeFixPreviews.set(token, {
+    fixId,
+    createdAt: Date.now(),
+    changes: preview.changes,
+  });
+  return { success: true, token, preview };
+});
+
+ipcMain.handle("safeFix:apply", (_e, token: string) => {
+  if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const pending = pendingSafeFixPreviews.get(token);
+  if (!pending) {
+    return { success: false, error: "Preview token missing or expired" };
+  }
+  pendingSafeFixPreviews.delete(token);
+  return applySafeFix(pending.fixId, pending.changes);
 });
 
 // ============================================================================
@@ -2653,6 +3228,327 @@ ipcMain.handle("runs:clearAll", () => {
 ipcMain.handle("runs:getInterrupted", () => {
   return runManager.getInterruptedRuns();
 });
+
+// Export run bundle (N) - optional, read-only support artifact for issue filing
+ipcMain.handle("runs:exportBundle", async (_e, runId?: string) => {
+  if (!isFeatureEnabled("N_EXPORT_RUN_BUNDLE")) {
+    return { success: false, error: "Feature disabled" };
+  }
+
+  const allRuns = runManager.getAllRuns();
+  const selectedRuns =
+    runId && runId.trim()
+      ? allRuns.filter((r) => r.runId === runId)
+      : runManager.getHistory(200);
+
+  const bundle = {
+    exportedAt: new Date().toISOString(),
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    runId: runId || null,
+    runCount: selectedRuns.length,
+    stats: runManager.getStats(),
+    runs: selectedRuns,
+    doctorReport: lastDoctorReport
+      ? getDoctorEngine().sanitizeReport(lastDoctorReport)
+      : null,
+  };
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Run Bundle",
+    defaultPath: `workbench-run-bundle-${new Date().toISOString().split("T")[0]}.json`,
+    filters: [{ name: "JSON Files", extensions: ["json"] }],
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(bundle, null, 2), "utf-8");
+  return { success: true, filePath, runCount: selectedRuns.length };
+});
+
+// ============================================================================
+// SECRETS MANAGER IPC HANDLERS
+// ============================================================================
+
+// Check if secure storage is available
+ipcMain.handle("secrets:isAvailable", () => {
+  return {
+    available: secretsManager.isSecureStorageAvailable(),
+    backend: secretsManager.getStorageBackend(),
+  };
+});
+
+// Store a new secret
+ipcMain.handle("secrets:store", async (_e, name: string, value: string, type: string, tags?: string[]) => {
+  try {
+    const handle = await secretsManager.storeSecret(name, value, type as any, tags);
+    return { success: true, handle };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Get secret value (requires explicit user action)
+ipcMain.handle("secrets:get", async (_e, secretId: string) => {
+  try {
+    const secret = await secretsManager.getSecret(secretId);
+    return { success: true, secret };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete secret
+ipcMain.handle("secrets:delete", async (_e, secretId: string) => {
+  const success = await secretsManager.deleteSecret(secretId);
+  return { success };
+});
+
+// List all secrets (metadata only)
+ipcMain.handle("secrets:list", () => {
+  return secretsManager.listSecrets();
+});
+
+// Update secret metadata
+ipcMain.handle("secrets:updateMetadata", (_e, secretId: string, updates: any) => {
+  const success = secretsManager.updateSecretMetadata(secretId, updates);
+  return { success };
+});
+
+// Find secrets by tool
+ipcMain.handle("secrets:findByTool", (_e, toolName: string) => {
+  return secretsManager.findSecretsByTool(toolName);
+});
+
+// Redact secrets from text/object
+ipcMain.handle("secrets:redact", (_e, data: any) => {
+  if (typeof data === 'string') {
+    return secretsManager.redactSecrets(data);
+  } else {
+    return secretsManager.redactSecretsFromObject(data);
+  }
+});
+
+// ============================================================================
+// TOOL MANIFEST IPC HANDLERS
+// ============================================================================
+
+// Register tool manifest
+ipcMain.handle("manifest:register", (_e, manifest: ToolManifest) => {
+  return manifestRegistry.register(manifest);
+});
+
+// Get tool manifest
+ipcMain.handle("manifest:get", (_e, toolName: string) => {
+  return manifestRegistry.get(toolName);
+});
+
+// List all manifests
+ipcMain.handle("manifest:list", () => {
+  return manifestRegistry.list();
+});
+
+// Check tool compatibility
+ipcMain.handle("manifest:checkCompatibility", (_e, toolName: string) => {
+  return manifestRegistry.checkCompatibility(toolName);
+});
+
+// Get tool info for display
+ipcMain.handle("manifest:getToolInfo", (_e, toolName: string) => {
+  return manifestRegistry.getToolInfo(toolName);
+});
+
+// Find tools by tag
+ipcMain.handle("manifest:findByTag", (_e, tag: string) => {
+  return manifestRegistry.findByTag(tag);
+});
+
+// Find tools by stability
+ipcMain.handle("manifest:findByStability", (_e, stability: string) => {
+  return manifestRegistry.findByStability(stability as any);
+});
+
+// ============================================================================
+// PREVIEW / DRY-RUN IPC HANDLERS
+// ============================================================================
+
+// Get preview history
+ipcMain.handle("preview:getHistory", (_e, limit?: number) => {
+  return previewManager.getHistory(limit);
+});
+
+// Approve preview
+ipcMain.handle("preview:approve", (_e, index: number) => {
+  return previewManager.approvePreview(index);
+});
+
+// Get specific preview
+ipcMain.handle("preview:get", (_e, index: number) => {
+  return previewManager.getPreview(index);
+});
+
+// Format preview for display
+ipcMain.handle("preview:format", (_e, preview: any) => {
+  return previewManager.formatPreview(preview);
+});
+
+// Clear preview history
+ipcMain.handle("preview:clear", () => {
+  previewManager.clearHistory();
+  return { success: true };
+});
+
+// ============================================================================
+// USER MEMORY IPC HANDLERS
+// ============================================================================
+
+// Remember something
+ipcMain.handle("memory:remember", (_e, category: string, key: string, value: any, options?: any) => {
+  const memory = memoryManager.remember(category as any, key, value, options);
+  return { success: true, memory };
+});
+
+// Recall something
+ipcMain.handle("memory:recall", (_e, category: string, key: string) => {
+  const memory = memoryManager.recall(category as any, key);
+  return memory;
+});
+
+// Forget something
+ipcMain.handle("memory:forget", (_e, memoryId: string) => {
+  const success = memoryManager.forget(memoryId);
+  return { success };
+});
+
+// Forget all
+ipcMain.handle("memory:forgetAll", () => {
+  memoryManager.forgetAll();
+  return { success: true };
+});
+
+// Update memory
+ipcMain.handle("memory:update", (_e, memoryId: string, updates: any) => {
+  const success = memoryManager.update(memoryId, updates);
+  return { success };
+});
+
+// List all memories
+ipcMain.handle("memory:listAll", () => {
+  return memoryManager.listAll();
+});
+
+// List by category
+ipcMain.handle("memory:listByCategory", (_e, category: string) => {
+  return memoryManager.listByCategory(category as any);
+});
+
+// Search memories
+ipcMain.handle("memory:search", (_e, query: string) => {
+  return memoryManager.search(query);
+});
+
+// Get most used
+ipcMain.handle("memory:getMostUsed", (_e, limit?: number) => {
+  return memoryManager.getMostUsed(limit);
+});
+
+// Get recently used
+ipcMain.handle("memory:getRecentlyUsed", (_e, limit?: number) => {
+  return memoryManager.getRecentlyUsed(limit);
+});
+
+// Get statistics
+ipcMain.handle("memory:getStats", () => {
+  return memoryManager.getStats();
+});
+
+// Enable/disable memory system
+ipcMain.handle("memory:setEnabled", (_e, enabled: boolean) => {
+  memoryManager.setEnabled(enabled);
+  return { success: true };
+});
+
+// Check if enabled
+ipcMain.handle("memory:isEnabled", () => {
+  return memoryManager.isEnabled();
+});
+
+// Convenience: Remember preference
+ipcMain.handle("memory:rememberPreference", (_e, key: string, value: any) => {
+  const memory = memoryManager.rememberPreference(key, value);
+  return { success: true, memory };
+});
+
+// Convenience: Recall preference
+ipcMain.handle("memory:recallPreference", (_e, key: string) => {
+  return memoryManager.recallPreference(key);
+});
+
+// ============================================================================
+// TOOL DISPATCH IPC HANDLERS
+// ============================================================================
+
+// Create dispatch plan from natural language
+ipcMain.handle("dispatch:createPlan", async (_e, query: string, context?: any) => {
+  const availableManifests = manifestRegistry.list();
+  const plan = await toolDispatcher.createDispatchPlan(query, availableManifests, context);
+  return plan;
+});
+
+// Suggest relevant tools
+ipcMain.handle("dispatch:suggest", (_e, context: string, limit?: number) => {
+  const availableManifests = manifestRegistry.list();
+  return toolDispatcher.suggestTools(context, availableManifests, limit);
+});
+
+// Format dispatch plan for confirmation
+ipcMain.handle("dispatch:formatPlan", (_e, plan: any) => {
+  return toolDispatcher.formatPlanForConfirmation(plan);
+});
+
+// ============================================================================
+// ENVIRONMENT DETECTION IPC HANDLERS
+// ============================================================================
+
+// Get environment info
+ipcMain.handle("environment:getInfo", async () => {
+  return await environmentDetector.getEnvironmentInfo();
+});
+
+// Format environment info
+ipcMain.handle("environment:format", async (_e, info: any) => {
+  return environmentDetector.formatEnvironmentInfo(info);
+});
+
+// Get unsupported message
+ipcMain.handle("environment:getUnsupportedMessage", (_e, info: any) => {
+  return environmentDetector.getUnsupportedMessage(info);
+});
+
+// Get lockdown warning
+ipcMain.handle("environment:getLockdownWarning", (_e, info: any) => {
+  return environmentDetector.getLockdownWarning(info);
+});
+
+// Check environment on startup
+(async () => {
+  const envInfo = await environmentDetector.getEnvironmentInfo();
+  console.log('[Environment] Platform:', envInfo.platform, 'Arch:', envInfo.arch);
+  console.log('[Environment] Supported:', envInfo.supported);
+  
+  if (envInfo.risks.length > 0) {
+    console.log('[Environment] Risks detected:');
+    envInfo.risks.forEach(risk => {
+      console.log(`  [${risk.level.toUpperCase()}] ${risk.category}: ${risk.message}`);
+    });
+  }
+  
+  if (!envInfo.supported) {
+    console.warn('[Environment] Running on unsupported platform!');
+  }
+})();
 
 // Clear interrupted runs
 ipcMain.handle("runs:clearInterrupted", () => {

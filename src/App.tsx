@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type {} from 'react/jsx-runtime';
+import { DEFAULT_FEATURE_FLAGS, FeatureFlags, mergeFeatureFlags } from './featureFlags';
 
 const TABS = ['Chat', 'Tools', 'Running', 'Files', 'Chains', 'Settings'] as const;
 type Tab = typeof TABS[number];
@@ -143,6 +144,7 @@ export default function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [chainPresets, setChainPresets] = useState<ChainPreset[]>([]);
+  const [featureFlags, setFeatureFlags] = useState<FeatureFlags>(DEFAULT_FEATURE_FLAGS);
   const [showCrashRecovery, setShowCrashRecovery] = useState(false);
   const [interruptedRuns, setInterruptedRuns] = useState<any[]>([]);
   
@@ -178,6 +180,7 @@ export default function App() {
     // Load saved presets and apply font settings
     window.workbench.getConfig().then((cfg: any) => {
       if (cfg.chainPresets) setChainPresets(cfg.chainPresets);
+      setFeatureFlags(mergeFeatureFlags(cfg.featureFlags));
       // Apply saved font settings globally
       if (cfg.fontSize) {
         document.documentElement.style.fontSize = cfg.fontSize + 'px';
@@ -224,12 +227,12 @@ export default function App() {
             onRequestPermission={onRequestPermission}
           />
         )}
-        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} />}
-        {tab === 'Running' && <RunningTab />}
+        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} featureFlags={featureFlags} />}
+        {tab === 'Running' && <RunningTab featureFlags={featureFlags} />}
         {tab === 'Files' && <FilesTab />}
         {tab === 'Chains' && <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />}
 
-        {tab === 'Settings' && <SettingsTab />}
+        {tab === 'Settings' && <SettingsTab featureFlags={featureFlags} setFeatureFlags={setFeatureFlags} />}
       </div>
       {permissionRequest && (
         <PermissionPrompt 
@@ -765,7 +768,7 @@ function MessageBubble({ message }: { message: Message }) {
           {message.isStreaming && <span style={{ opacity: 0.5 }}>▊</span>}
         </div>
         <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
-          {message.timestamp.toLocaleTimeString()}
+          {message.timestamp instanceof Date ? message.timestamp.toLocaleTimeString() : new Date(message.timestamp).toLocaleTimeString()}
         </div>
       </div>
     </div>
@@ -834,11 +837,12 @@ function ToolInputForm({ tool, values, onChange }: { tool: Tool; values: any; on
 // TOOLS TAB
 // ============================================================================
 
-function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: { 
+function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission, featureFlags }: { 
   tools: Tool[]; 
   onOpenInChat: (t: Tool) => void; 
   onRefresh: () => void;
   onRequestPermission: (toolName: string, retry: () => void) => void;
+  featureFlags: FeatureFlags;
 }) {
   const [selected, setSelected] = useState<Tool | null>(null);
   const [formValues, setFormValues] = useState<Record<string, any>>({});
@@ -850,6 +854,11 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
   const [toolCode, setToolCode] = useState('');
   const [savingCode, setSavingCode] = useState(false);
   const [testMode, setTestMode] = useState(false);
+  const [toolHealth, setToolHealth] = useState<any>(null);
+  const [knownIssueInput, setKnownIssueInput] = useState('');
+  const [diagnosticSuggestions, setDiagnosticSuggestions] = useState<any[]>([]);
+  const [safeFixPreview, setSafeFixPreview] = useState<any>(null);
+  const [safeFixLoading, setSafeFixLoading] = useState(false);
 
   const filteredTools = tools.filter(t => 
     t.name.toLowerCase().includes(filter.toLowerCase()) ||
@@ -864,6 +873,93 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
     setOutput('');
     setShowEditor(false);
     setToolCode('');
+    setDiagnosticSuggestions([]);
+    setSafeFixPreview(null);
+  };
+
+  const refreshToolHealth = async (toolName: string) => {
+    if (!featureFlags.L_TOOL_HEALTH_SIGNALS) {
+      setToolHealth(null);
+      return;
+    }
+    try {
+      const result = await window.workbench.toolHealth.get(toolName);
+      setToolHealth(result);
+    } catch {
+      setToolHealth(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!selected) {
+      setToolHealth(null);
+      return;
+    }
+    refreshToolHealth(selected.name);
+  }, [selected, featureFlags.L_TOOL_HEALTH_SIGNALS]);
+
+  const loadDiagnosticSuggestions = async (toolName: string, errorMessage: string) => {
+    if (!featureFlags.M_SMART_AUTO_DIAGNOSTICS) {
+      setDiagnosticSuggestions([]);
+      return;
+    }
+    try {
+      const result = await window.workbench.doctor.suggestFailure(toolName, errorMessage);
+      setDiagnosticSuggestions(result?.suggestions || []);
+    } catch {
+      setDiagnosticSuggestions([]);
+    }
+  };
+
+  const addKnownIssue = async () => {
+    if (!selected || !knownIssueInput.trim()) return;
+    const result = await window.workbench.toolHealth.addKnownIssue(
+      selected.name,
+      knownIssueInput.trim(),
+    );
+    if (result?.success) {
+      setKnownIssueInput('');
+      refreshToolHealth(selected.name);
+    }
+  };
+
+  const removeKnownIssue = async (index: number) => {
+    if (!selected) return;
+    const result = await window.workbench.toolHealth.removeKnownIssue(
+      selected.name,
+      index,
+    );
+    if (result?.success) {
+      refreshToolHealth(selected.name);
+    }
+  };
+
+  const previewSafeFix = async (fixId: string) => {
+    setSafeFixLoading(true);
+    try {
+      const result = await window.workbench.safeFix.preview(fixId);
+      if (result?.success) {
+        setSafeFixPreview(result);
+      } else if (result?.error) {
+        alert(result.error);
+      }
+    } finally {
+      setSafeFixLoading(false);
+    }
+  };
+
+  const applySafeFix = async () => {
+    const token = safeFixPreview?.token;
+    if (!token) return;
+    const confirmed = confirm('Apply this safe fix? You can revert it manually in Settings.');
+    if (!confirmed) return;
+    const result = await window.workbench.safeFix.apply(token);
+    if (!result?.success) {
+      alert(result?.error || 'Failed to apply safe fix');
+      return;
+    }
+    alert('Safe fix applied.');
+    setSafeFixPreview(null);
   };
 
   const loadToolCode = async (tool: Tool) => {
@@ -959,6 +1055,12 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
       } else {
         const result = await window.workbench.runTool(selected.name, formValues);
         setOutput(JSON.stringify(result, null, 2));
+        if (result?.error) {
+          await loadDiagnosticSuggestions(selected.name, String(result.error));
+        } else {
+          setDiagnosticSuggestions([]);
+        }
+        await refreshToolHealth(selected.name);
       }
     } catch (e: any) {
       if (e.message.includes('PERMISSION_REQUIRED:')) {
@@ -968,6 +1070,8 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
          return;
       }
       setOutput(`Error: ${e.message}`);
+      await loadDiagnosticSuggestions(selected.name, String(e.message || e));
+      await refreshToolHealth(selected.name);
     }
     setLoading(false);
   };
@@ -992,8 +1096,16 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
         );
         setOutput(llmResult.content);
       }
+      if (toolResult?.error) {
+        await loadDiagnosticSuggestions(selected.name, String(toolResult.error));
+      } else {
+        setDiagnosticSuggestions([]);
+      }
+      await refreshToolHealth(selected.name);
     } catch (e: any) {
       setOutput(`Error: ${e.message}`);
+      await loadDiagnosticSuggestions(selected.name, String(e.message || e));
+      await refreshToolHealth(selected.name);
     }
     setLoading(false);
   };
@@ -1096,6 +1208,172 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: {
                 </div>
               </div>
             </div>
+
+            {featureFlags.L_TOOL_HEALTH_SIGNALS && (
+              <div style={styles.card}>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Tool Health Signals</h3>
+                {toolHealth?.enabled ? (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(100px, 1fr))', gap: 8, marginBottom: 12 }}>
+                      <StatCard label="Runs" value={toolHealth.totalRuns || 0} color={colors.textMuted} />
+                      <StatCard label="OK" value={toolHealth.completed || 0} color={colors.success} />
+                      <StatCard label="Failed" value={(toolHealth.failed || 0) + (toolHealth.killed || 0)} color={colors.danger} />
+                      <StatCard label="Timeout" value={toolHealth.timedOut || 0} color={colors.warning} />
+                    </div>
+
+                    {toolHealth.mcpStatus && (
+                      <div style={{
+                        background: colors.bgTertiary,
+                        border: `1px solid ${colors.border}`,
+                        borderRadius: 6,
+                        padding: 10,
+                        marginBottom: 12,
+                      }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>
+                          MCP Status: {toolHealth.mcpStatus.status.toUpperCase()}
+                        </div>
+                        <div style={{ fontSize: 12, color: colors.textMuted }}>
+                          {toolHealth.mcpStatus.detail} ({toolHealth.mcpStatus.transport})
+                        </div>
+                      </div>
+                    )}
+
+                    {toolHealth.frequentTimeout && (
+                      <div style={{
+                        background: `${colors.warning}20`,
+                        border: `1px solid ${colors.warning}`,
+                        borderRadius: 6,
+                        padding: 10,
+                        marginBottom: 12,
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                          Frequently times out ({Math.round((toolHealth.timeoutRate || 0) * 100)}%)
+                        </div>
+                        {(toolHealth.timeoutHints || []).map((hint: string, idx: number) => (
+                          <div key={`timeout-hint-${idx}`} style={{ fontSize: 12, color: colors.textMuted }}>
+                            • {hint}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {(toolHealth.knownIssues || []).length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        {(toolHealth.knownIssues || []).map((issue: string, idx: number) => (
+                          <div key={`known-issue-${idx}`} style={{
+                            background: `${colors.warning}20`,
+                            border: `1px solid ${colors.warning}`,
+                            borderRadius: 6,
+                            padding: 8,
+                            fontSize: 12,
+                            marginBottom: 6,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            gap: 8,
+                          }}>
+                            <span>{issue}</span>
+                            <button
+                              onClick={() => removeKnownIssue(idx)}
+                              style={{ ...styles.button, ...styles.buttonGhost, padding: '2px 6px', fontSize: 11 }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        value={knownIssueInput}
+                        onChange={(e) => setKnownIssueInput(e.target.value)}
+                        placeholder="Add known issue note..."
+                        style={styles.input}
+                      />
+                      <button onClick={addKnownIssue} style={{ ...styles.button, ...styles.buttonGhost }}>
+                        Add
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: colors.textMuted }}>
+                    Tool health signals are disabled by feature flag.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {featureFlags.M_SMART_AUTO_DIAGNOSTICS && diagnosticSuggestions.length > 0 && (
+              <div style={styles.card}>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Smart Auto-Diagnostics</h3>
+                {diagnosticSuggestions.map((suggestion: any, idx: number) => (
+                  <div key={`diag-${idx}`} style={{
+                    background: colors.bgTertiary,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 6,
+                    padding: 10,
+                    marginBottom: 10,
+                  }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+                      {suggestion.classifier}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+                      {suggestion.explanation}
+                    </div>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>
+                      Doctor sections: {(suggestion.doctorSections || []).join(', ')}
+                    </div>
+                    {(suggestion.suggestions || []).map((hint: string, hintIdx: number) => (
+                      <div key={`diag-hint-${idx}-${hintIdx}`} style={{ fontSize: 12, color: colors.textMuted }}>
+                        • {hint}
+                      </div>
+                    ))}
+                    {(suggestion.safeFixes || []).map((fix: any, fixIdx: number) => (
+                      <button
+                        key={`safe-fix-${idx}-${fixIdx}`}
+                        onClick={() => previewSafeFix(fix.fixId)}
+                        disabled={safeFixLoading}
+                        style={{ ...styles.button, ...styles.buttonGhost, marginTop: 8, marginRight: 8 }}
+                      >
+                        {safeFixLoading ? 'Previewing...' : `Preview safe fix: ${fix.title}`}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+
+                {safeFixPreview?.preview && (
+                  <div style={{
+                    background: colors.bgTertiary,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 6,
+                    padding: 10,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                      Safe Fix Preview: {safeFixPreview.preview.title}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+                      {safeFixPreview.preview.description}
+                    </div>
+                    <pre style={{
+                      background: colors.bg,
+                      padding: 10,
+                      borderRadius: 6,
+                      fontSize: 12,
+                      overflow: 'auto',
+                      marginBottom: 8,
+                    }}>
+                      {JSON.stringify(safeFixPreview.preview.changes, null, 2)}
+                    </pre>
+                    <button onClick={applySafeFix} style={{ ...styles.button, ...styles.buttonSuccess, marginRight: 8 }}>
+                      Apply Safe Fix
+                    </button>
+                    <button onClick={() => setSafeFixPreview(null)} style={{ ...styles.button, ...styles.buttonGhost }}>
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {showEditor && (
               <div style={styles.card}>
@@ -2263,12 +2541,13 @@ function DoctorPanel() {
 // RUNNING TAB - Execution Tracking & Process Control
 // ============================================================================
 
-function RunningTab() {
+function RunningTab({ featureFlags }: { featureFlags: FeatureFlags }) {
   const [activeRuns, setActiveRuns] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [selectedRun, setSelectedRun] = useState<any>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [exportingBundle, setExportingBundle] = useState(false);
 
   // Load initial data
   useEffect(() => {
@@ -2311,6 +2590,22 @@ function RunningTab() {
     await window.workbench.runs.clearHistory();
     loadData();
   };
+
+  const exportRunBundle = async () => {
+    setExportingBundle(true);
+    try {
+      const result = await window.workbench.runs.exportBundle(selectedRun?.runId);
+      if (!result?.success && !result?.canceled) {
+        alert(result?.error || 'Failed to export run bundle');
+      }
+    } finally {
+      setExportingBundle(false);
+    }
+  };
+
+  const timelineRuns = [...activeRuns, ...history]
+    .sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
+    .slice(-100);
 
   const formatDuration = (ms: number) => {
     const seconds = Math.floor(ms / 1000);
@@ -2401,13 +2696,47 @@ function RunningTab() {
         </div>
       )}
 
+      {featureFlags.N_RUN_TIMELINE && (
+        <div style={{ ...styles.card, marginBottom: 16 }}>
+          <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>Run Timeline (Read-only)</h3>
+          {timelineRuns.length === 0 ? (
+            <div style={{ fontSize: 12, color: colors.textMuted }}>
+              No timeline events yet.
+            </div>
+          ) : (
+            <div style={{ maxHeight: 220, overflow: 'auto' }}>
+              {timelineRuns.map((run) => (
+                <div
+                  key={`timeline-${run.runId}`}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '110px 1fr auto',
+                    gap: 8,
+                    alignItems: 'center',
+                    padding: '6px 8px',
+                    borderBottom: `1px solid ${colors.border}`,
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ color: colors.textMuted }}>{formatTimestamp(run.startTime || Date.now())}</div>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{run.toolName}</div>
+                  <div style={{ color: getStateColor(run.state), textTransform: 'uppercase', fontWeight: 600 }}>
+                    {getStateIcon(run.state)} {run.state}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* History toggle */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <button 
           onClick={() => setShowHistory(!showHistory)}
           style={{ ...styles.button, ...styles.buttonGhost }}
         >
-          {showHistory ? '▼' : '▶'} Run History ({history.length})
+          {showHistory ? 'v' : '>'} Run History ({history.length})
         </button>
         {showHistory && history.length > 0 && (
           <button 
@@ -2417,8 +2746,20 @@ function RunningTab() {
             Clear History
           </button>
         )}
+        {featureFlags.N_EXPORT_RUN_BUNDLE && (
+          <button
+            onClick={exportRunBundle}
+            disabled={exportingBundle}
+            style={{ ...styles.button, ...styles.buttonGhost }}
+          >
+            {exportingBundle
+              ? 'Exporting...'
+              : selectedRun
+                ? 'Export Selected Run Bundle'
+                : 'Export Recent Run Bundle'}
+          </button>
+        )}
       </div>
-
       {/* History */}
       {showHistory && history.length > 0 && (
         <div style={styles.card}>
@@ -2478,7 +2819,18 @@ function RunningTab() {
               <h3 style={{ margin: 0, fontSize: 18 }}>
                 {getStateIcon(selectedRun.state)} {selectedRun.toolName}
               </h3>
-              <button onClick={() => setSelectedRun(null)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}>✕</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {featureFlags.N_EXPORT_RUN_BUNDLE && (
+                  <button
+                    onClick={exportRunBundle}
+                    disabled={exportingBundle}
+                    style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}
+                  >
+                    {exportingBundle ? 'Exporting...' : 'Export Bundle'}
+                  </button>
+                )}
+                <button onClick={() => setSelectedRun(null)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}>X</button>
+              </div>
             </div>
 
             <div style={{ marginBottom: 12 }}>
@@ -2664,13 +3016,17 @@ type Model = {
   per_million_completion: string;
 };
 
-function SettingsTab() {
+function SettingsTab({ featureFlags, setFeatureFlags }: {
+  featureFlags: FeatureFlags;
+  setFeatureFlags: React.Dispatch<React.SetStateAction<FeatureFlags>>;
+}) {
   const [apiKey, setApiKey] = useState('');
   const [apiEndpoint, setApiEndpoint] = useState('');
   const [router, setRouter] = useState<Record<string, { model: string }>>({});
   const [workingDir, setWorkingDir] = useState('');
   const [pluginsDir, setPluginsDir] = useState('');
   const [safePaths, setSafePaths] = useState('');
+  const [permissionProfiles, setPermissionProfiles] = useState('{}');
   const [fontSize, setFontSize] = useState(14);
   const [fontFamily, setFontFamily] = useState('system-ui, -apple-system, sans-serif');
   const [saved, setSaved] = useState(false);
@@ -2690,14 +3046,16 @@ function SettingsTab() {
       setWorkingDir(cfg.workingDir || '');
       setPluginsDir(cfg.pluginsDir || '');
       setSafePaths((cfg.safePaths || []).join('\n'));
+      setPermissionProfiles(JSON.stringify(cfg.permissionProfiles || {}, null, 2));
       const size = cfg.fontSize || 14;
       setFontSize(size);
       document.documentElement.style.fontSize = size + 'px';
       const family = cfg.fontFamily || 'system-ui, -apple-system, sans-serif';
       setFontFamily(family);
       document.documentElement.style.fontFamily = family;
+      setFeatureFlags(mergeFeatureFlags(cfg.featureFlags));
     });
-  }, []);
+  }, [setFeatureFlags]);
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -2717,7 +3075,47 @@ function SettingsTab() {
     setSelectedRole(null);
   };
 
+  const toggleFeatureFlag = (flag: keyof FeatureFlags) => {
+    setFeatureFlags((prev) => ({ ...prev, [flag]: !prev[flag] }));
+  };
+
+  const parsePermissionProfiles = (): Record<string, Record<string, string>> | null => {
+    const raw = permissionProfiles.trim();
+    if (!raw) return {};
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      alert('Permission profiles must be valid JSON.');
+      return null;
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      alert('Permission profiles must be a JSON object keyed by tool name.');
+      return null;
+    }
+
+    for (const [toolName, profile] of Object.entries(parsed)) {
+      if (typeof profile !== 'object' || profile === null || Array.isArray(profile)) {
+        alert(`Invalid profile for ${toolName}. Expected an object of action -> allow|ask|deny.`);
+        return null;
+      }
+      for (const [action, decision] of Object.entries(profile as Record<string, any>)) {
+        if (!['allow', 'ask', 'deny'].includes(String(decision))) {
+          alert(`Invalid decision "${decision}" for ${toolName}.${action}. Use allow, ask, or deny.`);
+          return null;
+        }
+      }
+    }
+
+    return parsed as Record<string, Record<string, string>>;
+  };
+
   const save = async () => {
+    const parsedPermissionProfiles = parsePermissionProfiles();
+    if (!parsedPermissionProfiles) return;
+
     await window.workbench.setConfig({
       openrouterApiKey: apiKey,
       apiEndpoint,
@@ -2725,6 +3123,8 @@ function SettingsTab() {
       workingDir,
       pluginsDir,
       safePaths: safePaths.split('\n').map(s => s.trim()).filter(Boolean),
+      featureFlags,
+      permissionProfiles: parsedPermissionProfiles,
       fontSize,
       fontFamily
     });
@@ -2747,6 +3147,34 @@ function SettingsTab() {
     m.id.toLowerCase().includes(modelFilter.toLowerCase()) ||
     m.name.toLowerCase().includes(modelFilter.toLowerCase())
   );
+
+  const featureFlagRows: Array<{ key: keyof FeatureFlags; label: string; description: string }> = [
+    {
+      key: 'L_TOOL_HEALTH_SIGNALS',
+      label: 'L: Tool Health Signals',
+      description: 'Local run success/failure/timeout stats, MCP status hints, and known issue banners.',
+    },
+    {
+      key: 'M_SMART_AUTO_DIAGNOSTICS',
+      label: 'M: Smart Auto-Diagnostics',
+      description: 'Failure pattern classification with Doctor section suggestions and safe-fix preview flow.',
+    },
+    {
+      key: 'N_PERMISSION_PROFILES',
+      label: 'N: Permission Profiles',
+      description: 'Per-tool action profiles: allow/ask/deny hook on top of declared permissions.',
+    },
+    {
+      key: 'N_RUN_TIMELINE',
+      label: 'N: Run Timeline',
+      description: 'Read-only run timeline in the Running tab.',
+    },
+    {
+      key: 'N_EXPORT_RUN_BUNDLE',
+      label: 'N: Export Run Bundle',
+      description: 'Export run + doctor bundle as a local JSON file for issue reporting.',
+    },
+  ];
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
@@ -2892,6 +3320,55 @@ function SettingsTab() {
                 placeholder="/home/user/documents&#10;/home/user/projects"
               />
             </div>
+          </div>
+
+          
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Feature Flags (Default OFF)</h3>
+            {featureFlagRows.map((row) => (
+              <label
+                key={row.key}
+                style={{
+                  display: 'block',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  marginBottom: 8,
+                  background: colors.bgTertiary,
+                  border: `1px solid ${colors.border}`,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={featureFlags[row.key]}
+                    onChange={() => toggleFeatureFlag(row.key)}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{row.label}</span>
+                </div>
+                <div style={{ fontSize: 12, color: colors.textMuted, marginLeft: 24 }}>
+                  {row.description}
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Permission Profiles</h3>
+            <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
+              JSON config for per-tool action decisions. Example: {`{"*":{"read":"allow","write":"ask"}}`}
+            </div>
+            <textarea
+              value={permissionProfiles}
+              onChange={e => setPermissionProfiles(e.target.value)}
+              style={{ ...styles.input, minHeight: 140, fontFamily: 'monospace' }}
+              placeholder='{"*":{"read":"allow","write":"ask"}}'
+            />
+            {!featureFlags.N_PERMISSION_PROFILES && (
+              <div style={{ fontSize: 11, color: colors.warning, marginTop: 8 }}>
+                Note: N_PERMISSION_PROFILES is currently off, so profiles are saved but not enforced.
+              </div>
+            )}
           </div>
 
           <div style={styles.card}>

@@ -75,6 +75,9 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             if (sanitize === void 0) { sanitize = true; }
             return electron_1.ipcRenderer.invoke('doctor:export', sanitize);
         },
+        suggestFailure: function (toolName, errorText) {
+            return electron_1.ipcRenderer.invoke('doctor:suggestFailure', toolName, errorText);
+        },
     },
     // Permissions - Declarative permissions system
     permissions: {
@@ -124,6 +127,7 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         getInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:getInterrupted'); },
         clearInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:clearInterrupted'); },
         hasInterrupted: function () { return electron_1.ipcRenderer.invoke('runs:hasInterrupted'); },
+        exportBundle: function (runId) { return electron_1.ipcRenderer.invoke('runs:exportBundle', runId); },
         // Listen to run updates
         onUpdate: function (callback) {
             var handler = function (_e, run) { return callback(run); };
@@ -135,6 +139,107 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             var handler = function (_e, stats) { return callback(stats); };
             electron_1.ipcRenderer.on('run:stats', handler);
             return function () { return electron_1.ipcRenderer.removeListener('run:stats', handler); };
+        },
+    },
+    // Tool Health Signals
+    toolHealth: {
+        get: function (toolName) { return electron_1.ipcRenderer.invoke('toolHealth:get', toolName); },
+        addKnownIssue: function (toolName, note) {
+            return electron_1.ipcRenderer.invoke('toolHealth:addKnownIssue', toolName, note);
+        },
+        removeKnownIssue: function (toolName, index) {
+            return electron_1.ipcRenderer.invoke('toolHealth:removeKnownIssue', toolName, index);
+        },
+    },
+    // Safe fix flow (preview + explicit apply)
+    safeFix: {
+        preview: function (fixId) { return electron_1.ipcRenderer.invoke('safeFix:preview', fixId); },
+        apply: function (token) { return electron_1.ipcRenderer.invoke('safeFix:apply', token); },
+    },
+    // Secrets Manager - Secure credential storage
+    secrets: {
+        isAvailable: function () { return electron_1.ipcRenderer.invoke('secrets:isAvailable'); },
+        store: function (name, value, type, tags) {
+            return electron_1.ipcRenderer.invoke('secrets:store', name, value, type, tags);
+        },
+        get: function (secretId) { return electron_1.ipcRenderer.invoke('secrets:get', secretId); },
+        delete: function (secretId) { return electron_1.ipcRenderer.invoke('secrets:delete', secretId); },
+        list: function () { return electron_1.ipcRenderer.invoke('secrets:list'); },
+        updateMetadata: function (secretId, updates) {
+            return electron_1.ipcRenderer.invoke('secrets:updateMetadata', secretId, updates);
+        },
+        findByTool: function (toolName) { return electron_1.ipcRenderer.invoke('secrets:findByTool', toolName); },
+        redact: function (data) { return electron_1.ipcRenderer.invoke('secrets:redact', data); },
+    },
+    // Tool Manifest - Tool metadata registry
+    manifest: {
+        register: function (manifest) { return electron_1.ipcRenderer.invoke('manifest:register', manifest); },
+        get: function (toolName) { return electron_1.ipcRenderer.invoke('manifest:get', toolName); },
+        list: function () { return electron_1.ipcRenderer.invoke('manifest:list'); },
+        checkCompatibility: function (toolName) {
+            return electron_1.ipcRenderer.invoke('manifest:checkCompatibility', toolName);
+        },
+        getToolInfo: function (toolName) { return electron_1.ipcRenderer.invoke('manifest:getToolInfo', toolName); },
+        findByTag: function (tag) { return electron_1.ipcRenderer.invoke('manifest:findByTag', tag); },
+        findByStability: function (stability) {
+            return electron_1.ipcRenderer.invoke('manifest:findByStability', stability);
+        },
+    },
+    // Preview Manager - Dry run / Preview mode
+    preview: {
+        getHistory: function (limit) { return electron_1.ipcRenderer.invoke('preview:getHistory', limit); },
+        approve: function (index) { return electron_1.ipcRenderer.invoke('preview:approve', index); },
+        get: function (index) { return electron_1.ipcRenderer.invoke('preview:get', index); },
+        format: function (preview) { return electron_1.ipcRenderer.invoke('preview:format', preview); },
+        clear: function () { return electron_1.ipcRenderer.invoke('preview:clear'); },
+    },
+    // User Memory - Learning system
+    memory: {
+        remember: function (category, key, value, options) {
+            return electron_1.ipcRenderer.invoke('memory:remember', category, key, value, options);
+        },
+        recall: function (category, key) {
+            return electron_1.ipcRenderer.invoke('memory:recall', category, key);
+        },
+        forget: function (memoryId) { return electron_1.ipcRenderer.invoke('memory:forget', memoryId); },
+        forgetAll: function () { return electron_1.ipcRenderer.invoke('memory:forgetAll'); },
+        update: function (memoryId, updates) {
+            return electron_1.ipcRenderer.invoke('memory:update', memoryId, updates);
+        },
+        listAll: function () { return electron_1.ipcRenderer.invoke('memory:listAll'); },
+        listByCategory: function (category) {
+            return electron_1.ipcRenderer.invoke('memory:listByCategory', category);
+        },
+        search: function (query) { return electron_1.ipcRenderer.invoke('memory:search', query); },
+        getMostUsed: function (limit) { return electron_1.ipcRenderer.invoke('memory:getMostUsed', limit); },
+        getRecentlyUsed: function (limit) { return electron_1.ipcRenderer.invoke('memory:getRecentlyUsed', limit); },
+        getStats: function () { return electron_1.ipcRenderer.invoke('memory:getStats'); },
+        setEnabled: function (enabled) { return electron_1.ipcRenderer.invoke('memory:setEnabled', enabled); },
+        isEnabled: function () { return electron_1.ipcRenderer.invoke('memory:isEnabled'); },
+        rememberPreference: function (key, value) {
+            return electron_1.ipcRenderer.invoke('memory:rememberPreference', key, value);
+        },
+        recallPreference: function (key) { return electron_1.ipcRenderer.invoke('memory:recallPreference', key); },
+    },
+    // Tool Dispatcher - Natural language tool selection
+    dispatch: {
+        createPlan: function (query, context) {
+            return electron_1.ipcRenderer.invoke('dispatch:createPlan', query, context);
+        },
+        suggest: function (context, limit) {
+            return electron_1.ipcRenderer.invoke('dispatch:suggest', context, limit);
+        },
+        formatPlan: function (plan) { return electron_1.ipcRenderer.invoke('dispatch:formatPlan', plan); },
+    },
+    // Environment Detection
+    environment: {
+        getInfo: function () { return electron_1.ipcRenderer.invoke('environment:getInfo'); },
+        format: function (info) { return electron_1.ipcRenderer.invoke('environment:format', info); },
+        getUnsupportedMessage: function (info) {
+            return electron_1.ipcRenderer.invoke('environment:getUnsupportedMessage', info);
+        },
+        getLockdownWarning: function (info) {
+            return electron_1.ipcRenderer.invoke('environment:getLockdownWarning', info);
         },
     },
 });

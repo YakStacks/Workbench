@@ -37,22 +37,23 @@ export class ProcessRegistry {
       console.warn('[ProcessRegistry] Cannot register process without PID');
       return;
     }
+    const pid = proc.pid;
 
     const processInfo: ProcessInfo = {
-      processId: proc.pid,
+      processId: pid,
       startTime: Date.now(),
       ...info,
     };
 
-    this.processes.set(proc.pid, processInfo);
-    this.childProcesses.set(proc.pid, proc);
+    this.processes.set(pid, processInfo);
+    this.childProcesses.set(pid, proc);
 
-    console.log(`[ProcessRegistry] Registered process ${proc.pid} (${info.toolName || info.type})`);
+    console.log(`[ProcessRegistry] Registered process ${pid} (${info.toolName || info.type})`);
 
     // Auto-cleanup when process exits
     proc.on('exit', (code, signal) => {
-      console.log(`[ProcessRegistry] Process ${proc.pid} exited (code: ${code}, signal: ${signal})`);
-      this.unregister(proc.pid);
+      console.log(`[ProcessRegistry] Process ${pid} exited (code: ${code}, signal: ${signal})`);
+      this.unregister(pid);
     });
   }
 

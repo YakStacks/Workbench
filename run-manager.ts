@@ -129,7 +129,7 @@ export class RunManager {
     if (lastSnippet) run.lastOutputSnippet = lastSnippet;
 
     this.moveToHistory(runId);
-    this.emitUpdate(runId);
+    this.emitUpdate(run);
     this.persistState();
   }
 
@@ -146,7 +146,7 @@ export class RunManager {
     run.error = error;
 
     this.moveToHistory(runId);
-    this.emitUpdate(runId);
+    this.emitUpdate(run);
     this.persistState();
   }
 
@@ -162,7 +162,7 @@ export class RunManager {
     run.duration = run.endTime - run.startTime;
 
     this.moveToHistory(runId);
-    this.emitUpdate(runId);
+    this.emitUpdate(run);
     this.persistState();
   }
 
@@ -178,7 +178,7 @@ export class RunManager {
     run.duration = run.endTime - run.startTime;
 
     this.moveToHistory(runId);
-    this.emitUpdate(runId);
+    this.emitUpdate(run);
     this.persistState();
   }
 
@@ -192,6 +192,16 @@ export class RunManager {
     run.lastOutputSnippet = snippet;
     this.emitUpdate(runId);
     // Don't persist on every snippet update - too frequent
+  }
+
+  /**
+   * Attach/update process ID for an active run
+   */
+  setProcessId(runId: string, processId: number): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    run.processId = processId;
+    this.persistState();
   }
 
   /**
@@ -278,8 +288,9 @@ export class RunManager {
   /**
    * Emit run update event to renderer
    */
-  private emitUpdate(runId: string): void {
-    const run = this.runs.get(runId);
+  private emitUpdate(runOrId: RunMetadata | string): void {
+    const run =
+      typeof runOrId === 'string' ? this.runs.get(runOrId) : runOrId;
     if (!run || !this.window) return;
 
     try {
@@ -337,8 +348,9 @@ export class RunManager {
           if (run.state === 'running' || run.state === 'queued') {
             run.state = 'failed';
             run.error = 'Interrupted by app restart';
-            run.endTime = saved.lastSaved || Date.now();
-            run.duration = run.endTime - run.startTime;
+            const endTime = saved.lastSaved || Date.now();
+            run.endTime = endTime;
+            run.duration = endTime - run.startTime;
           }
           this.runs.set(run.runId, run);
         });
