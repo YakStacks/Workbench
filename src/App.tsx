@@ -10,6 +10,7 @@ type Tool = {
   inputSchema: any; 
   category: string;
   _sourceFolder?: string;
+  _sourcePath?: string;
 };
 
 type Message = {
@@ -145,6 +146,11 @@ export default function App() {
   
   // Tool-in-chat state
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
+  const [permissionRequest, setPermissionRequest] = useState<{toolName: string, retry: () => void} | null>(null);
+
+  const onRequestPermission = useCallback((toolName: string, retry: () => void) => {
+    setPermissionRequest({ toolName, retry });
+  }, []);
 
   useEffect(() => {
     window.workbench.listTools().then(setTools);
@@ -187,14 +193,26 @@ export default function App() {
             setHistory={setChatHistory}
             pendingTool={pendingTool}
             setPendingTool={setPendingTool}
+            onRequestPermission={onRequestPermission}
           />
         )}
-        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} />}
+        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} />}
         {tab === 'Files' && <FilesTab />}
         {tab === 'Chains' && <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />}
-        {tab === 'MCP' && <MCPTab onToolsChanged={() => window.workbench.listTools().then(setTools)} />}
+
         {tab === 'Settings' && <SettingsTab />}
       </div>
+      {permissionRequest && (
+        <PermissionPrompt 
+          toolName={permissionRequest.toolName} 
+          onAllow={() => {
+            permissionRequest.retry();
+            setPermissionRequest(null);
+          }}
+          onDeny={() => setPermissionRequest(null)}
+          onClose={() => setPermissionRequest(null)}
+        />
+      )}
     </div>
   );
 }
@@ -208,13 +226,15 @@ function ChatTab({
   history, 
   setHistory, 
   pendingTool, 
-  setPendingTool
+  setPendingTool,
+  onRequestPermission
 }: { 
   tools: Tool[];
   history: Message[];
   setHistory: React.Dispatch<React.SetStateAction<Message[]>>;
   pendingTool: { tool: Tool; input: any } | null;
   setPendingTool: React.Dispatch<React.SetStateAction<{ tool: Tool; input: any } | null>>;
+  onRequestPermission: (toolName: string, retry: () => void) => void;
 }) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -466,6 +486,11 @@ function ChatTab({
       setHistory(prev => [...prev, toolMsg]);
       
     } catch (e: any) {
+      if (e.message.includes('PERMISSION_REQUIRED:')) {
+         const name = e.message.split('PERMISSION_REQUIRED:')[1].trim();
+         onRequestPermission(name, () => runToolInChat(tool, toolInput));
+         return;
+      }
       setHistory(prev => prev.map(m => 
         m.id === runningMsgId ? { ...m, content: `Error: ${e.message}` } : m
       ));
@@ -768,7 +793,12 @@ function ToolInputForm({ tool, values, onChange }: { tool: Tool; values: any; on
 // TOOLS TAB
 // ============================================================================
 
-function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInChat: (t: Tool) => void; onRefresh: () => void }) {
+function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission }: { 
+  tools: Tool[]; 
+  onOpenInChat: (t: Tool) => void; 
+  onRefresh: () => void;
+  onRequestPermission: (toolName: string, retry: () => void) => void;
+}) {
   const [selected, setSelected] = useState<Tool | null>(null);
   const [formValues, setFormValues] = useState<Record<string, any>>({});
   const [output, setOutput] = useState('');
@@ -802,7 +832,7 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     }
     try {
       const fs = await window.workbench.runTool('builtin.readFile', { 
-        path: `plugins/${tool._sourceFolder}/index.js` 
+        path: tool._sourcePath || `plugins/${tool._sourceFolder}/index.js` 
       });
       if (fs.content) {
         setToolCode(fs.content);
@@ -810,6 +840,11 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
         setToolCode('// Failed to load tool code');
       }
     } catch (e: any) {
+      if (e.message.includes('PERMISSION_REQUIRED:')) {
+         const name = e.message.split('PERMISSION_REQUIRED:')[1].trim();
+         onRequestPermission(name, () => loadToolCode(tool));
+         return;
+      }
       setToolCode(`// Error loading code: ${e.message}`);
     }
   };
@@ -819,12 +854,18 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
     setSavingCode(true);
     try {
       await window.workbench.runTool('builtin.writeFile', {
-        path: `plugins/${selected._sourceFolder}/index.js`,
+        path: selected._sourcePath || `plugins/${selected._sourceFolder}/index.js`,
         content: toolCode
       });
       setShowEditor(false);
       onRefresh(); // Reload tools
     } catch (e: any) {
+      if (e.message.includes('PERMISSION_REQUIRED:')) {
+         const name = e.message.split('PERMISSION_REQUIRED:')[1].trim();
+         onRequestPermission(name, () => saveToolCode());
+         setSavingCode(false);
+         return;
+      }
       alert(`Failed to save: ${e.message}`);
     } finally {
       setSavingCode(false);
@@ -879,6 +920,12 @@ function ToolsTab({ tools, onOpenInChat, onRefresh }: { tools: Tool[]; onOpenInC
         setOutput(JSON.stringify(result, null, 2));
       }
     } catch (e: any) {
+      if (e.message.includes('PERMISSION_REQUIRED:')) {
+         const name = e.message.split('PERMISSION_REQUIRED:')[1].trim();
+         onRequestPermission(name, () => runTool());
+         setLoading(false);
+         return;
+      }
       setOutput(`Error: ${e.message}`);
     }
     setLoading(false);
@@ -1706,6 +1753,388 @@ function MCPTab({ onToolsChanged }: { onToolsChanged: () => void }) {
 }
 
 // ============================================================================
+// PERMISSION PROMPT - Modal for permission requests
+// ============================================================================
+
+interface PermissionAction {
+  action: string;
+  description: string;
+  risk: 'low' | 'medium' | 'high';
+}
+
+interface PermissionCategory {
+  category: string;
+  icon: string;
+  actions: PermissionAction[];
+}
+
+interface ToolPermissionInfo {
+  permissions: any;
+  formatted: PermissionCategory[];
+  isDestructive: boolean;
+}
+
+interface PermissionPromptProps {
+  toolName: string;
+  onAllow: (permanent: boolean) => void;
+  onDeny: () => void;
+  onClose: () => void;
+}
+
+function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionPromptProps) {
+  const [permissionInfo, setPermissionInfo] = useState<ToolPermissionInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadPermissions = async () => {
+      try {
+        const info = await window.workbench.permissions.getToolPermissions(toolName);
+        setPermissionInfo(info);
+      } catch (e) {
+        console.error('Failed to load permissions:', e);
+      }
+      setLoading(false);
+    };
+    loadPermissions();
+  }, [toolName]);
+
+  const handleAllow = async (permanent: boolean) => {
+    if (!permissionInfo) return;
+    setLoading(true);
+    try {
+      for (const cat of permissionInfo.formatted) {
+        await window.workbench.permissions.grant(toolName, cat.category, permanent);
+      }
+      onAllow(permanent);
+    } catch (e) {
+      console.error("Failed to grant permissions:", e);
+      onAllow(permanent);
+    }
+  };
+
+  const riskColor = (risk: 'low' | 'medium' | 'high') => {
+    switch (risk) {
+      case 'low': return colors.success;
+      case 'medium': return colors.warning;
+      case 'high': return colors.danger;
+    }
+  };
+
+  const riskLabel = (risk: 'low' | 'medium' | 'high') => {
+    switch (risk) {
+      case 'low': return 'Low Risk';
+      case 'medium': return 'Medium Risk';
+      case 'high': return 'High Risk';
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+      }}>
+        <div style={{ ...styles.card, maxWidth: 400, textAlign: 'center' }}>
+          <div style={{ fontSize: 24 }}>⏳</div>
+          <div>Loading permissions...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!permissionInfo) {
+    // No permissions declared - allow by default
+    onAllow(false);
+    return null;
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+    }} onClick={onClose}>
+      <div style={{ ...styles.card, maxWidth: 450, minWidth: 350 }} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 32 }}>🔐</div>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18 }}>Permission Required</h3>
+            <div style={{ fontSize: 13, color: colors.textMuted }}>{toolName}</div>
+          </div>
+        </div>
+
+        {/* Destructive warning */}
+        {permissionInfo.isDestructive && (
+          <div style={{
+            background: colors.danger + '20',
+            border: `1px solid ${colors.danger}`,
+            borderRadius: 6,
+            padding: '8px 12px',
+            marginBottom: 16,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8
+          }}>
+            <span style={{ fontSize: 18 }}>⚠️</span>
+            <span style={{ fontSize: 13, color: colors.danger }}>
+              This tool requires elevated privileges that could modify or delete data.
+            </span>
+          </div>
+        )}
+
+        {/* Permission list */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 8 }}>
+            This tool requests the following permissions:
+          </div>
+          {permissionInfo.formatted.map((cat: PermissionCategory) => (
+            <div key={cat.category} style={{
+              background: colors.bgTertiary,
+              borderRadius: 6,
+              padding: 12,
+              marginBottom: 8
+            }}>
+              <div style={{ fontWeight: 500, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>{cat.icon}</span>
+                <span style={{ textTransform: 'capitalize' }}>{cat.category}</span>
+              </div>
+              {cat.actions.map((action: PermissionAction) => (
+                <div key={action.action} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  fontSize: 12, padding: '4px 0', marginLeft: 24
+                }}>
+                  <span>{action.description}</span>
+                  <span style={{
+                    fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                    background: riskColor(action.risk) + '20', color: riskColor(action.risk)
+                  }}>
+                    {riskLabel(action.risk)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* Buttons */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onDeny} style={{ ...styles.button, flex: 1, background: colors.bgTertiary }}>
+            Deny
+          </button>
+          <button onClick={() => handleAllow(false)} style={{ ...styles.button, ...styles.buttonPrimary, flex: 1 }}>
+            Allow Once
+          </button>
+          <button onClick={() => handleAllow(true)} style={{ ...styles.button, ...styles.buttonSuccess, flex: 1 }}>
+            Always Allow
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// DOCTOR PANEL - System Diagnostics
+// ============================================================================
+
+interface DiagnosticResult {
+  name: string;
+  category: 'system' | 'process' | 'network' | 'security';
+  status: 'PASS' | 'WARN' | 'FAIL';
+  evidence: string;
+  fixSteps?: string[];
+  duration?: number;
+}
+
+interface DoctorReport {
+  timestamp: string;
+  platform: string;
+  version: string;
+  results: DiagnosticResult[];
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+  };
+}
+
+function DoctorPanel() {
+  const [report, setReport] = useState<DoctorReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runDiagnostics = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await window.workbench.doctor.run();
+      setReport(result);
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  const copyReport = async () => {
+    try {
+      const text = await window.workbench.doctor.getReportText(true);
+      if (text) {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch (e: any) {
+      setError('Failed to copy: ' + e.message);
+    }
+  };
+
+  const exportReport = async () => {
+    try {
+      await window.workbench.doctor.export(true);
+    } catch (e: any) {
+      setError('Failed to export: ' + e.message);
+    }
+  };
+
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case 'PASS': return '✅';
+      case 'WARN': return '⚠️';
+      case 'FAIL': return '❌';
+      default: return '❓';
+    }
+  };
+
+  const statusColor = (status: string) => {
+    switch (status) {
+      case 'PASS': return colors.success;
+      case 'WARN': return colors.warning;
+      case 'FAIL': return colors.danger;
+      default: return colors.textMuted;
+    }
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
+        Run diagnostics to check system health and identify potential issues.
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button 
+          onClick={runDiagnostics} 
+          disabled={loading}
+          style={{ ...styles.button, ...styles.buttonPrimary }}
+        >
+          {loading ? '⏳ Running...' : '🩺 Run Diagnostics'}
+        </button>
+        {report && (
+          <>
+            <button 
+              onClick={copyReport}
+              style={{ ...styles.button, ...styles.buttonGhost }}
+            >
+              {copied ? '✓ Copied!' : '📋 Copy Report'}
+            </button>
+            <button 
+              onClick={exportReport}
+              style={{ ...styles.button, ...styles.buttonGhost }}
+            >
+              💾 Export
+            </button>
+          </>
+        )}
+      </div>
+
+      {error && (
+        <div style={{ 
+          padding: 12, 
+          background: colors.danger + '20', 
+          borderRadius: 6, 
+          color: colors.danger,
+          marginBottom: 12 
+        }}>
+          {error}
+        </div>
+      )}
+
+      {report && (
+        <div>
+          <div style={{ 
+            display: 'flex', 
+            gap: 16, 
+            marginBottom: 12,
+            padding: '8px 12px',
+            background: colors.bgTertiary,
+            borderRadius: 6
+          }}>
+            <span style={{ color: colors.success }}>✅ {report.summary.pass} Pass</span>
+            <span style={{ color: colors.warning }}>⚠️ {report.summary.warn} Warn</span>
+            <span style={{ color: colors.danger }}>❌ {report.summary.fail} Fail</span>
+            <span style={{ color: colors.textMuted, marginLeft: 'auto', fontSize: 11 }}>
+              v{report.version} • {new Date(report.timestamp).toLocaleTimeString()}
+            </span>
+          </div>
+
+          <div style={{ maxHeight: 300, overflow: 'auto' }}>
+            {report.results.map((result, idx) => (
+              <div 
+                key={idx}
+                style={{ 
+                  padding: '10px 12px',
+                  marginBottom: 8,
+                  background: colors.bg,
+                  borderRadius: 6,
+                  borderLeft: `3px solid ${statusColor(result.status)}`
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontWeight: 500, marginBottom: 4 }}>
+                      {statusIcon(result.status)} {result.name}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>
+                      {result.evidence}
+                    </div>
+                  </div>
+                  <span style={{ 
+                    fontSize: 11, 
+                    padding: '2px 6px', 
+                    borderRadius: 4,
+                    background: statusColor(result.status) + '20',
+                    color: statusColor(result.status)
+                  }}>
+                    {result.status}
+                  </span>
+                </div>
+                {result.fixSteps && result.fixSteps.length > 0 && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${colors.border}` }}>
+                    <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>Suggested fixes:</div>
+                    {result.fixSteps.map((step, i) => (
+                      <div key={i} style={{ fontSize: 12, color: colors.text, marginLeft: 8 }}>
+                        → {step}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!report && !loading && (
+        <div style={{ textAlign: 'center', color: colors.textMuted, padding: 16 }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>🔍</div>
+          <div style={{ fontSize: 13 }}>Click "Run Diagnostics" to check your system</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // SETTINGS TAB
 // ============================================================================
 
@@ -1947,6 +2376,11 @@ function SettingsTab() {
                 placeholder="/home/user/documents&#10;/home/user/projects"
               />
             </div>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>🩺 System Diagnostics</h3>
+            <DoctorPanel />
           </div>
 
           <div style={styles.card}>

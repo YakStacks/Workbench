@@ -75,4 +75,32 @@ contextBridge.exposeInMainWorld('workbench', {
   models: {
     list: () => ipcRenderer.invoke('models:list'),
   },
+
+  // Doctor - System Diagnostics
+  doctor: {
+    run: () => ipcRenderer.invoke('doctor:run'),
+    getLastReport: () => ipcRenderer.invoke('doctor:getLastReport'),
+    getReportText: (sanitize: boolean = true) => ipcRenderer.invoke('doctor:getReportText', sanitize),
+    export: (sanitize: boolean = true) => ipcRenderer.invoke('doctor:export', sanitize),
+  },
+
+  // Permissions - Declarative permissions system
+  permissions: {
+    register: (toolName: string, permissions: any) => 
+      ipcRenderer.invoke('permissions:register', toolName, permissions),
+    check: (toolName: string, category: string, action: string) => 
+      ipcRenderer.invoke('permissions:check', toolName, category, action),
+    getToolPermissions: (toolName: string) => 
+      ipcRenderer.invoke('permissions:getToolPermissions', toolName),
+    grant: (toolName: string, category: string, permanent: boolean = false) => 
+      ipcRenderer.invoke('permissions:grant', toolName, category, permanent),
+    deny: (toolName: string, category: string, permanent: boolean = false) => 
+      ipcRenderer.invoke('permissions:deny', toolName, category, permanent),
+    getPolicy: (toolName: string) => 
+      ipcRenderer.invoke('permissions:getPolicy', toolName),
+    resetPolicy: (toolName: string) => 
+      ipcRenderer.invoke('permissions:resetPolicy', toolName),
+    resetAll: () => 
+      ipcRenderer.invoke('permissions:resetAll'),
+  },
 });

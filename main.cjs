@@ -46,6 +46,13 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+var __asyncValues = (this && this.__asyncValues) || function (o) {
+    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    var m = o[Symbol.asyncIterator], i;
+    return m ? m.call(o) : (o = typeof __values === "function" ? __values(o) : o[Symbol.iterator](), i = {}, verb("next"), verb("throw"), verb("return"), i[Symbol.asyncIterator] = function () { return this; }, i);
+    function verb(n) { i[n] = o[n] && function (v) { return new Promise(function (resolve, reject) { v = o[n](v), settle(resolve, reject, v.done, v.value); }); }; }
+    function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
+};
 var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
     if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
         if (ar || !(i in from)) {
@@ -62,12 +69,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // Electron main process - Enhanced with streaming, file system, clipboard, tool chaining, MCP
 var electron_1 = require("electron");
 var path_1 = __importDefault(require("path"));
+var util_1 = __importDefault(require("util"));
 var fs_1 = __importDefault(require("fs"));
 var net_1 = __importDefault(require("net"));
 var child_process_1 = require("child_process");
 var electron_store_1 = __importDefault(require("electron-store"));
 var axios_1 = __importDefault(require("axios"));
+var doctor_1 = require("./doctor.cjs");
+var permissions_1 = require("./permissions.cjs");
 var store = new electron_store_1.default();
+var permissionManager = new permissions_1.PermissionManager(store);
 var mainWindow = null;
 var tray = null;
 var plugins = [];
@@ -118,12 +129,8 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
         } }));
-    if (electron_1.app.isPackaged) {
-        mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
-    }
-    else {
-        mainWindow.loadURL("http://localhost:5173/");
-    }
+    // Always load from dist folder - use `npm run dev` for hot reload
+    mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
     // Minimize to tray instead of closing
     mainWindow.on("close", function (event) {
         if (!isQuitting) {
@@ -234,8 +241,14 @@ function loadPlugins() {
                         registerTool: function (tool) {
                             // Store source folder for delete functionality
                             tool._sourceFolder = folder;
+                            tool._sourcePath = pluginPath;
                             console.log("[loadPlugins] Registered tool:", tool.name, "from folder:", folder);
                             tools.set(tool.name, tool);
+                            // Register permissions if declared
+                            if (tool.permissions) {
+                                permissionManager.registerToolPermissions(tool.name, tool.permissions);
+                                console.log("[loadPlugins] Registered permissions for ".concat(tool.name));
+                            }
                         },
                         getPluginsDir: function () { return pluginsDir; },
                         reloadPlugins: function () { return loadPlugins(); },
@@ -281,6 +294,9 @@ function registerBuiltinTools() {
             });
         }); },
     });
+    permissionManager.registerToolPermissions("builtin.readFile", {
+        filesystem: { actions: ["read"] },
+    });
     tools.set("builtin.writeFile", {
         name: "builtin.writeFile",
         description: "Write contents to a file",
@@ -320,6 +336,9 @@ function registerBuiltinTools() {
             });
         }); },
     });
+    permissionManager.registerToolPermissions("builtin.writeFile", {
+        filesystem: { actions: ["write"] },
+    });
     tools.set("builtin.listDir", {
         name: "builtin.listDir",
         description: "List contents of a directory",
@@ -344,6 +363,9 @@ function registerBuiltinTools() {
                 return [2 /*return*/, { path: safePath, entries: entries }];
             });
         }); },
+    });
+    permissionManager.registerToolPermissions("builtin.listDir", {
+        filesystem: { actions: ["read"] },
     });
     tools.set("builtin.fileExists", {
         name: "builtin.fileExists",
@@ -453,6 +475,9 @@ function registerBuiltinTools() {
                     })];
             });
         }); },
+    });
+    permissionManager.registerToolPermissions("builtin.shell", {
+        process: { actions: ["spawn"] },
     });
     console.log("[registerBuiltinTools] Registered builtin tools");
     // System Info Tools
@@ -655,19 +680,20 @@ function registerBuiltinTools() {
     });
 }
 function resolveSafePath(inputPath) {
+    var normalized = inputPath.trim();
     // Allow absolute paths or resolve relative to user's home
-    if (path_1.default.isAbsolute(inputPath)) {
-        return inputPath;
+    if (path_1.default.isAbsolute(normalized)) {
+        return normalized;
     }
     var workingDir = store.get("workingDir") || electron_1.app.getPath("home");
-    return path_1.default.resolve(workingDir, inputPath);
+    return path_1.default.resolve(workingDir, normalized);
 }
 function isPathSafe(targetPath) {
     var safePaths = store.get("safePaths") || [];
     var workingDir = store.get("workingDir");
     // If no safe paths configured, allow workingDir and home
     if (safePaths.length === 0) {
-        var allowedRoots = [workingDir, electron_1.app.getPath("home")].filter(Boolean);
+        var allowedRoots = [workingDir, electron_1.app.getPath("home"), process.cwd()].filter(Boolean);
         return allowedRoots.some(function (root) { return targetPath.startsWith(root); });
     }
     // Check if path is within any safe path
@@ -1378,33 +1404,44 @@ electron_1.ipcMain.handle("plugins:reload", function () {
 electron_1.ipcMain.handle("plugins:save", function (_e, pluginName, code) { return __awaiter(void 0, void 0, void 0, function () {
     var pluginsDir, safeName, pluginPath, stat, cleanCode, fenceMatch;
     return __generator(this, function (_a) {
-        pluginsDir = store.get("pluginsDir") || path_1.default.join(__dirname, "plugins");
-        safeName = pluginName
-            .replace(/[^a-zA-Z0-9_-]/g, "_")
-            .replace(/^_+|_+$/g, "");
-        if (!safeName)
-            throw new Error("Invalid plugin name");
-        pluginPath = path_1.default.join(pluginsDir, safeName);
-        // Check if path exists as a file and remove it
-        if (fs_1.default.existsSync(pluginPath)) {
-            stat = fs_1.default.statSync(pluginPath);
-            if (stat.isFile()) {
-                fs_1.default.unlinkSync(pluginPath);
+        try {
+            pluginsDir = store.get("pluginsDir") || path_1.default.join(__dirname, "plugins");
+            console.log("[plugins:save] Request to save \"".concat(pluginName, "\" to \"").concat(pluginsDir, "\""));
+            if (fs_1.default.existsSync(pluginsDir) && fs_1.default.statSync(pluginsDir).isFile()) {
+                throw new Error("Plugins directory configuration is invalid (is a file): ".concat(pluginsDir));
             }
+            safeName = pluginName
+                .replace(/[^a-zA-Z0-9_-]/g, "_")
+                .replace(/^_+|_+$/g, "");
+            if (!safeName)
+                throw new Error("Invalid plugin name");
+            pluginPath = path_1.default.join(pluginsDir, safeName);
+            // Check if path exists as a file and remove it
+            if (fs_1.default.existsSync(pluginPath)) {
+                stat = fs_1.default.statSync(pluginPath);
+                if (stat.isFile()) {
+                    fs_1.default.unlinkSync(pluginPath);
+                }
+            }
+            // Create directory if it doesn't exist
+            if (!fs_1.default.existsSync(pluginPath)) {
+                fs_1.default.mkdirSync(pluginPath, { recursive: true });
+            }
+            cleanCode = code;
+            fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
+            if (fenceMatch) {
+                cleanCode = fenceMatch[1].trim();
+            }
+            fs_1.default.writeFileSync(path_1.default.join(pluginPath, "index.js"), cleanCode, "utf-8");
+            fs_1.default.writeFileSync(path_1.default.join(pluginPath, "package.json"), '{\n  "type": "commonjs"\n}\n', "utf-8");
+            loadPlugins();
+            return [2 /*return*/, { success: true, path: pluginPath, name: safeName }];
         }
-        // Create directory if it doesn't exist
-        if (!fs_1.default.existsSync(pluginPath)) {
-            fs_1.default.mkdirSync(pluginPath, { recursive: true });
+        catch (e) {
+            console.error("[plugins:save] Failed for \"".concat(pluginName, "\":"), e);
+            throw e;
         }
-        cleanCode = code;
-        fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
-        if (fenceMatch) {
-            cleanCode = fenceMatch[1].trim();
-        }
-        fs_1.default.writeFileSync(path_1.default.join(pluginPath, "index.js"), cleanCode, "utf-8");
-        fs_1.default.writeFileSync(path_1.default.join(pluginPath, "package.json"), '{\n  "type": "commonjs"\n}\n', "utf-8");
-        loadPlugins();
-        return [2 /*return*/, { success: true, path: pluginPath, name: safeName }];
+        return [2 /*return*/];
     });
 }); });
 // Delete a plugin
@@ -1433,6 +1470,7 @@ electron_1.ipcMain.handle("tools:list", function () {
         inputSchema: t.inputSchema,
         category: t.name.split(".")[0],
         _sourceFolder: t._sourceFolder,
+        _sourcePath: t._sourcePath,
     }); });
 });
 electron_1.ipcMain.handle("tools:refresh", function () {
@@ -1444,27 +1482,49 @@ electron_1.ipcMain.handle("tools:refresh", function () {
         inputSchema: t.inputSchema,
         category: t.name.split(".")[0],
         _sourceFolder: t._sourceFolder,
+        _sourcePath: t._sourcePath,
     }); });
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, error_1;
-    return __generator(this, function (_a) {
-        switch (_a.label) {
+    var tool, permissions, categories, _i, categories_1, cat, actions, _a, actions_1, action, check, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, error_1;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                permissions = permissionManager.getToolPermissions(name);
+                if (permissions) {
+                    categories = ['filesystem', 'network', 'process'];
+                    for (_i = 0, categories_1 = categories; _i < categories_1.length; _i++) {
+                        cat = categories_1[_i];
+                        if (permissions[cat]) {
+                            actions = permissions[cat].actions;
+                            for (_a = 0, actions_1 = actions; _a < actions_1.length; _a++) {
+                                action = actions_1[_a];
+                                check = permissionManager.checkPermission(name, cat, action);
+                                if (!check.allowed) {
+                                    if (check.needsPrompt) {
+                                        // Special error that frontend can parse to show prompt
+                                        throw new Error("PERMISSION_REQUIRED:".concat(name));
+                                    }
+                                    throw new Error("Permission denied for ".concat(cat, ":").concat(action));
+                                }
+                            }
+                        }
+                    }
+                }
                 TOOL_TIMEOUT = 30000;
                 MAX_OUTPUT_SIZE = 500000;
                 timeoutPromise = new Promise(function (_, reject) {
                     setTimeout(function () { return reject(new Error("Tool execution timeout (30s limit)")); }, TOOL_TIMEOUT);
                 });
-                _a.label = 1;
+                _b.label = 1;
             case 1:
-                _a.trys.push([1, 3, , 4]);
+                _b.trys.push([1, 3, , 4]);
                 return [4 /*yield*/, Promise.race([tool.run(input), timeoutPromise])];
             case 2:
-                rawOutput = _a.sent();
+                rawOutput = _b.sent();
                 normalized = normalizeToolOutput(rawOutput);
                 // Safety: Truncate large outputs
                 if (typeof normalized.content === "string" &&
@@ -1476,7 +1536,7 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 }
                 return [2 /*return*/, normalized];
             case 3:
-                error_1 = _a.sent();
+                error_1 = _b.sent();
                 // Friendly error handling
                 return [2 /*return*/, normalizeToolOutput({
                         content: error_1.message.includes("timeout")
@@ -1641,10 +1701,11 @@ function processTemplateVariables(text) {
 }
 // Streaming task runner
 electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_5, errorDetails, errorMessage;
-    var _a, _b, _c, _d, _f, _g, _h, _j;
-    return __generator(this, function (_k) {
-        switch (_k.label) {
+    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, e_5, errorData, chunks, _a, errorData_1, errorData_1_1, chunk, e_6_1, rawParams, streamErr_1, errorDetails, errorMessage, detailedMsg;
+    var _b, e_6, _c, _d;
+    var _f, _g, _h, _j, _k, _l, _m;
+    return __generator(this, function (_o) {
+        switch (_o.label) {
             case 0:
                 config = store.store;
                 router = config.router || {};
@@ -1666,9 +1727,9 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 apiEndpoint = config.apiEndpoint || "https://openrouter.ai/api/v1";
                 console.log("[task:runStream] Model: ".concat(roleConfig.model, ", TaskType: ").concat(taskType));
                 processedPrompt = processTemplateVariables(prompt);
-                _k.label = 1;
+                _o.label = 1;
             case 1:
-                _k.trys.push([1, 3, , 4]);
+                _o.trys.push([1, 3, , 19]);
                 return [4 /*yield*/, axios_1.default.post("".concat(apiEndpoint, "/chat/completions"), {
                         model: roleConfig.model,
                         messages: [
@@ -1687,7 +1748,7 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                         responseType: "stream",
                     })];
             case 2:
-                res = _k.sent();
+                res = _o.sent();
                 fullContent_1 = "";
                 promptTokens_1 = 0;
                 completionTokens_1 = 0;
@@ -1782,30 +1843,97 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
-                e_5 = _k.sent();
+                e_5 = _o.sent();
+                errorData = (_f = e_5.response) === null || _f === void 0 ? void 0 : _f.data;
+                if (!(errorData && typeof errorData.pipe === 'function')) return [3 /*break*/, 18];
+                _o.label = 4;
+            case 4:
+                _o.trys.push([4, 17, , 18]);
+                chunks = [];
+                _o.label = 5;
+            case 5:
+                _o.trys.push([5, 10, 11, 16]);
+                _a = true, errorData_1 = __asyncValues(errorData);
+                _o.label = 6;
+            case 6: return [4 /*yield*/, errorData_1.next()];
+            case 7:
+                if (!(errorData_1_1 = _o.sent(), _b = errorData_1_1.done, !_b)) return [3 /*break*/, 9];
+                _d = errorData_1_1.value;
+                _a = false;
+                chunk = _d;
+                chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+                _o.label = 8;
+            case 8:
+                _a = true;
+                return [3 /*break*/, 6];
+            case 9: return [3 /*break*/, 16];
+            case 10:
+                e_6_1 = _o.sent();
+                e_6 = { error: e_6_1 };
+                return [3 /*break*/, 16];
+            case 11:
+                _o.trys.push([11, , 14, 15]);
+                if (!(!_a && !_b && (_c = errorData_1.return))) return [3 /*break*/, 13];
+                return [4 /*yield*/, _c.call(errorData_1)];
+            case 12:
+                _o.sent();
+                _o.label = 13;
+            case 13: return [3 /*break*/, 15];
+            case 14:
+                if (e_6) throw e_6.error;
+                return [7 /*endfinally*/];
+            case 15: return [7 /*endfinally*/];
+            case 16:
+                rawParams = Buffer.concat(chunks).toString('utf8');
+                try {
+                    errorData = JSON.parse(rawParams);
+                }
+                catch (_p) {
+                    errorData = rawParams;
+                }
+                return [3 /*break*/, 18];
+            case 17:
+                streamErr_1 = _o.sent();
+                errorData = '[Stream Read Failed]';
+                return [3 /*break*/, 18];
+            case 18:
                 errorDetails = {
-                    status: (_a = e_5.response) === null || _a === void 0 ? void 0 : _a.status,
-                    statusText: (_b = e_5.response) === null || _b === void 0 ? void 0 : _b.statusText,
-                    data: (_c = e_5.response) === null || _c === void 0 ? void 0 : _c.data,
+                    status: (_g = e_5.response) === null || _g === void 0 ? void 0 : _g.status,
+                    statusText: (_h = e_5.response) === null || _h === void 0 ? void 0 : _h.statusText,
+                    data: errorData,
                     message: e_5.message,
                 };
-                console.error("[task:runStream] Full error:", JSON.stringify(errorDetails, null, 2));
+                console.error("[task:runStream] Full error:", util_1.default.inspect(errorDetails, { depth: null, colors: false }));
                 errorMessage = "Request failed";
-                if ((_g = (_f = (_d = e_5.response) === null || _d === void 0 ? void 0 : _d.data) === null || _f === void 0 ? void 0 : _f.error) === null || _g === void 0 ? void 0 : _g.message) {
-                    errorMessage = e_5.response.data.error.message;
+                detailedMsg = "";
+                if (typeof errorData === 'object' && ((_j = errorData === null || errorData === void 0 ? void 0 : errorData.error) === null || _j === void 0 ? void 0 : _j.message)) {
+                    detailedMsg = errorData.error.message;
                 }
-                else if (((_h = e_5.response) === null || _h === void 0 ? void 0 : _h.status) === 404) {
-                    errorMessage = "Model not found: ".concat(roleConfig.model, ". Please check the model ID in Settings.");
+                else if (typeof errorData === 'string') {
+                    detailedMsg = errorData;
                 }
-                else if (((_j = e_5.response) === null || _j === void 0 ? void 0 : _j.status) === 400) {
-                    errorMessage = "Bad request. The model \"".concat(roleConfig.model, "\" may not support this request format.");
+                else if (errorData) {
+                    try {
+                        detailedMsg = JSON.stringify(errorData);
+                    }
+                    catch (_q) { }
+                }
+                errorMessage = "[".concat(((_k = e_5.response) === null || _k === void 0 ? void 0 : _k.status) || 'Unknown', "] ").concat(detailedMsg || e_5.message || 'Request failed');
+                // Fallbacks for specific status codes if no message found
+                if (!detailedMsg) {
+                    if (((_l = e_5.response) === null || _l === void 0 ? void 0 : _l.status) === 404) {
+                        errorMessage = "[404] Model not found: ".concat(roleConfig.model, ".");
+                    }
+                    else if (((_m = e_5.response) === null || _m === void 0 ? void 0 : _m.status) === 400) {
+                        errorMessage = "[400] Bad request to model \"".concat(roleConfig.model, "\".");
+                    }
                 }
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("stream:error", {
                     requestId: requestId,
                     error: errorMessage,
                 });
                 throw new Error(errorMessage);
-            case 4: return [2 /*return*/];
+            case 19: return [2 /*return*/];
         }
     });
 }); });
@@ -1950,7 +2078,7 @@ electron_1.ipcMain.handle("mcp:list", function () {
     });
 });
 electron_1.ipcMain.handle("mcp:add", function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
-    var servers, transport, proxyPort, client, e_6;
+    var servers, transport, proxyPort, client, e_7;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -1989,11 +2117,11 @@ electron_1.ipcMain.handle("mcp:add", function (_e, config) { return __awaiter(vo
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length, transport: transport }];
             case 3:
-                e_6 = _a.sent();
-                console.error("[mcp:add] Connection failed:", e_6.message);
+                e_7 = _a.sent();
+                console.error("[mcp:add] Connection failed:", e_7.message);
                 client.disconnect(); // Clean up failed connection
                 mcpClients.delete(config.name); // Remove from map
-                return [2 /*return*/, { success: false, error: e_6.message || "Connection failed" }];
+                return [2 /*return*/, { success: false, error: e_7.message || "Connection failed" }];
             case 4: return [2 /*return*/];
         }
     });
@@ -2018,7 +2146,7 @@ electron_1.ipcMain.handle("mcp:remove", function (_e, name) { return __awaiter(v
     });
 }); });
 electron_1.ipcMain.handle("mcp:reconnect", function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
-    var client, e_7;
+    var client, e_8;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -2045,9 +2173,140 @@ electron_1.ipcMain.handle("mcp:reconnect", function (_e, name) { return __awaite
                 });
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
-                e_7 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_7.message }];
+                e_8 = _a.sent();
+                return [2 /*return*/, { success: false, error: e_8.message }];
             case 4: return [2 /*return*/];
         }
     });
 }); });
+// ============================================================================
+// DOCTOR ENGINE - System Diagnostics
+// ============================================================================
+// Doctor engine instance
+var doctorEngine = null;
+var lastDoctorReport = null;
+function getDoctorEngine() {
+    if (!doctorEngine) {
+        var configDir = electron_1.app.getPath("userData");
+        var version = electron_1.app.getVersion();
+        doctorEngine = new doctor_1.DoctorEngine(configDir, version);
+    }
+    return doctorEngine;
+}
+// Run all diagnostics
+electron_1.ipcMain.handle("doctor:run", function () { return __awaiter(void 0, void 0, void 0, function () {
+    var engine;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                console.log("[doctor:run] Running diagnostics...");
+                engine = getDoctorEngine();
+                return [4 /*yield*/, engine.runAll()];
+            case 1:
+                lastDoctorReport = _a.sent();
+                console.log("[doctor:run] Complete:", lastDoctorReport.summary);
+                return [2 /*return*/, lastDoctorReport];
+        }
+    });
+}); });
+// Get last report
+electron_1.ipcMain.handle("doctor:getLastReport", function () {
+    return lastDoctorReport;
+});
+// Get report as text (sanitized)
+electron_1.ipcMain.handle("doctor:getReportText", function (_e, sanitize) {
+    if (sanitize === void 0) { sanitize = true; }
+    if (!lastDoctorReport)
+        return null;
+    var engine = getDoctorEngine();
+    return engine.formatReportText(lastDoctorReport, sanitize);
+});
+// Export report to file
+electron_1.ipcMain.handle("doctor:export", function (_e_1) {
+    var args_1 = [];
+    for (var _i = 1; _i < arguments.length; _i++) {
+        args_1[_i - 1] = arguments[_i];
+    }
+    return __awaiter(void 0, __spreadArray([_e_1], args_1, true), void 0, function (_e, sanitize) {
+        var _a, filePath, canceled, engine, content, report;
+        if (sanitize === void 0) { sanitize = true; }
+        return __generator(this, function (_b) {
+            switch (_b.label) {
+                case 0:
+                    if (!lastDoctorReport) {
+                        throw new Error("No diagnostic report available. Run diagnostics first.");
+                    }
+                    return [4 /*yield*/, electron_1.dialog.showSaveDialog(mainWindow, {
+                            title: "Export Doctor Report",
+                            defaultPath: "workbench-doctor-".concat(new Date().toISOString().split("T")[0], ".txt"),
+                            filters: [
+                                { name: "Text Files", extensions: ["txt"] },
+                                { name: "JSON Files", extensions: ["json"] },
+                            ],
+                        })];
+                case 1:
+                    _a = _b.sent(), filePath = _a.filePath, canceled = _a.canceled;
+                    if (canceled || !filePath) {
+                        return [2 /*return*/, { success: false, canceled: true }];
+                    }
+                    engine = getDoctorEngine();
+                    if (filePath.endsWith(".json")) {
+                        report = sanitize ? engine.sanitizeReport(lastDoctorReport) : lastDoctorReport;
+                        content = JSON.stringify(report, null, 2);
+                    }
+                    else {
+                        content = engine.formatReportText(lastDoctorReport, sanitize);
+                    }
+                    fs_1.default.writeFileSync(filePath, content, "utf-8");
+                    return [2 /*return*/, { success: true, filePath: filePath }];
+            }
+        });
+    });
+});
+// ============================================================================
+// PERMISSION SYSTEM IPC HANDLERS
+// ============================================================================
+// Register tool permissions when loading plugins
+electron_1.ipcMain.handle("permissions:register", function (_e, toolName, permissions) {
+    permissionManager.registerToolPermissions(toolName, permissions);
+    return { success: true };
+});
+// Check if tool has permission for an action
+electron_1.ipcMain.handle("permissions:check", function (_e, toolName, category, action) {
+    return permissionManager.checkPermission(toolName, category, action);
+});
+// Get tool's declared permissions
+electron_1.ipcMain.handle("permissions:getToolPermissions", function (_e, toolName) {
+    var permissions = permissionManager.getToolPermissions(toolName);
+    if (!permissions)
+        return null;
+    return {
+        permissions: permissions,
+        formatted: permissionManager.formatPermissionsForDisplay(permissions),
+        isDestructive: permissionManager.isDestructive(toolName),
+    };
+});
+// Grant permission (one-time or permanent)
+electron_1.ipcMain.handle("permissions:grant", function (_e, toolName, category, permanent) {
+    permissionManager.grantPermission(toolName, category, permanent);
+    return { success: true };
+});
+// Deny permission
+electron_1.ipcMain.handle("permissions:deny", function (_e, toolName, category, permanent) {
+    permissionManager.denyPermission(toolName, category, permanent);
+    return { success: true };
+});
+// Get tool's current policy
+electron_1.ipcMain.handle("permissions:getPolicy", function (_e, toolName) {
+    return permissionManager.getToolPolicy(toolName);
+});
+// Reset tool policy
+electron_1.ipcMain.handle("permissions:resetPolicy", function (_e, toolName) {
+    permissionManager.resetToolPolicy(toolName);
+    return { success: true };
+});
+// Reset all policies
+electron_1.ipcMain.handle("permissions:resetAll", function () {
+    permissionManager.resetAllPolicies();
+    return { success: true };
+});

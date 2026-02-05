@@ -63,4 +63,46 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
     models: {
         list: function () { return electron_1.ipcRenderer.invoke('models:list'); },
     },
+    // Doctor - System Diagnostics
+    doctor: {
+        run: function () { return electron_1.ipcRenderer.invoke('doctor:run'); },
+        getLastReport: function () { return electron_1.ipcRenderer.invoke('doctor:getLastReport'); },
+        getReportText: function (sanitize) {
+            if (sanitize === void 0) { sanitize = true; }
+            return electron_1.ipcRenderer.invoke('doctor:getReportText', sanitize);
+        },
+        export: function (sanitize) {
+            if (sanitize === void 0) { sanitize = true; }
+            return electron_1.ipcRenderer.invoke('doctor:export', sanitize);
+        },
+    },
+    // Permissions - Declarative permissions system
+    permissions: {
+        register: function (toolName, permissions) {
+            return electron_1.ipcRenderer.invoke('permissions:register', toolName, permissions);
+        },
+        check: function (toolName, category, action) {
+            return electron_1.ipcRenderer.invoke('permissions:check', toolName, category, action);
+        },
+        getToolPermissions: function (toolName) {
+            return electron_1.ipcRenderer.invoke('permissions:getToolPermissions', toolName);
+        },
+        grant: function (toolName, category, permanent) {
+            if (permanent === void 0) { permanent = false; }
+            return electron_1.ipcRenderer.invoke('permissions:grant', toolName, category, permanent);
+        },
+        deny: function (toolName, category, permanent) {
+            if (permanent === void 0) { permanent = false; }
+            return electron_1.ipcRenderer.invoke('permissions:deny', toolName, category, permanent);
+        },
+        getPolicy: function (toolName) {
+            return electron_1.ipcRenderer.invoke('permissions:getPolicy', toolName);
+        },
+        resetPolicy: function (toolName) {
+            return electron_1.ipcRenderer.invoke('permissions:resetPolicy', toolName);
+        },
+        resetAll: function () {
+            return electron_1.ipcRenderer.invoke('permissions:resetAll');
+        },
+    },
 });

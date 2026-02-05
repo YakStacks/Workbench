@@ -7,15 +7,20 @@ import {
   Tray,
   Menu,
   nativeImage,
+  dialog,
 } from "electron";
 import path from "path";
+import util from "util";
 import fs from "fs";
 import net from "net";
 import { spawn, ChildProcess } from "child_process";
 import Store from "electron-store";
 import axios from "axios";
+import { DoctorEngine, DoctorReport } from "./doctor";
+import { PermissionManager, ToolPermissions, PermissionCategory, PermissionAction } from "./permissions";
 
 const store = new Store();
+const permissionManager = new PermissionManager(store);
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -95,11 +100,8 @@ function createWindow() {
       contextIsolation: true,
     },
   });
-  if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
-  } else {
-    mainWindow.loadURL("http://localhost:5173/");
-  }
+  // Always load from dist folder - use `npm run dev` for hot reload
+  mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
 
   // Minimize to tray instead of closing
   mainWindow.on("close", (event) => {
@@ -226,6 +228,7 @@ function loadPlugins() {
             registerTool: (tool: any) => {
               // Store source folder for delete functionality
               tool._sourceFolder = folder;
+              tool._sourcePath = pluginPath;
               console.log(
                 "[loadPlugins] Registered tool:",
                 tool.name,
@@ -233,6 +236,12 @@ function loadPlugins() {
                 folder,
               );
               tools.set(tool.name, tool);
+              
+              // Register permissions if declared
+              if (tool.permissions) {
+                permissionManager.registerToolPermissions(tool.name, tool.permissions);
+                console.log(`[loadPlugins] Registered permissions for ${tool.name}`);
+              }
             },
             getPluginsDir: () => pluginsDir,
             reloadPlugins: () => loadPlugins(),
@@ -272,8 +281,11 @@ function registerBuiltinTools() {
       const content = fs.readFileSync(safePath, {
         encoding: (input.encoding || "utf-8") as BufferEncoding,
       });
-      return { content, path: safePath, size: content.length };
+    return { content, path: safePath, size: content.length };
     },
+  });
+  permissionManager.registerToolPermissions("builtin.readFile", {
+    filesystem: { actions: ["read"] },
   });
 
   tools.set("builtin.writeFile", {
@@ -311,6 +323,9 @@ function registerBuiltinTools() {
       };
     },
   });
+  permissionManager.registerToolPermissions("builtin.writeFile", {
+    filesystem: { actions: ["write"] },
+  });
 
   tools.set("builtin.listDir", {
     name: "builtin.listDir",
@@ -336,8 +351,11 @@ function registerBuiltinTools() {
         0,
         3,
       );
-      return { path: safePath, entries };
+    return { path: safePath, entries };
     },
+  });
+  permissionManager.registerToolPermissions("builtin.listDir", {
+    filesystem: { actions: ["read"] },
   });
 
   tools.set("builtin.fileExists", {
@@ -446,6 +464,9 @@ function registerBuiltinTools() {
         });
       });
     },
+  });
+  permissionManager.registerToolPermissions("builtin.shell", {
+    process: { actions: ["spawn"] },
   });
 
   console.log("[registerBuiltinTools] Registered builtin tools");
@@ -655,12 +676,13 @@ function registerBuiltinTools() {
 }
 
 function resolveSafePath(inputPath: string): string {
+  const normalized = inputPath.trim();
   // Allow absolute paths or resolve relative to user's home
-  if (path.isAbsolute(inputPath)) {
-    return inputPath;
+  if (path.isAbsolute(normalized)) {
+    return normalized;
   }
   const workingDir = (store.get("workingDir") as string) || app.getPath("home");
-  return path.resolve(workingDir, inputPath);
+  return path.resolve(workingDir, normalized);
 }
 
 function isPathSafe(targetPath: string): boolean {
@@ -669,7 +691,7 @@ function isPathSafe(targetPath: string): boolean {
 
   // If no safe paths configured, allow workingDir and home
   if (safePaths.length === 0) {
-    const allowedRoots = [workingDir, app.getPath("home")].filter(Boolean);
+    const allowedRoots = [workingDir, app.getPath("home"), process.cwd()].filter(Boolean);
     return allowedRoots.some((root) => targetPath.startsWith(root));
   }
 
@@ -1451,43 +1473,55 @@ ipcMain.handle("plugins:reload", () => {
 });
 
 ipcMain.handle("plugins:save", async (_e, pluginName: string, code: string) => {
-  const pluginsDir =
-    (store.get("pluginsDir") as string) || path.join(__dirname, "plugins");
-  const safeName = pluginName
-    .replace(/[^a-zA-Z0-9_-]/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!safeName) throw new Error("Invalid plugin name");
+  try {
+    const pluginsDir =
+      (store.get("pluginsDir") as string) || path.join(__dirname, "plugins");
+    
+    console.log(`[plugins:save] Request to save "${pluginName}" to "${pluginsDir}"`);
 
-  const pluginPath = path.join(pluginsDir, safeName);
-
-  // Check if path exists as a file and remove it
-  if (fs.existsSync(pluginPath)) {
-    const stat = fs.statSync(pluginPath);
-    if (stat.isFile()) {
-      fs.unlinkSync(pluginPath);
+    if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isFile()) {
+      throw new Error(`Plugins directory configuration is invalid (is a file): ${pluginsDir}`);
     }
+
+    const safeName = pluginName
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!safeName) throw new Error("Invalid plugin name");
+
+    const pluginPath = path.join(pluginsDir, safeName);
+
+    // Check if path exists as a file and remove it
+    if (fs.existsSync(pluginPath)) {
+      const stat = fs.statSync(pluginPath);
+      if (stat.isFile()) {
+        fs.unlinkSync(pluginPath);
+      }
+    }
+
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(pluginPath)) {
+      fs.mkdirSync(pluginPath, { recursive: true });
+    }
+
+    let cleanCode = code;
+    const fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
+    if (fenceMatch) {
+      cleanCode = fenceMatch[1].trim();
+    }
+
+    fs.writeFileSync(path.join(pluginPath, "index.js"), cleanCode, "utf-8");
+    fs.writeFileSync(
+      path.join(pluginPath, "package.json"),
+      '{\n  "type": "commonjs"\n}\n',
+      "utf-8",
+    );
+
+    loadPlugins();
+    return { success: true, path: pluginPath, name: safeName };
+  } catch (e: any) {
+    console.error(`[plugins:save] Failed for "${pluginName}":`, e);
+    throw e;
   }
-
-  // Create directory if it doesn't exist
-  if (!fs.existsSync(pluginPath)) {
-    fs.mkdirSync(pluginPath, { recursive: true });
-  }
-
-  let cleanCode = code;
-  const fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
-  if (fenceMatch) {
-    cleanCode = fenceMatch[1].trim();
-  }
-
-  fs.writeFileSync(path.join(pluginPath, "index.js"), cleanCode, "utf-8");
-  fs.writeFileSync(
-    path.join(pluginPath, "package.json"),
-    '{\n  "type": "commonjs"\n}\n',
-    "utf-8",
-  );
-
-  loadPlugins();
-  return { success: true, path: pluginPath, name: safeName };
 });
 
 // Delete a plugin
@@ -1518,6 +1552,7 @@ ipcMain.handle("tools:list", () => {
     inputSchema: t.inputSchema,
     category: t.name.split(".")[0],
     _sourceFolder: t._sourceFolder,
+    _sourcePath: t._sourcePath,
   }));
 });
 
@@ -1530,12 +1565,40 @@ ipcMain.handle("tools:refresh", () => {
     inputSchema: t.inputSchema,
     category: t.name.split(".")[0],
     _sourceFolder: t._sourceFolder,
+    _sourcePath: t._sourcePath,
   }));
 });
 
 ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
+
+  // PERMISSION CHECK
+  // Check all potential actions. For now, check based on tool categories declared
+  // We check if the tool *requires* any permissions
+  const permissions = permissionManager.getToolPermissions(name);
+  if (permissions) {
+    const categories: ('filesystem' | 'network' | 'process')[] = ['filesystem', 'network', 'process'];
+    for (const cat of categories) {
+      if (permissions[cat]) {
+        // Check strict permissions - for now simple check of ANY action in category
+        // In reality we should check specific action but we don't know INTENT here easily
+        // So we prompt if ANY action in that category is restricted
+        // Better approach: Check if tool has 'always allow' or needs prompt for declared capabilities
+        const actions = permissions[cat]!.actions;
+        for (const action of actions) {
+          const check = permissionManager.checkPermission(name, cat, action);
+          if (!check.allowed) {
+            if (check.needsPrompt) {
+               // Special error that frontend can parse to show prompt
+               throw new Error(`PERMISSION_REQUIRED:${name}`);
+            }
+            throw new Error(`Permission denied for ${cat}:${action}`);
+          }
+        }
+      }
+    }
+  }
 
   // Safety: Tool timeout (30 seconds)
   const TOOL_TIMEOUT = 30000;
@@ -1989,24 +2052,57 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
 
       return { started: true, requestId };
     } catch (e: any) {
+      let errorData = e.response?.data;
+      
+      // If data is a stream (circular structure), read it to get the actual error
+      if (errorData && typeof errorData.pipe === 'function') {
+        try {
+          const chunks = [];
+          for await (const chunk of errorData) {
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+          }
+          const rawParams = Buffer.concat(chunks).toString('utf8');
+          try {
+             errorData = JSON.parse(rawParams);
+          } catch {
+             errorData = rawParams;
+          }
+        } catch (streamErr) {
+          errorData = '[Stream Read Failed]';
+        }
+      }
+
       const errorDetails = {
         status: e.response?.status,
         statusText: e.response?.statusText,
-        data: e.response?.data,
+        data: errorData,
         message: e.message,
       };
       console.error(
         "[task:runStream] Full error:",
-        JSON.stringify(errorDetails, null, 2),
+        util.inspect(errorDetails, { depth: null, colors: false })
       );
 
       let errorMessage = "Request failed";
-      if (e.response?.data?.error?.message) {
-        errorMessage = e.response.data.error.message;
-      } else if (e.response?.status === 404) {
-        errorMessage = `Model not found: ${roleConfig.model}. Please check the model ID in Settings.`;
-      } else if (e.response?.status === 400) {
-        errorMessage = `Bad request. The model "${roleConfig.model}" may not support this request format.`;
+      let detailedMsg = "";
+      
+      if (typeof errorData === 'object' && errorData?.error?.message) {
+          detailedMsg = errorData.error.message;
+      } else if (typeof errorData === 'string') {
+          detailedMsg = errorData;
+      } else if (errorData) {
+          try { detailedMsg = JSON.stringify(errorData); } catch {}
+      }
+
+      errorMessage = `[${e.response?.status || 'Unknown'}] ${detailedMsg || e.message || 'Request failed'}`;
+      
+      // Fallbacks for specific status codes if no message found
+      if (!detailedMsg) {
+          if (e.response?.status === 404) {
+            errorMessage = `[404] Model not found: ${roleConfig.model}.`;
+          } else if (e.response?.status === 400) {
+            errorMessage = `[400] Bad request to model "${roleConfig.model}".`;
+          }
       }
 
       mainWindow?.webContents.send("stream:error", {
@@ -2262,4 +2358,130 @@ ipcMain.handle("mcp:reconnect", async (_e, name: string) => {
   } catch (e: any) {
     return { success: false, error: e.message };
   }
+});
+
+// ============================================================================
+// DOCTOR ENGINE - System Diagnostics
+// ============================================================================
+
+// Doctor engine instance
+let doctorEngine: DoctorEngine | null = null;
+let lastDoctorReport: DoctorReport | null = null;
+
+function getDoctorEngine(): DoctorEngine {
+  if (!doctorEngine) {
+    const configDir = app.getPath("userData");
+    const version = app.getVersion();
+    doctorEngine = new DoctorEngine(configDir, version);
+  }
+  return doctorEngine;
+}
+
+// Run all diagnostics
+ipcMain.handle("doctor:run", async () => {
+  console.log("[doctor:run] Running diagnostics...");
+  const engine = getDoctorEngine();
+  lastDoctorReport = await engine.runAll();
+  console.log("[doctor:run] Complete:", lastDoctorReport.summary);
+  return lastDoctorReport;
+});
+
+// Get last report
+ipcMain.handle("doctor:getLastReport", () => {
+  return lastDoctorReport;
+});
+
+// Get report as text (sanitized)
+ipcMain.handle("doctor:getReportText", (_e, sanitize: boolean = true) => {
+  if (!lastDoctorReport) return null;
+  const engine = getDoctorEngine();
+  return engine.formatReportText(lastDoctorReport, sanitize);
+});
+
+// Export report to file
+ipcMain.handle("doctor:export", async (_e, sanitize: boolean = true) => {
+  if (!lastDoctorReport) {
+    throw new Error("No diagnostic report available. Run diagnostics first.");
+  }
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Doctor Report",
+    defaultPath: `workbench-doctor-${new Date().toISOString().split("T")[0]}.txt`,
+    filters: [
+      { name: "Text Files", extensions: ["txt"] },
+      { name: "JSON Files", extensions: ["json"] },
+    ],
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  const engine = getDoctorEngine();
+  let content: string;
+
+  if (filePath.endsWith(".json")) {
+    const report = sanitize ? engine.sanitizeReport(lastDoctorReport) : lastDoctorReport;
+    content = JSON.stringify(report, null, 2);
+  } else {
+    content = engine.formatReportText(lastDoctorReport, sanitize);
+  }
+
+  fs.writeFileSync(filePath, content, "utf-8");
+  return { success: true, filePath };
+});
+
+// ============================================================================
+// PERMISSION SYSTEM IPC HANDLERS
+// ============================================================================
+
+// Register tool permissions when loading plugins
+ipcMain.handle("permissions:register", (_e, toolName: string, permissions: ToolPermissions) => {
+  permissionManager.registerToolPermissions(toolName, permissions);
+  return { success: true };
+});
+
+// Check if tool has permission for an action
+ipcMain.handle("permissions:check", (_e, toolName: string, category: PermissionCategory, action: PermissionAction) => {
+  return permissionManager.checkPermission(toolName, category, action);
+});
+
+// Get tool's declared permissions
+ipcMain.handle("permissions:getToolPermissions", (_e, toolName: string) => {
+  const permissions = permissionManager.getToolPermissions(toolName);
+  if (!permissions) return null;
+  return {
+    permissions,
+    formatted: permissionManager.formatPermissionsForDisplay(permissions),
+    isDestructive: permissionManager.isDestructive(toolName),
+  };
+});
+
+// Grant permission (one-time or permanent)
+ipcMain.handle("permissions:grant", (_e, toolName: string, category: PermissionCategory, permanent: boolean) => {
+  permissionManager.grantPermission(toolName, category, permanent);
+  return { success: true };
+});
+
+// Deny permission
+ipcMain.handle("permissions:deny", (_e, toolName: string, category: PermissionCategory, permanent: boolean) => {
+  permissionManager.denyPermission(toolName, category, permanent);
+  return { success: true };
+});
+
+// Get tool's current policy
+ipcMain.handle("permissions:getPolicy", (_e, toolName: string) => {
+  return permissionManager.getToolPolicy(toolName);
+});
+
+// Reset tool policy
+ipcMain.handle("permissions:resetPolicy", (_e, toolName: string) => {
+  permissionManager.resetToolPolicy(toolName);
+  return { success: true };
+});
+
+// Reset all policies
+ipcMain.handle("permissions:resetAll", () => {
+  permissionManager.resetAllPolicies();
+  return { success: true };
 });
