@@ -2310,3 +2310,39 @@ electron_1.ipcMain.handle("permissions:resetAll", function () {
     permissionManager.resetAllPolicies();
     return { success: true };
 });
+// ============================================================================
+// CHAT HISTORY PERSISTENCE
+// ============================================================================
+// Save chat history
+electron_1.ipcMain.handle("chat:save", function (_e, history) {
+    try {
+        store.set('chatHistory', history);
+        return { success: true };
+    }
+    catch (error) {
+        console.error('[chat:save] Error:', error);
+        return { success: false, error: error.message };
+    }
+});
+// Load chat history
+electron_1.ipcMain.handle("chat:load", function () {
+    try {
+        var history_1 = store.get('chatHistory', []);
+        return { success: true, history: history_1 };
+    }
+    catch (error) {
+        console.error('[chat:load] Error:', error);
+        return { success: false, error: error.message, history: [] };
+    }
+});
+// Clear chat history
+electron_1.ipcMain.handle("chat:clear", function () {
+    try {
+        store.delete('chatHistory');
+        return { success: true };
+    }
+    catch (error) {
+        console.error('[chat:clear] Error:', error);
+        return { success: false, error: error.message };
+    }
+});

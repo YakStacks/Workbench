@@ -103,4 +103,11 @@ contextBridge.exposeInMainWorld('workbench', {
     resetAll: () => 
       ipcRenderer.invoke('permissions:resetAll'),
   },
+
+  // Chat history persistence
+  chat: {
+    save: (history: any[]) => ipcRenderer.invoke('chat:save', history),
+    load: () => ipcRenderer.invoke('chat:load'),
+    clear: () => ipcRenderer.invoke('chat:clear'),
+  },
 });

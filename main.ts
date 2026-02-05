@@ -2485,3 +2485,40 @@ ipcMain.handle("permissions:resetAll", () => {
   permissionManager.resetAllPolicies();
   return { success: true };
 });
+
+// ============================================================================
+// CHAT HISTORY PERSISTENCE
+// ============================================================================
+
+// Save chat history
+ipcMain.handle("chat:save", (_e, history: any[]) => {
+  try {
+    store.set('chatHistory', history);
+    return { success: true };
+  } catch (error: any) {
+    console.error('[chat:save] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Load chat history
+ipcMain.handle("chat:load", () => {
+  try {
+    const history = store.get('chatHistory', []) as any[];
+    return { success: true, history };
+  } catch (error: any) {
+    console.error('[chat:load] Error:', error);
+    return { success: false, error: error.message, history: [] };
+  }
+});
+
+// Clear chat history
+ipcMain.handle("chat:clear", () => {
+  try {
+    store.delete('chatHistory');
+    return { success: true };
+  } catch (error: any) {
+    console.error('[chat:clear] Error:', error);
+    return { success: false, error: error.message };
+  }
+});

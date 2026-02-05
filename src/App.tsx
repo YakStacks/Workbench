@@ -154,6 +154,12 @@ export default function App() {
 
   useEffect(() => {
     window.workbench.listTools().then(setTools);
+    // Load chat history
+    window.workbench.chat.load().then((result: any) => {
+      if (result.success && result.history && result.history.length > 0) {
+        setChatHistory(result.history);
+      }
+    });
     // Load saved presets and apply font settings
     window.workbench.getConfig().then((cfg: any) => {
       if (cfg.chainPresets) setChainPresets(cfg.chainPresets);
@@ -166,6 +172,13 @@ export default function App() {
       }
     });
   }, []);
+
+  // Save chat history whenever it changes
+  useEffect(() => {
+    if (chatHistory.length > 0) {
+      window.workbench.chat.save(chatHistory);
+    }
+  }, [chatHistory]);
 
   const openToolInChat = (tool: Tool) => {
     setTab('Chat');
@@ -505,6 +518,7 @@ function ChatTab({
 
   const clearChat = () => {
     setHistory([]);
+    window.workbench.chat.clear();
   };
 
   const filteredTools = tools.filter(t => 

@@ -105,4 +105,10 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             return electron_1.ipcRenderer.invoke('permissions:resetAll');
         },
     },
+    // Chat history persistence
+    chat: {
+        save: function (history) { return electron_1.ipcRenderer.invoke('chat:save', history); },
+        load: function () { return electron_1.ipcRenderer.invoke('chat:load'); },
+        clear: function () { return electron_1.ipcRenderer.invoke('chat:clear'); },
+    },
 });
