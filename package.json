@@ -1,6 +1,6 @@
 {
   "name": "workbench",
-  "version": "0.1.1",
+  "version": "2.0.0-dev",
   "description": "Desktop app for task running with AI models and plugin tools",
   "author": "YakStacks",
   "repository": {
