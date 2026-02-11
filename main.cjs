@@ -375,7 +375,8 @@ function loadPlugins() {
                 }
             }
             catch (e) {
-                console.error("[loadPlugins] Error loading plugin:", folder, e);
+                var errMsg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+                console.error("[loadPlugins] Error loading plugin: ".concat(folder, " - ").concat(errMsg));
             }
         }
     });
