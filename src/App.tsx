@@ -518,6 +518,9 @@ function ChatTab({
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [toolFilter, setToolFilter] = useState('');
   const [sessionCost, setSessionCost] = useState<any>(null);
+  const [attachedAsset, setAttachedAsset] = useState<any>(null);
+  const [showAssetPicker, setShowAssetPicker] = useState(false);
+  const [chatAssets, setChatAssets] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -563,25 +566,52 @@ function ChatTab({
 
   const sendMessage = async () => {
     if (!input.trim() || isStreaming) return;
-    
+
+    // If there's an attached asset, prepend its info to the user message
+    let messageContent = input.trim();
+    const currentAttachment = attachedAsset;
+
+    if (currentAttachment) {
+      messageContent = `[Attached file: ${currentAttachment.filename} (${currentAttachment.mime_type}, asset_id: ${currentAttachment.asset_id})]\n\n${messageContent}`;
+    }
+
     const userMsg: Message = {
       id: `msg_${Date.now()}`,
       role: 'user',
-      content: input.trim(),
+      content: messageContent,
       timestamp: new Date(),
     };
-    
+
     setHistory(prev => [...prev, userMsg]);
     setInput('');
+    setAttachedAsset(null);
     setIsStreaming(true);
+
+    // If there's an attachment, auto-extract its content for context
+    let assetContext = '';
+    if (currentAttachment) {
+      try {
+        const result = await window.workbench.runTool('builtin.analyzeAsset', {
+          asset_id: currentAttachment.asset_id,
+        });
+        if (result?.content && !result.error) {
+          assetContext = `\n\n--- Attached File Content ---\n${typeof result.content === 'string' ? result.content : JSON.stringify(result.content)}\n--- End File Content ---\n`;
+        }
+      } catch { /* extraction failed, proceed without */ }
+    }
 
     // Build conversation context
     const messages = [...history, userMsg].map(m => ({
       role: m.role === 'tool' ? 'assistant' : m.role,
-      content: m.role === 'tool' 
+      content: m.role === 'tool'
         ? `[Tool: ${m.toolName}]\nInput: ${JSON.stringify(m.toolInput)}\nOutput: ${m.content}`
         : m.content
     }));
+
+    // Inject asset content into the last user message for LLM context
+    if (assetContext && messages.length > 0) {
+      messages[messages.length - 1].content += assetContext;
+    }
 
     // Create placeholder for assistant response
     const assistantMsgId = `msg_${Date.now()}_assistant`;
@@ -933,11 +963,102 @@ function ChatTab({
           )}
           <button onClick={clearChat} style={{ ...styles.button, ...styles.buttonGhost }}>Clear</button>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        {/* Attachment indicator */}
+        {attachedAsset && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 12px',
+            background: colors.primary + '15',
+            borderRadius: 6,
+            marginBottom: 4,
+            fontSize: 13,
+          }}>
+            <span style={{ color: colors.primary }}>📎</span>
+            <span style={{ flex: 1 }}>{attachedAsset.filename}</span>
+            <span style={{ color: colors.textMuted, fontSize: 11 }}>{attachedAsset.mime_type}</span>
+            <button
+              onClick={() => setAttachedAsset(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 16, padding: '0 4px' }}
+              title="Remove attachment"
+            >
+              x
+            </button>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
           <button
-            onClick={() => setShowToolPicker(!showToolPicker)}
-            style={{ 
-              ...styles.button, 
+            onClick={async () => {
+              if (!showAssetPicker) {
+                try {
+                  const r = await window.workbench.assets.list();
+                  setChatAssets(r.assets || []);
+                } catch { setChatAssets([]); }
+              }
+              setShowAssetPicker(!showAssetPicker);
+              setShowToolPicker(false);
+            }}
+            style={{
+              ...styles.button,
+              ...styles.buttonGhost,
+              padding: '10px 12px',
+              fontSize: 18,
+              background: showAssetPicker ? colors.primary : 'transparent',
+              color: showAssetPicker ? 'white' : colors.textMuted,
+            }}
+            title="Attach a file"
+          >
+            📎
+          </button>
+          {showAssetPicker && (
+            <div style={{
+              position: 'absolute',
+              bottom: '100%',
+              left: 0,
+              width: 300,
+              maxHeight: 250,
+              overflowY: 'auto',
+              background: colors.bgSecondary,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 8,
+              padding: 8,
+              zIndex: 50,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            }}>
+              {chatAssets.length === 0 ? (
+                <div style={{ padding: 16, textAlign: 'center', color: colors.textMuted, fontSize: 13 }}>
+                  No uploaded assets. Upload files in the Assets panel first.
+                </div>
+              ) : chatAssets.map((a: any) => (
+                <div
+                  key={a.asset_id}
+                  onClick={() => {
+                    setAttachedAsset(a);
+                    setShowAssetPicker(false);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    borderRadius: 6,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: 13,
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <span>{a.filename}</span>
+                  <span style={{ color: colors.textMuted, fontSize: 11 }}>{a.mime_type}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => { setShowToolPicker(!showToolPicker); setShowAssetPicker(false); }}
+            style={{
+              ...styles.button,
               ...styles.buttonGhost,
               padding: '10px 12px',
               fontSize: 18,
@@ -1024,24 +1145,69 @@ function MessageBubble({ message }: { message: Message }) {
 
 function ToolInputForm({ tool, values, onChange }: { tool: Tool; values: any; onChange: (v: any) => void }) {
   const props = tool.inputSchema?.properties || {};
-  
+  const [assets, setAssets] = useState<any[]>([]);
+  const [assetsLoaded, setAssetsLoaded] = useState(false);
+
+  // Load assets once for picker
+  useEffect(() => {
+    if (!assetsLoaded) {
+      window.workbench.assets.list()
+        .then((r: any) => setAssets(r.assets || []))
+        .catch(() => setAssets([]));
+      setAssetsLoaded(true);
+    }
+  }, [assetsLoaded]);
+
   if (Object.keys(props).length === 0) {
     return <div style={{ color: colors.textMuted, fontSize: 13 }}>No parameters required</div>;
   }
 
+  // Determine which fields can accept asset references
+  const assetFields = new Set(['asset_id', 'path', 'filePath', 'file_path', 'file', 'source', 'input_file']);
+
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       {Object.entries(props).map(([key, prop]: [string, any]) => {
-        const isTextArea = key.toLowerCase().includes('content') || 
-                          key.toLowerCase().includes('text') || 
+        const isTextArea = key.toLowerCase().includes('content') ||
+                          key.toLowerCase().includes('text') ||
                           key.toLowerCase().includes('asam') ||
                           key.toLowerCase().includes('previous') ||
                           key.toLowerCase().includes('code');
+        const isAssetField = assetFields.has(key);
+
         return (
           <div key={key}>
             <label style={styles.label}>
               {key} {tool.inputSchema.required?.includes(key) && <span style={{ color: colors.danger }}>*</span>}
+              {isAssetField && assets.length > 0 && (
+                <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>
+                  (or pick an asset below)
+                </span>
+              )}
             </label>
+
+            {/* Asset picker for asset-compatible fields */}
+            {isAssetField && assets.length > 0 && (
+              <div style={{ marginBottom: 6 }}>
+                <select
+                  value={values[key] && assets.some((a: any) => a.asset_id === values[key]) ? values[key] : ''}
+                  onChange={e => {
+                    if (e.target.value) {
+                      onChange({ ...values, [key]: e.target.value });
+                    }
+                  }}
+                  style={{ ...styles.input, fontSize: 12, padding: '4px 8px', background: colors.bgTertiary }}
+                >
+                  <option value="">-- Attach uploaded file --</option>
+                  {assets.map((a: any) => (
+                    <option key={a.asset_id} value={a.asset_id}>
+                      {a.filename} ({a.mime_type}, {a.size < 1024 ? a.size + ' B' : (a.size / 1024).toFixed(1) + ' KB'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {prop.enum ? (
               <select
                 value={values[key] || ''}

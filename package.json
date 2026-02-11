@@ -25,6 +25,7 @@
     "axios": "^1.13.4",
     "electron-store": "^8.1.0",
     "node-fetch": "^3.3.2",
+    "pdf-parse": "^2.4.5",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "youtube-transcript": "^1.2.1"

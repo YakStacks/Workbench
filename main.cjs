@@ -85,6 +85,8 @@ var dry_run_1 = require("./dry-run.cjs");
 var memory_manager_1 = require("./memory-manager.cjs");
 var tool_dispatch_1 = require("./tool-dispatch.cjs");
 var environment_detection_1 = require("./environment-detection.cjs");
+var guardrails_1 = require("./guardrails");
+var asset_manager_1 = require("./asset-manager");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
@@ -95,6 +97,11 @@ var previewManager = new dry_run_1.PreviewManager();
 var memoryManager = new memory_manager_1.MemoryManager(store);
 var toolDispatcher = new tool_dispatch_1.ToolDispatcher(permissionManager, previewManager);
 var environmentDetector = new environment_detection_1.EnvironmentDetector();
+var schemaValidator = new guardrails_1.SchemaValidator();
+var commandGuardrails = new guardrails_1.CommandGuardrails();
+var loopDetector = new guardrails_1.LoopDetector();
+var pathSandbox;
+var assetManager;
 var mainWindow = null;
 var tray = null;
 var plugins = [];
@@ -107,6 +114,10 @@ var DEFAULT_FEATURE_FLAGS = {
     N_PERMISSION_PROFILES: false,
     N_RUN_TIMELINE: false,
     N_EXPORT_RUN_BUNDLE: false,
+    V2_GUARDRAILS: true,
+    V2_ASSET_SYSTEM: true,
+    V2_AUTO_DOCTOR: true,
+    V2_SESSION_LOGS: true,
 };
 function getFeatureFlags() {
     var stored = store.get("featureFlags") || {};
@@ -138,6 +149,44 @@ function normalizeToolOutput(output) {
         content: JSON.stringify(output, null, 2),
         metadata: output,
     };
+}
+/**
+ * V2: Resolve asset_id references in tool input to sandbox file paths.
+ * Scans top-level input fields for values matching 'asset_XXX' pattern
+ * and resolves them to safe sandbox paths. Also handles explicit
+ * 'asset_id' field by adding a resolved '__asset_path' field.
+ */
+function resolveAssetReferences(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || !assetManager) {
+        return input;
+    }
+    var resolved = __assign({}, input);
+    var ASSET_ID_PATTERN = /^asset_\d+_[a-z0-9]+$/;
+    // If there's an explicit asset_id field, resolve it to __asset_path
+    if (resolved.asset_id && typeof resolved.asset_id === 'string') {
+        var safePath = assetManager.resolvePath(resolved.asset_id);
+        if (safePath) {
+            resolved.__asset_path = safePath;
+            // Also get metadata for tools that need MIME info
+            var meta = assetManager.get(resolved.asset_id);
+            if (meta) {
+                resolved.__asset_metadata = meta;
+            }
+        }
+    }
+    // Scan path-like fields and resolve asset_id values
+    var pathFields = ['path', 'filePath', 'file_path', 'file', 'source', 'input_file'];
+    for (var _i = 0, pathFields_1 = pathFields; _i < pathFields_1.length; _i++) {
+        var field = pathFields_1[_i];
+        if (resolved[field] && typeof resolved[field] === 'string' && ASSET_ID_PATTERN.test(resolved[field])) {
+            var safePath = assetManager.resolvePath(resolved[field]);
+            if (safePath) {
+                resolved["__original_".concat(field)] = resolved[field]; // Keep original for logging
+                resolved[field] = safePath; // Replace with safe path
+            }
+        }
+    }
+    return resolved;
 }
 var mcpServers = new Map();
 function createWindow() {
@@ -219,6 +268,17 @@ function createTray() {
     });
 }
 electron_1.app.whenReady().then(function () {
+    // Initialize path sandbox and asset manager
+    var workspaceRoot = store.get('workingDir') || electron_1.app.getPath('home');
+    var safePaths = store.get('safePaths') || [];
+    pathSandbox = new guardrails_1.PathSandbox(workspaceRoot, safePaths);
+    var assetSandboxDir = path_1.default.join(electron_1.app.getPath('userData'), 'assets');
+    assetManager = new asset_manager_1.AssetManager(store, assetSandboxDir);
+    // Load persisted doctor report history
+    var savedDoctorHistory = store.get('doctorReportHistory');
+    if (savedDoctorHistory && Array.isArray(savedDoctorHistory)) {
+        getDoctorEngine().loadHistory(savedDoctorHistory);
+    }
     createWindow();
     createTray();
     loadPlugins();
@@ -328,24 +388,39 @@ function registerBuiltinTools() {
     // File System Tools
     tools.set("builtin.readFile", {
         name: "builtin.readFile",
-        description: "Read contents of a file",
+        description: "Read contents of a file. Accepts a file path or an asset_id from uploaded files.",
         inputSchema: {
             type: "object",
             properties: {
                 path: { type: "string", description: "File path to read" },
+                asset_id: { type: "string", description: "Asset ID of an uploaded file (alternative to path)" },
                 encoding: {
                     type: "string",
                     description: "Encoding (default: utf-8)",
                     default: "utf-8",
                 },
             },
-            required: ["path"],
         },
         run: function (input) { return __awaiter(_this, void 0, void 0, function () {
-            var safePath, content;
+            var safePath, resolved, content;
             return __generator(this, function (_a) {
-                safePath = resolveSafePath(input.path);
-                assertPathSafe(safePath);
+                // Priority: asset_id → __asset_path (resolved by middleware) → raw path
+                if (input.asset_id && assetManager) {
+                    resolved = assetManager.resolvePath(input.asset_id);
+                    if (!resolved)
+                        throw new Error("Asset not found: ".concat(input.asset_id));
+                    safePath = resolved;
+                }
+                else if (input.__asset_path) {
+                    safePath = input.__asset_path;
+                }
+                else if (input.path) {
+                    safePath = resolveSafePath(input.path);
+                    assertPathSafe(safePath);
+                }
+                else {
+                    throw new Error("Either path or asset_id is required");
+                }
                 content = fs_1.default.readFileSync(safePath, {
                     encoding: (input.encoding || "utf-8"),
                 });
@@ -792,6 +867,243 @@ function registerBuiltinTools() {
             });
         },
     });
+    // ──────────────────────────────────────────────────────────────
+    // V2: Asset-aware tools
+    // ──────────────────────────────────────────────────────────────
+    tools.set("builtin.readAsset", {
+        name: "builtin.readAsset",
+        description: "Read an uploaded asset by its asset_id. Returns text content for text-based files, or base64 for binary files.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset_id: {
+                    type: "string",
+                    description: "The asset_id of the uploaded file",
+                },
+            },
+            required: ["asset_id"],
+        },
+        run: function (input) { return __awaiter(_this, void 0, void 0, function () {
+            var meta, filePath, isText, content, buffer;
+            return __generator(this, function (_a) {
+                if (!assetManager)
+                    throw new Error("Asset manager not initialized");
+                meta = assetManager.get(input.asset_id);
+                if (!meta) {
+                    return [2 /*return*/, { content: "Asset not found: ".concat(input.asset_id), error: "Asset not found" }];
+                }
+                filePath = assetManager.resolvePath(input.asset_id);
+                if (!filePath || !fs_1.default.existsSync(filePath)) {
+                    return [2 /*return*/, { content: "Asset file missing from sandbox", error: "File missing" }];
+                }
+                isText = meta.mime_type.startsWith("text/") ||
+                    ["application/json", "application/xml", "image/svg+xml"].includes(meta.mime_type);
+                if (isText) {
+                    content = fs_1.default.readFileSync(filePath, "utf-8");
+                    return [2 /*return*/, {
+                            content: content,
+                            metadata: {
+                                asset_id: meta.asset_id,
+                                filename: meta.filename,
+                                mime_type: meta.mime_type,
+                                size: meta.size,
+                                encoding: "utf-8",
+                            },
+                        }];
+                }
+                buffer = fs_1.default.readFileSync(filePath);
+                return [2 /*return*/, {
+                        content: "[Binary file: ".concat(meta.filename, " (").concat(meta.mime_type, ", ").concat(meta.size, " bytes)]"),
+                        metadata: {
+                            asset_id: meta.asset_id,
+                            filename: meta.filename,
+                            mime_type: meta.mime_type,
+                            size: meta.size,
+                            encoding: "base64",
+                            base64: buffer.toString("base64"),
+                        },
+                    }];
+            });
+        }); },
+    });
+    permissionManager.registerToolPermissions("builtin.readAsset", {
+        filesystem: { actions: ["read"] },
+    });
+    tools.set("builtin.extractPdf", {
+        name: "builtin.extractPdf",
+        description: "Extract text content from a PDF file. Accepts asset_id or file path.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset_id: {
+                    type: "string",
+                    description: "The asset_id of an uploaded PDF",
+                },
+                path: {
+                    type: "string",
+                    description: "File path to a PDF (asset_id preferred)",
+                },
+            },
+        },
+        run: function (input) { return __awaiter(_this, void 0, void 0, function () {
+            var pdfPath, sourceLabel, pdfParse, buffer, data, e_1;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        pdfPath = null;
+                        sourceLabel = "";
+                        // Priority: asset_id → __asset_path (from resolution) → raw path
+                        if (input.asset_id && assetManager) {
+                            pdfPath = assetManager.resolvePath(input.asset_id);
+                            sourceLabel = "asset:".concat(input.asset_id);
+                        }
+                        else if (input.__asset_path) {
+                            pdfPath = input.__asset_path;
+                            sourceLabel = "asset-resolved";
+                        }
+                        else if (input.path) {
+                            pdfPath = resolveSafePath(input.path);
+                            assertPathSafe(pdfPath);
+                            sourceLabel = "file:".concat(input.path);
+                        }
+                        if (!pdfPath) {
+                            return [2 /*return*/, { content: "No PDF source provided. Supply asset_id or path.", error: "Missing input" }];
+                        }
+                        if (!fs_1.default.existsSync(pdfPath)) {
+                            return [2 /*return*/, { content: "PDF file not found: ".concat(sourceLabel), error: "File not found" }];
+                        }
+                        _a.label = 1;
+                    case 1:
+                        _a.trys.push([1, 3, , 4]);
+                        pdfParse = require("pdf-parse");
+                        buffer = fs_1.default.readFileSync(pdfPath);
+                        return [4 /*yield*/, pdfParse(buffer)];
+                    case 2:
+                        data = _a.sent();
+                        return [2 /*return*/, {
+                                content: data.text || "[No text content extracted]",
+                                metadata: {
+                                    source: sourceLabel,
+                                    pages: data.numpages,
+                                    info: data.info,
+                                    textLength: (data.text || "").length,
+                                },
+                            }];
+                    case 3:
+                        e_1 = _a.sent();
+                        return [2 /*return*/, {
+                                content: "Failed to extract PDF text: ".concat(e_1.message),
+                                error: e_1.message,
+                                metadata: { source: sourceLabel },
+                            }];
+                    case 4: return [2 /*return*/];
+                }
+            });
+        }); },
+    });
+    permissionManager.registerToolPermissions("builtin.extractPdf", {
+        filesystem: { actions: ["read"] },
+    });
+    tools.set("builtin.analyzeAsset", {
+        name: "builtin.analyzeAsset",
+        description: "Analyze an uploaded asset: extract text from PDFs, parse CSVs, read text files. Returns structured content ready for LLM processing.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset_id: {
+                    type: "string",
+                    description: "The asset_id of the uploaded file",
+                },
+                question: {
+                    type: "string",
+                    description: "Optional question about the asset content",
+                },
+            },
+            required: ["asset_id"],
+        },
+        run: function (input) { return __awaiter(_this, void 0, void 0, function () {
+            var meta, filePath, extractedText, analysisType, pdfParse, buffer, data, e_2, raw, lines, headers, rows, i, content;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        if (!assetManager)
+                            throw new Error("Asset manager not initialized");
+                        meta = assetManager.get(input.asset_id);
+                        if (!meta) {
+                            return [2 /*return*/, { content: "Asset not found: ".concat(input.asset_id), error: "Asset not found" }];
+                        }
+                        filePath = assetManager.resolvePath(input.asset_id);
+                        if (!filePath || !fs_1.default.existsSync(filePath)) {
+                            return [2 /*return*/, { content: "Asset file missing from sandbox", error: "File missing" }];
+                        }
+                        extractedText = "";
+                        analysisType = "";
+                        if (!(meta.mime_type === "application/pdf")) return [3 /*break*/, 5];
+                        _a.label = 1;
+                    case 1:
+                        _a.trys.push([1, 3, , 4]);
+                        pdfParse = require("pdf-parse");
+                        buffer = fs_1.default.readFileSync(filePath);
+                        return [4 /*yield*/, pdfParse(buffer)];
+                    case 2:
+                        data = _a.sent();
+                        extractedText = data.text || "[No text content]";
+                        analysisType = "pdf";
+                        return [3 /*break*/, 4];
+                    case 3:
+                        e_2 = _a.sent();
+                        return [2 /*return*/, { content: "PDF extraction failed: ".concat(e_2.message), error: e_2.message }];
+                    case 4: return [3 /*break*/, 6];
+                    case 5:
+                        if (meta.mime_type === "text/csv") {
+                            raw = fs_1.default.readFileSync(filePath, "utf-8");
+                            lines = raw.split("\n").filter(function (l) { return l.trim(); });
+                            headers = lines[0] ? lines[0].split(",").map(function (h) { return h.trim(); }) : [];
+                            rows = lines.slice(1).map(function (line) { return line.split(",").map(function (c) { return c.trim(); }); });
+                            extractedText = "CSV Data:\nHeaders: ".concat(headers.join(", "), "\nRows: ").concat(rows.length, "\n\nSample (first 20 rows):\n");
+                            for (i = 0; i < Math.min(20, rows.length); i++) {
+                                extractedText += rows[i].join(", ") + "\n";
+                            }
+                            analysisType = "csv";
+                        }
+                        else if (meta.mime_type.startsWith("text/") || ["application/json", "application/xml"].includes(meta.mime_type)) {
+                            // Text files
+                            extractedText = fs_1.default.readFileSync(filePath, "utf-8");
+                            analysisType = "text";
+                        }
+                        else if (meta.mime_type.startsWith("image/")) {
+                            extractedText = "[Image file: ".concat(meta.filename, " (").concat(meta.mime_type, ", ").concat(meta.size, " bytes). Image content analysis requires a vision model.]");
+                            analysisType = "image";
+                        }
+                        else {
+                            extractedText = "[Binary file: ".concat(meta.filename, " (").concat(meta.mime_type, ", ").concat(meta.size, " bytes). Cannot extract text from this file type.]");
+                            analysisType = "binary";
+                        }
+                        _a.label = 6;
+                    case 6:
+                        content = "File: ".concat(meta.filename, " (").concat(meta.mime_type, ")\n\n").concat(extractedText);
+                        if (input.question) {
+                            content = "File: ".concat(meta.filename, " (").concat(meta.mime_type, ")\n\nContent:\n").concat(extractedText, "\n\nQuestion: ").concat(input.question);
+                        }
+                        return [2 /*return*/, {
+                                content: content,
+                                metadata: {
+                                    asset_id: meta.asset_id,
+                                    filename: meta.filename,
+                                    mime_type: meta.mime_type,
+                                    size: meta.size,
+                                    analysisType: analysisType,
+                                    textLength: extractedText.length,
+                                    suggestedRole: input.question ? "writer_cheap" : undefined,
+                                },
+                            }];
+                }
+            });
+        }); },
+    });
+    permissionManager.registerToolPermissions("builtin.analyzeAsset", {
+        filesystem: { actions: ["read"] },
+    });
     // Ensure builtin tools always have declared permission metadata.
     tools.forEach(function (_tool, toolName) {
         if (toolName.startsWith("builtin.") &&
@@ -1003,7 +1315,7 @@ var MCPClient = /** @class */ (function () {
                             });
                             // Initialize the connection
                             setTimeout(function () { return __awaiter(_this, void 0, void 0, function () {
-                                var e_1;
+                                var e_3;
                                 return __generator(this, function (_a) {
                                     switch (_a.label) {
                                         case 0:
@@ -1021,10 +1333,10 @@ var MCPClient = /** @class */ (function () {
                                             resolve();
                                             return [3 /*break*/, 4];
                                         case 3:
-                                            e_1 = _a.sent();
-                                            console.error("[MCP ".concat(this.name, "] Initialization failed:"), e_1.message);
+                                            e_3 = _a.sent();
+                                            console.error("[MCP ".concat(this.name, "] Initialization failed:"), e_3.message);
                                             this.status = "error";
-                                            reject(new Error("Initialization failed: ".concat(e_1.message)));
+                                            reject(new Error("Initialization failed: ".concat(e_3.message)));
                                             return [3 /*break*/, 4];
                                         case 4: return [2 /*return*/];
                                     }
@@ -1275,7 +1587,7 @@ var MCPProxyClient = /** @class */ (function () {
                         console.log("[MCPProxy ".concat(_this.name, "] Connecting to proxy at ").concat(_this.proxyHost, ":").concat(_this.proxyPort));
                         _this.socket = new net_1.default.Socket();
                         _this.socket.on("connect", function () { return __awaiter(_this, void 0, void 0, function () {
-                            var connectCmd, e_2;
+                            var connectCmd, e_4;
                             return __generator(this, function (_a) {
                                 switch (_a.label) {
                                     case 0:
@@ -1299,9 +1611,9 @@ var MCPProxyClient = /** @class */ (function () {
                                         resolve();
                                         return [3 /*break*/, 5];
                                     case 4:
-                                        e_2 = _a.sent();
+                                        e_4 = _a.sent();
                                         this.status = "error";
-                                        reject(e_2);
+                                        reject(e_4);
                                         return [3 /*break*/, 5];
                                     case 5: return [2 /*return*/];
                                 }
@@ -1509,7 +1821,7 @@ function loadMCPServers() {
     var serverConfigs = store.get("mcpServers") || [];
     console.log("[loadMCPServers] Loading MCP servers:", serverConfigs.length);
     serverConfigs.forEach(function (config) { return __awaiter(_this, void 0, void 0, function () {
-        var client, e_3;
+        var client, e_5;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -1528,8 +1840,8 @@ function loadMCPServers() {
                     console.log("[MCP] Connected to ".concat(config.name, ", registered ").concat(client.tools.length, " tools"));
                     return [3 /*break*/, 4];
                 case 3:
-                    e_3 = _a.sent();
-                    console.error("[MCP] Failed to connect to ".concat(config.name, ":"), e_3);
+                    e_5 = _a.sent();
+                    console.error("[MCP] Failed to connect to ".concat(config.name, ":"), e_5);
                     return [3 /*break*/, 4];
                 case 4: return [2 /*return*/];
             }
@@ -1948,17 +2260,46 @@ electron_1.ipcMain.handle("toolHealth:removeKnownIssue", function (_e, toolName,
     return { success: true, issues: current };
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1;
+    var tool, validation, actionType, cmdCheck, filePath, pathCheck, riskLevel, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1, doctorEngine_1, triggerEvent;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                // V2: Schema validation before execution
+                if (tool.inputSchema) {
+                    validation = schemaValidator.validateToolInput(input || {}, tool.inputSchema);
+                    if (!validation.valid) {
+                        throw new Error("Schema validation failed: ".concat(validation.errors.join('; ')));
+                    }
+                }
+                actionType = commandGuardrails.classifyAction(name, input);
+                if (actionType === 'terminal_command') {
+                    cmdCheck = commandGuardrails.checkCommand((input === null || input === void 0 ? void 0 : input.command) || '', (input === null || input === void 0 ? void 0 : input.args) || []);
+                    if (!cmdCheck.allowed) {
+                        throw new Error("Blocked by guardrails: ".concat(cmdCheck.reason));
+                    }
+                }
+                // V2: Path sandbox validation for file operations
+                if ((actionType === 'file_write' || actionType === 'file_delete') && pathSandbox) {
+                    filePath = (input === null || input === void 0 ? void 0 : input.path) || (input === null || input === void 0 ? void 0 : input.filePath) || '';
+                    if (filePath) {
+                        pathCheck = pathSandbox.isPathAllowed(filePath);
+                        if (!pathCheck.allowed) {
+                            throw new Error("Path blocked by sandbox: ".concat(pathCheck.reason));
+                        }
+                    }
+                }
+                // V2: Loop detection
+                if (loopDetector.isInLoop(name, JSON.stringify(input || {}).substring(0, 200))) {
+                    throw new Error(loopDetector.getLoopSuggestion(name));
+                }
                 // Concurrency cap check
                 if (!processRegistry.canSpawn()) {
                     throw new Error("Concurrency limit reached (".concat(processRegistry.getCount(), " processes running). Wait for existing tools to finish or kill some first."));
                 }
+                riskLevel = commandGuardrails.assessRisk(name, actionType, input);
                 runId = runManager.createRun(name, input, 'user');
                 try {
                     enforceToolPermissions(name);
@@ -1972,10 +2313,13 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 }
                 // Start the run
                 runManager.startRun(runId);
+                runManager.setApprovalInfo(runId, riskLevel, 'user');
                 runInput = name.startsWith("builtin.")
                     ? input && typeof input === "object" && !Array.isArray(input)
                         ? __assign(__assign({}, input), { __runId: runId }) : { __runId: runId }
                     : input;
+                // V2: Asset resolution - resolve asset_id references to sandbox paths
+                runInput = resolveAssetReferences(runInput);
                 DEFAULT_TOOL_TIMEOUT = 30000;
                 manifest = manifestRegistry.get(name);
                 TOOL_TIMEOUT = ((manifest === null || manifest === void 0 ? void 0 : manifest.timeoutMs) && manifest.timeoutMs > 0)
@@ -2014,6 +2358,20 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 else {
                     runManager.failRun(runId, error_1.message);
                 }
+                // V2: Record failure for loop detection
+                loopDetector.recordFailure(name, error_1.message);
+                doctorEngine_1 = getDoctorEngine();
+                triggerEvent = doctorEngine_1.shouldAutoTrigger(error_1.message);
+                if (triggerEvent) {
+                    // Fire-and-forget, non-blocking
+                    doctorEngine_1.autoTrigger(triggerEvent, "".concat(name, ": ").concat(error_1.message)).then(function (result) {
+                        if (result.triggered && result.report && mainWindow) {
+                            mainWindow.webContents.send('doctor:autoReport', result.report);
+                            // Persist report history
+                            store.set('doctorReportHistory', doctorEngine_1.getReportHistory());
+                        }
+                    }).catch(function () { });
+                }
                 // Friendly error handling
                 return [2 /*return*/, normalizeToolOutput({
                         content: error_1.message.includes("timeout")
@@ -2024,6 +2382,7 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                             tool: name,
                             input: input,
                             timestamp: new Date().toISOString(),
+                            riskLevel: riskLevel,
                         },
                     })];
             case 4: return [2 /*return*/];
@@ -2127,7 +2486,7 @@ electron_1.ipcMain.handle("task:run", function (_e_1, taskType_1, prompt_1) {
 });
 // List available models from OpenRouter
 electron_1.ipcMain.handle("models:list", function () { return __awaiter(void 0, void 0, void 0, function () {
-    var config, apiKey, res, models, e_4;
+    var config, apiKey, res, models, e_6;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -2172,8 +2531,8 @@ electron_1.ipcMain.handle("models:list", function () { return __awaiter(void 0, 
                 models.sort(function (a, b) { return a.pricing.prompt - b.pricing.prompt; });
                 return [2 /*return*/, models];
             case 3:
-                e_4 = _a.sent();
-                throw new Error("Failed to fetch models: ".concat(e_4.message));
+                e_6 = _a.sent();
+                throw new Error("Failed to fetch models: ".concat(e_6.message));
             case 4: return [2 /*return*/];
         }
     });
@@ -2207,8 +2566,8 @@ function filterThinkingBlocks(text) {
 }
 // Streaming task runner
 electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requestId) { return __awaiter(void 0, void 0, void 0, function () {
-    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, requestCost_1, costTracked_1, doneSent_1, trackCostOnce_1, emitDoneOnce_1, e_5, errorData, chunks, _a, errorData_1, errorData_1_1, chunk, e_6_1, rawParams, streamErr_1, errorDetails, errorMessage, detailedMsg;
-    var _b, e_6, _c, _d;
+    var config, router, roleConfig, error, apiKey, error, apiEndpoint, processedPrompt, res, fullContent_1, promptTokens_1, completionTokens_1, requestCost_1, costTracked_1, doneSent_1, trackCostOnce_1, emitDoneOnce_1, e_7, errorData, chunks, _a, errorData_1, errorData_1_1, chunk, e_8_1, rawParams, streamErr_1, errorDetails, errorMessage, detailedMsg;
+    var _b, e_8, _c, _d;
     var _f, _g, _h, _j, _k, _l, _m, _o, _p;
     return __generator(this, function (_q) {
         switch (_q.label) {
@@ -2344,8 +2703,8 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 });
                 return [2 /*return*/, { started: true, requestId: requestId }];
             case 3:
-                e_5 = _q.sent();
-                errorData = (_f = e_5.response) === null || _f === void 0 ? void 0 : _f.data;
+                e_7 = _q.sent();
+                errorData = (_f = e_7.response) === null || _f === void 0 ? void 0 : _f.data;
                 if (!(errorData && typeof errorData.pipe === 'function')) return [3 /*break*/, 18];
                 _q.label = 4;
             case 4:
@@ -2369,8 +2728,8 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 return [3 /*break*/, 6];
             case 9: return [3 /*break*/, 16];
             case 10:
-                e_6_1 = _q.sent();
-                e_6 = { error: e_6_1 };
+                e_8_1 = _q.sent();
+                e_8 = { error: e_8_1 };
                 return [3 /*break*/, 16];
             case 11:
                 _q.trys.push([11, , 14, 15]);
@@ -2381,7 +2740,7 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 _q.label = 13;
             case 13: return [3 /*break*/, 15];
             case 14:
-                if (e_6) throw e_6.error;
+                if (e_8) throw e_8.error;
                 return [7 /*endfinally*/];
             case 15: return [7 /*endfinally*/];
             case 16:
@@ -2399,10 +2758,10 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                 return [3 /*break*/, 18];
             case 18:
                 errorDetails = {
-                    status: (_g = e_5.response) === null || _g === void 0 ? void 0 : _g.status,
-                    statusText: (_h = e_5.response) === null || _h === void 0 ? void 0 : _h.statusText,
+                    status: (_g = e_7.response) === null || _g === void 0 ? void 0 : _g.status,
+                    statusText: (_h = e_7.response) === null || _h === void 0 ? void 0 : _h.statusText,
                     data: errorData,
-                    message: e_5.message,
+                    message: e_7.message,
                 };
                 console.error("[task:runStream] Full error:", util_1.default.inspect(errorDetails, { depth: null, colors: false }));
                 errorMessage = "Request failed";
@@ -2419,20 +2778,20 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
                     }
                     catch (_s) { }
                 }
-                errorMessage = "[".concat(((_k = e_5.response) === null || _k === void 0 ? void 0 : _k.status) || 'Unknown', "] ").concat(detailedMsg || e_5.message || 'Request failed');
+                errorMessage = "[".concat(((_k = e_7.response) === null || _k === void 0 ? void 0 : _k.status) || 'Unknown', "] ").concat(detailedMsg || e_7.message || 'Request failed');
                 // Fallbacks for specific status codes if no message found
                 if (!detailedMsg) {
-                    if (((_l = e_5.response) === null || _l === void 0 ? void 0 : _l.status) === 429) {
+                    if (((_l = e_7.response) === null || _l === void 0 ? void 0 : _l.status) === 429) {
                         errorMessage = "[429] Rate limit exceeded for model \"".concat(roleConfig.model, "\". Free tier models have limited requests. Try again in a moment or use a different model.");
                     }
-                    else if (((_m = e_5.response) === null || _m === void 0 ? void 0 : _m.status) === 404) {
+                    else if (((_m = e_7.response) === null || _m === void 0 ? void 0 : _m.status) === 404) {
                         errorMessage = "[404] Model not found: ".concat(roleConfig.model, ".");
                     }
-                    else if (((_o = e_5.response) === null || _o === void 0 ? void 0 : _o.status) === 400) {
+                    else if (((_o = e_7.response) === null || _o === void 0 ? void 0 : _o.status) === 400) {
                         errorMessage = "[400] Bad request to model \"".concat(roleConfig.model, "\".");
                     }
                 }
-                else if (((_p = e_5.response) === null || _p === void 0 ? void 0 : _p.status) === 429 && !detailedMsg.toLowerCase().includes('rate limit')) {
+                else if (((_p = e_7.response) === null || _p === void 0 ? void 0 : _p.status) === 429 && !detailedMsg.toLowerCase().includes('rate limit')) {
                     // Enhance 429 message even if we got some detail
                     errorMessage = "[429] Rate limit exceeded. ".concat(detailedMsg, ". Try again in a moment or use a different model.");
                 }
@@ -2587,7 +2946,7 @@ electron_1.ipcMain.handle("mcp:list", function () {
     });
 });
 electron_1.ipcMain.handle("mcp:add", function (_e, config) { return __awaiter(void 0, void 0, void 0, function () {
-    var servers, transport, client, e_7;
+    var servers, transport, client, e_9;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -2609,11 +2968,11 @@ electron_1.ipcMain.handle("mcp:add", function (_e, config) { return __awaiter(vo
                 registerMCPTools(client, config.name);
                 return [2 /*return*/, { success: true, toolCount: client.tools.length, transport: transport }];
             case 3:
-                e_7 = _a.sent();
-                console.error("[mcp:add] Connection failed:", e_7.message);
+                e_9 = _a.sent();
+                console.error("[mcp:add] Connection failed:", e_9.message);
                 client.disconnect(); // Clean up failed connection
                 mcpClients.delete(config.name); // Remove from map
-                return [2 /*return*/, { success: false, error: e_7.message || "Connection failed" }];
+                return [2 /*return*/, { success: false, error: e_9.message || "Connection failed" }];
             case 4: return [2 /*return*/];
         }
     });
@@ -2638,7 +2997,7 @@ electron_1.ipcMain.handle("mcp:remove", function (_e, name) { return __awaiter(v
     });
 }); });
 electron_1.ipcMain.handle("mcp:reconnect", function (_e, name) { return __awaiter(void 0, void 0, void 0, function () {
-    var client, e_8;
+    var client, e_10;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -2655,8 +3014,8 @@ electron_1.ipcMain.handle("mcp:reconnect", function (_e, name) { return __awaite
                 registerMCPTools(client, name);
                 return [2 /*return*/, { success: true, toolCount: client.tools.length }];
             case 3:
-                e_8 = _a.sent();
-                return [2 /*return*/, { success: false, error: e_8.message }];
+                e_10 = _a.sent();
+                return [2 /*return*/, { success: false, error: e_10.message }];
             case 4: return [2 /*return*/];
         }
     });
@@ -2961,6 +3320,202 @@ electron_1.ipcMain.handle("runs:exportBundle", function (_e, runId) { return __a
                 }
                 fs_1.default.writeFileSync(filePath, JSON.stringify(bundle, null, 2), "utf-8");
                 return [2 /*return*/, { success: true, filePath: filePath, runCount: selectedRuns.length }];
+        }
+    });
+}); });
+// ============================================================================
+// V2: DOCTOR REPORT HISTORY IPC
+// ============================================================================
+electron_1.ipcMain.handle("doctor:getHistory", function () {
+    var engine = getDoctorEngine();
+    return engine.getReportHistory();
+});
+// ============================================================================
+// V2: GUARDRAILS IPC
+// ============================================================================
+electron_1.ipcMain.handle("guardrails:validateSchema", function (_e, input, schema) {
+    return schemaValidator.validateToolInput(input, schema);
+});
+electron_1.ipcMain.handle("guardrails:checkCommand", function (_e, command, args) {
+    return commandGuardrails.checkCommand(command, args);
+});
+electron_1.ipcMain.handle("guardrails:checkPath", function (_e, filePath) {
+    if (!pathSandbox)
+        return { allowed: true, riskLevel: 'low' };
+    return pathSandbox.isPathAllowed(filePath);
+});
+electron_1.ipcMain.handle("guardrails:assessRisk", function (_e, toolName, input) {
+    var actionType = commandGuardrails.classifyAction(toolName, input);
+    return {
+        actionType: actionType,
+        riskLevel: commandGuardrails.assessRisk(toolName, actionType, input),
+        proposal: commandGuardrails.createProposal(toolName, actionType, input),
+    };
+});
+// ============================================================================
+// V2: ASSET MANAGER IPC HANDLERS
+// ============================================================================
+electron_1.ipcMain.handle("assets:ingest", function (_e, sourcePath) { return __awaiter(void 0, void 0, void 0, function () {
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                if (!assetManager)
+                    throw new Error("Asset manager not initialized");
+                return [4 /*yield*/, assetManager.ingest(sourcePath)];
+            case 1: return [2 /*return*/, _a.sent()];
+        }
+    });
+}); });
+electron_1.ipcMain.handle("assets:ingestBuffer", function (_e, bufferData, filename) { return __awaiter(void 0, void 0, void 0, function () {
+    var buffer;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                if (!assetManager)
+                    throw new Error("Asset manager not initialized");
+                buffer = Buffer.from(bufferData);
+                return [4 /*yield*/, assetManager.ingestBuffer(buffer, filename)];
+            case 1: return [2 /*return*/, _a.sent()];
+        }
+    });
+}); });
+electron_1.ipcMain.handle("assets:list", function () {
+    if (!assetManager)
+        return { assets: [], total: 0 };
+    return assetManager.list();
+});
+electron_1.ipcMain.handle("assets:get", function (_e, assetId) {
+    if (!assetManager)
+        return null;
+    return assetManager.get(assetId);
+});
+electron_1.ipcMain.handle("assets:open", function (_e, assetId) {
+    if (!assetManager)
+        return null;
+    var result = assetManager.open(assetId);
+    if (!result)
+        return null;
+    // Return metadata + base64 content for renderer
+    return {
+        metadata: result.metadata,
+        content: result.content.toString('base64'),
+        contentType: result.metadata.mime_type,
+    };
+});
+electron_1.ipcMain.handle("assets:delete", function (_e, assetId) {
+    if (!assetManager)
+        return false;
+    return assetManager.delete(assetId);
+});
+electron_1.ipcMain.handle("assets:export", function (_e, assetId) { return __awaiter(void 0, void 0, void 0, function () {
+    var meta, _a, filePath, canceled, success;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                if (!assetManager)
+                    throw new Error("Asset manager not initialized");
+                meta = assetManager.get(assetId);
+                if (!meta)
+                    throw new Error("Asset not found");
+                return [4 /*yield*/, electron_1.dialog.showSaveDialog(mainWindow, {
+                        title: "Export Asset",
+                        defaultPath: meta.filename,
+                    })];
+            case 1:
+                _a = _b.sent(), filePath = _a.filePath, canceled = _a.canceled;
+                if (canceled || !filePath) {
+                    return [2 /*return*/, { success: false, canceled: true }];
+                }
+                success = assetManager.export(assetId, filePath);
+                return [2 /*return*/, { success: success, filePath: filePath }];
+        }
+    });
+}); });
+electron_1.ipcMain.handle("assets:resolvePath", function (_e, assetId) {
+    if (!assetManager)
+        return null;
+    return assetManager.resolvePath(assetId);
+});
+electron_1.ipcMain.handle("assets:upload", function () { return __awaiter(void 0, void 0, void 0, function () {
+    var _a, filePaths, canceled, results, _i, filePaths_1, fp, meta, e_11;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                if (!assetManager)
+                    throw new Error("Asset manager not initialized");
+                return [4 /*yield*/, electron_1.dialog.showOpenDialog(mainWindow, {
+                        title: "Upload Asset",
+                        properties: ['openFile', 'multiSelections'],
+                        filters: [
+                            { name: 'Supported Files', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'txt', 'csv', 'json', 'xml', 'html', 'md', 'yaml', 'yml', 'log', 'wav', 'mp3'] },
+                            { name: 'All Files', extensions: ['*'] },
+                        ],
+                    })];
+            case 1:
+                _a = _b.sent(), filePaths = _a.filePaths, canceled = _a.canceled;
+                if (canceled || !filePaths || filePaths.length === 0) {
+                    return [2 /*return*/, { success: false, canceled: true, assets: [] }];
+                }
+                results = [];
+                _i = 0, filePaths_1 = filePaths;
+                _b.label = 2;
+            case 2:
+                if (!(_i < filePaths_1.length)) return [3 /*break*/, 7];
+                fp = filePaths_1[_i];
+                _b.label = 3;
+            case 3:
+                _b.trys.push([3, 5, , 6]);
+                return [4 /*yield*/, assetManager.ingest(fp)];
+            case 4:
+                meta = _b.sent();
+                results.push({ success: true, metadata: meta });
+                return [3 /*break*/, 6];
+            case 5:
+                e_11 = _b.sent();
+                results.push({ success: false, filename: path_1.default.basename(fp), error: e_11.message });
+                return [3 /*break*/, 6];
+            case 6:
+                _i++;
+                return [3 /*break*/, 2];
+            case 7: return [2 /*return*/, { success: true, assets: results }];
+        }
+    });
+}); });
+// ============================================================================
+// V2: SESSION LOG PERSISTENCE IPC
+// ============================================================================
+electron_1.ipcMain.handle("logs:getSessionLog", function () {
+    return {
+        runs: runManager.getAllRuns(),
+        doctorReports: getDoctorEngine().getReportHistory(),
+        sessionId: (assetManager === null || assetManager === void 0 ? void 0 : assetManager.getSessionId()) || 'unknown',
+        timestamp: new Date().toISOString(),
+    };
+});
+electron_1.ipcMain.handle("logs:exportSessionLog", function () { return __awaiter(void 0, void 0, void 0, function () {
+    var log, _a, filePath, canceled;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                log = {
+                    runs: runManager.getAllRuns(),
+                    doctorReports: getDoctorEngine().getReportHistory(),
+                    sessionId: (assetManager === null || assetManager === void 0 ? void 0 : assetManager.getSessionId()) || 'unknown',
+                    exportedAt: new Date().toISOString(),
+                    platform: "".concat(process.platform, " ").concat(process.arch),
+                    version: electron_1.app.getVersion(),
+                };
+                return [4 /*yield*/, electron_1.dialog.showSaveDialog(mainWindow, {
+                        title: "Export Session Log",
+                        defaultPath: "workbench-session-".concat(new Date().toISOString().split("T")[0], ".json"),
+                        filters: [{ name: "JSON Files", extensions: ["json"] }],
+                    })];
+            case 1:
+                _a = _b.sent(), filePath = _a.filePath, canceled = _a.canceled;
+                if (canceled || !filePath)
+                    return [2 /*return*/, { success: false, canceled: true }];
+                fs_1.default.writeFileSync(filePath, JSON.stringify(log, null, 2), "utf-8");
+                return [2 /*return*/, { success: true, filePath: filePath }];
         }
     });
 }); });

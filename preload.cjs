@@ -78,6 +78,12 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         suggestFailure: function (toolName, errorText) {
             return electron_1.ipcRenderer.invoke('doctor:suggestFailure', toolName, errorText);
         },
+        getHistory: function () { return electron_1.ipcRenderer.invoke('doctor:getHistory'); },
+        onAutoReport: function (callback) {
+            var handler = function (_e, report) { return callback(report); };
+            electron_1.ipcRenderer.on('doctor:autoReport', handler);
+            return function () { return electron_1.ipcRenderer.removeListener('doctor:autoReport', handler); };
+        },
     },
     // Permissions - Declarative permissions system
     permissions: {
@@ -230,6 +236,40 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             return electron_1.ipcRenderer.invoke('dispatch:suggest', context, limit);
         },
         formatPlan: function (plan) { return electron_1.ipcRenderer.invoke('dispatch:formatPlan', plan); },
+    },
+    // Guardrails - V2 Trust Core
+    guardrails: {
+        validateSchema: function (input, schema) {
+            return electron_1.ipcRenderer.invoke('guardrails:validateSchema', input, schema);
+        },
+        checkCommand: function (command, args) {
+            return electron_1.ipcRenderer.invoke('guardrails:checkCommand', command, args);
+        },
+        checkPath: function (filePath) {
+            return electron_1.ipcRenderer.invoke('guardrails:checkPath', filePath);
+        },
+        assessRisk: function (toolName, input) {
+            return electron_1.ipcRenderer.invoke('guardrails:assessRisk', toolName, input);
+        },
+    },
+    // Assets - V2 File Upload System
+    assets: {
+        upload: function () { return electron_1.ipcRenderer.invoke('assets:upload'); },
+        ingest: function (sourcePath) { return electron_1.ipcRenderer.invoke('assets:ingest', sourcePath); },
+        ingestBuffer: function (buffer, filename) {
+            return electron_1.ipcRenderer.invoke('assets:ingestBuffer', buffer, filename);
+        },
+        list: function () { return electron_1.ipcRenderer.invoke('assets:list'); },
+        get: function (assetId) { return electron_1.ipcRenderer.invoke('assets:get', assetId); },
+        open: function (assetId) { return electron_1.ipcRenderer.invoke('assets:open', assetId); },
+        delete: function (assetId) { return electron_1.ipcRenderer.invoke('assets:delete', assetId); },
+        export: function (assetId) { return electron_1.ipcRenderer.invoke('assets:export', assetId); },
+        resolvePath: function (assetId) { return electron_1.ipcRenderer.invoke('assets:resolvePath', assetId); },
+    },
+    // Session Logs - V2 Persistence
+    logs: {
+        getSessionLog: function () { return electron_1.ipcRenderer.invoke('logs:getSessionLog'); },
+        exportSessionLog: function () { return electron_1.ipcRenderer.invoke('logs:exportSessionLog'); },
     },
     // Environment Detection
     environment: {

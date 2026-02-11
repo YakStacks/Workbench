@@ -121,6 +121,48 @@ function normalizeToolOutput(output: any): ToolResponse {
   };
 }
 
+/**
+ * V2: Resolve asset_id references in tool input to sandbox file paths.
+ * Scans top-level input fields for values matching 'asset_XXX' pattern
+ * and resolves them to safe sandbox paths. Also handles explicit
+ * 'asset_id' field by adding a resolved '__asset_path' field.
+ */
+function resolveAssetReferences(input: any): any {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !assetManager) {
+    return input;
+  }
+
+  const resolved = { ...input };
+  const ASSET_ID_PATTERN = /^asset_\d+_[a-z0-9]+$/;
+
+  // If there's an explicit asset_id field, resolve it to __asset_path
+  if (resolved.asset_id && typeof resolved.asset_id === 'string') {
+    const safePath = assetManager.resolvePath(resolved.asset_id);
+    if (safePath) {
+      resolved.__asset_path = safePath;
+      // Also get metadata for tools that need MIME info
+      const meta = assetManager.get(resolved.asset_id);
+      if (meta) {
+        resolved.__asset_metadata = meta;
+      }
+    }
+  }
+
+  // Scan path-like fields and resolve asset_id values
+  const pathFields = ['path', 'filePath', 'file_path', 'file', 'source', 'input_file'];
+  for (const field of pathFields) {
+    if (resolved[field] && typeof resolved[field] === 'string' && ASSET_ID_PATTERN.test(resolved[field])) {
+      const safePath = assetManager.resolvePath(resolved[field]);
+      if (safePath) {
+        resolved[`__original_${field}`] = resolved[field]; // Keep original for logging
+        resolved[field] = safePath; // Replace with safe path
+      }
+    }
+  }
+
+  return resolved;
+}
+
 // MCP Server connections
 interface MCPServer {
   name: string;
@@ -360,26 +402,40 @@ function registerBuiltinTools() {
   // File System Tools
   tools.set("builtin.readFile", {
     name: "builtin.readFile",
-    description: "Read contents of a file",
+    description: "Read contents of a file. Accepts a file path or an asset_id from uploaded files.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path to read" },
+        asset_id: { type: "string", description: "Asset ID of an uploaded file (alternative to path)" },
         encoding: {
           type: "string",
           description: "Encoding (default: utf-8)",
           default: "utf-8",
         },
       },
-      required: ["path"],
     },
-    run: async (input: { path: string; encoding?: string }) => {
-      const safePath = resolveSafePath(input.path);
-      assertPathSafe(safePath);
+    run: async (input: { path?: string; asset_id?: string; encoding?: string; __asset_path?: string }) => {
+      let safePath: string;
+
+      // Priority: asset_id → __asset_path (resolved by middleware) → raw path
+      if (input.asset_id && assetManager) {
+        const resolved = assetManager.resolvePath(input.asset_id);
+        if (!resolved) throw new Error(`Asset not found: ${input.asset_id}`);
+        safePath = resolved;
+      } else if (input.__asset_path) {
+        safePath = input.__asset_path;
+      } else if (input.path) {
+        safePath = resolveSafePath(input.path);
+        assertPathSafe(safePath);
+      } else {
+        throw new Error("Either path or asset_id is required");
+      }
+
       const content = fs.readFileSync(safePath, {
         encoding: (input.encoding || "utf-8") as BufferEncoding,
       });
-    return { content, path: safePath, size: content.length };
+      return { content, path: safePath, size: content.length };
     },
   });
   permissionManager.registerToolPermissions("builtin.readFile", {
@@ -809,6 +865,233 @@ function registerBuiltinTools() {
         });
       });
     },
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // V2: Asset-aware tools
+  // ──────────────────────────────────────────────────────────────
+
+  tools.set("builtin.readAsset", {
+    name: "builtin.readAsset",
+    description: "Read an uploaded asset by its asset_id. Returns text content for text-based files, or base64 for binary files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of the uploaded file",
+        },
+      },
+      required: ["asset_id"],
+    },
+    run: async (input: { asset_id: string }) => {
+      if (!assetManager) throw new Error("Asset manager not initialized");
+
+      const meta = assetManager.get(input.asset_id);
+      if (!meta) {
+        return { content: `Asset not found: ${input.asset_id}`, error: "Asset not found" };
+      }
+
+      const filePath = assetManager.resolvePath(input.asset_id);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return { content: "Asset file missing from sandbox", error: "File missing" };
+      }
+
+      const isText = meta.mime_type.startsWith("text/") ||
+        ["application/json", "application/xml", "image/svg+xml"].includes(meta.mime_type);
+
+      if (isText) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        return {
+          content,
+          metadata: {
+            asset_id: meta.asset_id,
+            filename: meta.filename,
+            mime_type: meta.mime_type,
+            size: meta.size,
+            encoding: "utf-8",
+          },
+        };
+      }
+
+      // Binary files: return base64
+      const buffer = fs.readFileSync(filePath);
+      return {
+        content: `[Binary file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes)]`,
+        metadata: {
+          asset_id: meta.asset_id,
+          filename: meta.filename,
+          mime_type: meta.mime_type,
+          size: meta.size,
+          encoding: "base64",
+          base64: buffer.toString("base64"),
+        },
+      };
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.readAsset", {
+    filesystem: { actions: ["read"] },
+  });
+
+  tools.set("builtin.extractPdf", {
+    name: "builtin.extractPdf",
+    description: "Extract text content from a PDF file. Accepts asset_id or file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of an uploaded PDF",
+        },
+        path: {
+          type: "string",
+          description: "File path to a PDF (asset_id preferred)",
+        },
+      },
+    },
+    run: async (input: { asset_id?: string; path?: string; __asset_path?: string }) => {
+      let pdfPath: string | null = null;
+      let sourceLabel = "";
+
+      // Priority: asset_id → __asset_path (from resolution) → raw path
+      if (input.asset_id && assetManager) {
+        pdfPath = assetManager.resolvePath(input.asset_id);
+        sourceLabel = `asset:${input.asset_id}`;
+      } else if (input.__asset_path) {
+        pdfPath = input.__asset_path;
+        sourceLabel = `asset-resolved`;
+      } else if (input.path) {
+        pdfPath = resolveSafePath(input.path);
+        assertPathSafe(pdfPath);
+        sourceLabel = `file:${input.path}`;
+      }
+
+      if (!pdfPath) {
+        return { content: "No PDF source provided. Supply asset_id or path.", error: "Missing input" };
+      }
+
+      if (!fs.existsSync(pdfPath)) {
+        return { content: `PDF file not found: ${sourceLabel}`, error: "File not found" };
+      }
+
+      try {
+        const pdfParse = require("pdf-parse");
+        const buffer = fs.readFileSync(pdfPath);
+        const data = await pdfParse(buffer);
+
+        return {
+          content: data.text || "[No text content extracted]",
+          metadata: {
+            source: sourceLabel,
+            pages: data.numpages,
+            info: data.info,
+            textLength: (data.text || "").length,
+          },
+        };
+      } catch (e: any) {
+        return {
+          content: `Failed to extract PDF text: ${e.message}`,
+          error: e.message,
+          metadata: { source: sourceLabel },
+        };
+      }
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.extractPdf", {
+    filesystem: { actions: ["read"] },
+  });
+
+  tools.set("builtin.analyzeAsset", {
+    name: "builtin.analyzeAsset",
+    description: "Analyze an uploaded asset: extract text from PDFs, parse CSVs, read text files. Returns structured content ready for LLM processing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of the uploaded file",
+        },
+        question: {
+          type: "string",
+          description: "Optional question about the asset content",
+        },
+      },
+      required: ["asset_id"],
+    },
+    run: async (input: { asset_id: string; question?: string }) => {
+      if (!assetManager) throw new Error("Asset manager not initialized");
+
+      const meta = assetManager.get(input.asset_id);
+      if (!meta) {
+        return { content: `Asset not found: ${input.asset_id}`, error: "Asset not found" };
+      }
+
+      const filePath = assetManager.resolvePath(input.asset_id);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return { content: "Asset file missing from sandbox", error: "File missing" };
+      }
+
+      let extractedText = "";
+      let analysisType = "";
+
+      // Route by MIME type
+      if (meta.mime_type === "application/pdf") {
+        // PDF extraction
+        try {
+          const pdfParse = require("pdf-parse");
+          const buffer = fs.readFileSync(filePath);
+          const data = await pdfParse(buffer);
+          extractedText = data.text || "[No text content]";
+          analysisType = "pdf";
+        } catch (e: any) {
+          return { content: `PDF extraction failed: ${e.message}`, error: e.message };
+        }
+      } else if (meta.mime_type === "text/csv") {
+        // CSV parsing
+        const raw = fs.readFileSync(filePath, "utf-8");
+        const lines = raw.split("\n").filter(l => l.trim());
+        const headers = lines[0] ? lines[0].split(",").map(h => h.trim()) : [];
+        const rows = lines.slice(1).map(line => line.split(",").map(c => c.trim()));
+
+        extractedText = `CSV Data:\nHeaders: ${headers.join(", ")}\nRows: ${rows.length}\n\nSample (first 20 rows):\n`;
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          extractedText += rows[i].join(", ") + "\n";
+        }
+        analysisType = "csv";
+      } else if (meta.mime_type.startsWith("text/") || ["application/json", "application/xml"].includes(meta.mime_type)) {
+        // Text files
+        extractedText = fs.readFileSync(filePath, "utf-8");
+        analysisType = "text";
+      } else if (meta.mime_type.startsWith("image/")) {
+        extractedText = `[Image file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes). Image content analysis requires a vision model.]`;
+        analysisType = "image";
+      } else {
+        extractedText = `[Binary file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes). Cannot extract text from this file type.]`;
+        analysisType = "binary";
+      }
+
+      // Build prompt for LLM if there's a question
+      let content = `File: ${meta.filename} (${meta.mime_type})\n\n${extractedText}`;
+      if (input.question) {
+        content = `File: ${meta.filename} (${meta.mime_type})\n\nContent:\n${extractedText}\n\nQuestion: ${input.question}`;
+      }
+
+      return {
+        content,
+        metadata: {
+          asset_id: meta.asset_id,
+          filename: meta.filename,
+          mime_type: meta.mime_type,
+          size: meta.size,
+          analysisType,
+          textLength: extractedText.length,
+          suggestedRole: input.question ? "writer_cheap" : undefined,
+        },
+      };
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.analyzeAsset", {
+    filesystem: { actions: ["read"] },
   });
 
   // Ensure builtin tools always have declared permission metadata.
@@ -2255,12 +2538,15 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   runManager.startRun(runId);
   runManager.setApprovalInfo(runId, riskLevel, 'user');
 
-  const runInput =
+  let runInput =
     name.startsWith("builtin.")
       ? input && typeof input === "object" && !Array.isArray(input)
         ? { ...input, __runId: runId }
         : { __runId: runId }
       : input;
+
+  // V2: Asset resolution - resolve asset_id references to sandbox paths
+  runInput = resolveAssetReferences(runInput);
 
   // Per-tool timeout: check manifest, fallback to global default (30s)
   const DEFAULT_TOOL_TIMEOUT = 30000;
