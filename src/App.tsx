@@ -521,6 +521,7 @@ function ChatTab({
   const [attachedAsset, setAttachedAsset] = useState<any>(null);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [chatAssets, setChatAssets] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1016,8 +1017,8 @@ function ChatTab({
               position: 'absolute',
               bottom: '100%',
               left: 0,
-              width: 300,
-              maxHeight: 250,
+              width: 320,
+              maxHeight: 300,
               overflowY: 'auto',
               background: colors.bgSecondary,
               border: `1px solid ${colors.border}`,
@@ -1026,33 +1027,75 @@ function ChatTab({
               zIndex: 50,
               boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             }}>
-              {chatAssets.length === 0 ? (
-                <div style={{ padding: 16, textAlign: 'center', color: colors.textMuted, fontSize: 13 }}>
-                  No uploaded assets. Upload files in the Assets panel first.
+              {/* Upload button - always visible at top */}
+              <button
+                onClick={async () => {
+                  setUploading(true);
+                  try {
+                    const result = await window.workbench.assets.upload();
+                    if (result?.success && result.asset) {
+                      setAttachedAsset(result.asset);
+                      setShowAssetPicker(false);
+                    } else if (result?.success) {
+                      // Reload list and auto-select the newest
+                      const r = await window.workbench.assets.list();
+                      const list = r.assets || [];
+                      setChatAssets(list);
+                      if (list.length > 0) {
+                        setAttachedAsset(list[list.length - 1]);
+                        setShowAssetPicker(false);
+                      }
+                    }
+                  } catch (e: any) {
+                    console.error('Upload failed:', e.message);
+                  }
+                  setUploading(false);
+                }}
+                disabled={uploading}
+                style={{
+                  ...styles.button,
+                  ...styles.buttonPrimary,
+                  width: '100%',
+                  marginBottom: 8,
+                  padding: '8px 12px',
+                  fontSize: 13,
+                  opacity: uploading ? 0.6 : 1,
+                }}
+              >
+                {uploading ? 'Uploading...' : 'Upload New File'}
+              </button>
+
+              {/* Existing assets list */}
+              {chatAssets.length > 0 && (
+                <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 6, marginTop: 2 }}>
+                  <div style={{ fontSize: 11, color: colors.textMuted, padding: '2px 8px 6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Recent uploads
+                  </div>
+                  {chatAssets.map((a: any) => (
+                    <div
+                      key={a.asset_id}
+                      onClick={() => {
+                        setAttachedAsset(a);
+                        setShowAssetPicker(false);
+                      }}
+                      style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        borderRadius: 6,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        fontSize: 13,
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>{a.filename}</span>
+                      <span style={{ color: colors.textMuted, fontSize: 11, flexShrink: 0 }}>{a.mime_type.split('/')[1]}</span>
+                    </div>
+                  ))}
                 </div>
-              ) : chatAssets.map((a: any) => (
-                <div
-                  key={a.asset_id}
-                  onClick={() => {
-                    setAttachedAsset(a);
-                    setShowAssetPicker(false);
-                  }}
-                  style={{
-                    padding: '8px 12px',
-                    cursor: 'pointer',
-                    borderRadius: 6,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    fontSize: 13,
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <span>{a.filename}</span>
-                  <span style={{ color: colors.textMuted, fontSize: 11 }}>{a.mime_type}</span>
-                </div>
-              ))}
+              )}
             </div>
           )}
           <button
