@@ -95,7 +95,8 @@ var secretsManager = new secrets_manager_1.SecretsManager(store);
 var manifestRegistry = new tool_manifest_1.ToolManifestRegistry();
 var previewManager = new dry_run_1.PreviewManager();
 var memoryManager = new memory_manager_1.MemoryManager(store);
-var toolDispatcher = new tool_dispatch_1.ToolDispatcher(permissionManager, previewManager);
+var savedToolUsage = store.get("toolUsageData") || undefined;
+var toolDispatcher = new tool_dispatch_1.ToolDispatcher(permissionManager, previewManager, undefined, savedToolUsage);
 var environmentDetector = new environment_detection_1.EnvironmentDetector();
 var schemaValidator = new guardrails_1.SchemaValidator();
 var commandGuardrails = new guardrails_1.CommandGuardrails();
@@ -118,6 +119,10 @@ var DEFAULT_FEATURE_FLAGS = {
     V2_ASSET_SYSTEM: true,
     V2_AUTO_DOCTOR: true,
     V2_SESSION_LOGS: true,
+    V3_SMART_DISPATCH: true,
+    V3_DISAMBIGUATION: true,
+    V3_CHAIN_PLANNING: true,
+    V3_USAGE_TRACKING: true,
 };
 function getFeatureFlags() {
     var stored = store.get("featureFlags") || {};
@@ -2356,6 +2361,11 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                     ? normalized.content.slice(0, 200)
                     : JSON.stringify(normalized.content).slice(0, 200);
                 runManager.completeRun(runId, normalized, snippet);
+                // V3: Record successful tool usage for adaptive scoring
+                if (isFeatureEnabled("V3_USAGE_TRACKING")) {
+                    toolDispatcher.recordToolUsage(name, JSON.stringify(input).slice(0, 200), true);
+                    store.set("toolUsageData", toolDispatcher.getUsageData());
+                }
                 return [2 /*return*/, normalized];
             case 3:
                 error_1 = _a.sent();
@@ -2365,6 +2375,11 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 }
                 else {
                     runManager.failRun(runId, error_1.message);
+                }
+                // V3: Record failed tool usage
+                if (isFeatureEnabled("V3_USAGE_TRACKING")) {
+                    toolDispatcher.recordToolUsage(name, JSON.stringify(input).slice(0, 200), false);
+                    store.set("toolUsageData", toolDispatcher.getUsageData());
                 }
                 // V2: Record failure for loop detection
                 loopDetector.recordFailure(name, error_1.message);
@@ -3757,6 +3772,66 @@ electron_1.ipcMain.handle("dispatch:suggest", function (_e, context, limit) {
 // Format dispatch plan for confirmation
 electron_1.ipcMain.handle("dispatch:formatPlan", function (_e, plan) {
     return toolDispatcher.formatPlanForConfirmation(plan);
+});
+// ============================================================================
+// V3 TOOL SELECTION INTELLIGENCE IPC HANDLERS
+// ============================================================================
+// V3: Rank all tools by relevance to a query
+electron_1.ipcMain.handle("dispatch:rankTools", function (_e, query) {
+    var availableManifests = manifestRegistry.list();
+    return toolDispatcher.rankTools(query, availableManifests);
+});
+// V3: Record tool usage for adaptive scoring
+electron_1.ipcMain.handle("dispatch:recordUsage", function (_e, toolName, query, success) {
+    if (!isFeatureEnabled("V3_USAGE_TRACKING"))
+        return;
+    toolDispatcher.recordToolUsage(toolName, query, success);
+    // Persist usage data
+    store.set("toolUsageData", toolDispatcher.getUsageData());
+});
+// V3: Get tool usage data
+electron_1.ipcMain.handle("dispatch:getUsageData", function () {
+    return toolDispatcher.getUsageData();
+});
+// V3: Disambiguate between tool candidates
+electron_1.ipcMain.handle("dispatch:disambiguate", function (_e, query) {
+    if (!isFeatureEnabled("V3_DISAMBIGUATION"))
+        return null;
+    var availableManifests = manifestRegistry.list();
+    var candidates = toolDispatcher.rankTools(query, availableManifests).slice(0, 5);
+    return toolDispatcher.disambiguate(query, candidates);
+});
+// V3: Resolve disambiguation by user choice
+electron_1.ipcMain.handle("dispatch:resolveDisambiguation", function (_e, disambiguation, selectedIndex) {
+    return toolDispatcher.resolveDisambiguation(disambiguation, selectedIndex);
+});
+// V3: Build a simple rule-based chain plan
+electron_1.ipcMain.handle("dispatch:buildChain", function (_e, query) {
+    if (!isFeatureEnabled("V3_CHAIN_PLANNING"))
+        return null;
+    return toolDispatcher.buildSimpleChain(query, tools);
+});
+// V3: Parse chain plan from LLM response
+electron_1.ipcMain.handle("dispatch:parseChain", function (_e, llmResponse) {
+    if (!isFeatureEnabled("V3_CHAIN_PLANNING"))
+        return null;
+    return toolDispatcher.parseChainPlan(llmResponse, tools);
+});
+// V3: Validate a chain plan
+electron_1.ipcMain.handle("dispatch:validateChain", function (_e, plan) {
+    return toolDispatcher.validateChain(plan, tools);
+});
+// V3: Format chain plan for display
+electron_1.ipcMain.handle("dispatch:formatChain", function (_e, plan) {
+    return toolDispatcher.formatChainPlan(plan);
+});
+// V3: Get/update dispatch config
+electron_1.ipcMain.handle("dispatch:getConfig", function () {
+    return toolDispatcher.getConfig();
+});
+electron_1.ipcMain.handle("dispatch:updateConfig", function (_e, updates) {
+    toolDispatcher.updateConfig(updates);
+    return toolDispatcher.getConfig();
 });
 // ============================================================================
 // ENVIRONMENT DETECTION IPC HANDLERS

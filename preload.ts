@@ -222,13 +222,41 @@ contextBridge.exposeInMainWorld('workbench', {
     recallPreference: (key: string) => ipcRenderer.invoke('memory:recallPreference', key),
   },
 
-  // Tool Dispatcher - Natural language tool selection
+  // Tool Dispatcher - V3 Smart Tool Selection
   dispatch: {
-    createPlan: (query: string, context?: any) => 
+    // V2-compatible
+    createPlan: (query: string, context?: any) =>
       ipcRenderer.invoke('dispatch:createPlan', query, context),
-    suggest: (context: string, limit?: number) => 
+    suggest: (context: string, limit?: number) =>
       ipcRenderer.invoke('dispatch:suggest', context, limit),
     formatPlan: (plan: any) => ipcRenderer.invoke('dispatch:formatPlan', plan),
+    // V3: Tool ranking
+    rankTools: (query: string) =>
+      ipcRenderer.invoke('dispatch:rankTools', query),
+    // V3: Usage tracking
+    recordUsage: (toolName: string, query: string, success: boolean) =>
+      ipcRenderer.invoke('dispatch:recordUsage', toolName, query, success),
+    getUsageData: () =>
+      ipcRenderer.invoke('dispatch:getUsageData'),
+    // V3: Disambiguation
+    disambiguate: (query: string) =>
+      ipcRenderer.invoke('dispatch:disambiguate', query),
+    resolveDisambiguation: (disambiguation: any, selectedIndex: number) =>
+      ipcRenderer.invoke('dispatch:resolveDisambiguation', disambiguation, selectedIndex),
+    // V3: Chain planning
+    buildChain: (query: string) =>
+      ipcRenderer.invoke('dispatch:buildChain', query),
+    parseChain: (llmResponse: string) =>
+      ipcRenderer.invoke('dispatch:parseChain', llmResponse),
+    validateChain: (plan: any) =>
+      ipcRenderer.invoke('dispatch:validateChain', plan),
+    formatChain: (plan: any) =>
+      ipcRenderer.invoke('dispatch:formatChain', plan),
+    // V3: Config
+    getConfig: () =>
+      ipcRenderer.invoke('dispatch:getConfig'),
+    updateConfig: (updates: any) =>
+      ipcRenderer.invoke('dispatch:updateConfig', updates),
   },
 
   // Guardrails - V2 Trust Core

@@ -9,6 +9,11 @@ export type FeatureFlags = {
   V2_ASSET_SYSTEM: boolean;
   V2_AUTO_DOCTOR: boolean;
   V2_SESSION_LOGS: boolean;
+  // V3 Tool Selection Intelligence flags
+  V3_SMART_DISPATCH: boolean;
+  V3_DISAMBIGUATION: boolean;
+  V3_CHAIN_PLANNING: boolean;
+  V3_USAGE_TRACKING: boolean;
 };
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -22,6 +27,11 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   V2_ASSET_SYSTEM: true,
   V2_AUTO_DOCTOR: true,
   V2_SESSION_LOGS: true,
+  // V3 Tool Selection Intelligence - enabled by default
+  V3_SMART_DISPATCH: true,
+  V3_DISAMBIGUATION: true,
+  V3_CHAIN_PLANNING: true,
+  V3_USAGE_TRACKING: true,
 };
 
 export function mergeFeatureFlags(
