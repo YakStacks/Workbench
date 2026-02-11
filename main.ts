@@ -26,6 +26,8 @@ import { PreviewManager, PreviewBuilder } from "./dry-run";
 import { MemoryManager } from "./memory-manager";
 import { ToolDispatcher } from "./tool-dispatch";
 import { EnvironmentDetector } from "./environment-detection";
+import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
+import { AssetManager } from "./asset-manager";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -37,6 +39,11 @@ const previewManager = new PreviewManager();
 const memoryManager = new MemoryManager(store);
 const toolDispatcher = new ToolDispatcher(permissionManager, previewManager);
 const environmentDetector = new EnvironmentDetector();
+const schemaValidator = new SchemaValidator();
+const commandGuardrails = new CommandGuardrails();
+const loopDetector = new LoopDetector();
+let pathSandbox: PathSandbox;
+let assetManager: AssetManager;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -50,7 +57,11 @@ type FeatureFlagKey =
   | "M_SMART_AUTO_DIAGNOSTICS"
   | "N_PERMISSION_PROFILES"
   | "N_RUN_TIMELINE"
-  | "N_EXPORT_RUN_BUNDLE";
+  | "N_EXPORT_RUN_BUNDLE"
+  | "V2_GUARDRAILS"
+  | "V2_ASSET_SYSTEM"
+  | "V2_AUTO_DOCTOR"
+  | "V2_SESSION_LOGS";
 
 type FeatureFlags = Record<FeatureFlagKey, boolean>;
 
@@ -60,6 +71,10 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   N_PERMISSION_PROFILES: false,
   N_RUN_TIMELINE: false,
   N_EXPORT_RUN_BUNDLE: false,
+  V2_GUARDRAILS: true,
+  V2_ASSET_SYSTEM: true,
+  V2_AUTO_DOCTOR: true,
+  V2_SESSION_LOGS: true,
 };
 
 function getFeatureFlags(): FeatureFlags {
@@ -213,6 +228,20 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  // Initialize path sandbox and asset manager
+  const workspaceRoot = (store.get('workingDir') as string) || app.getPath('home');
+  const safePaths = (store.get('safePaths') as string[]) || [];
+  pathSandbox = new PathSandbox(workspaceRoot, safePaths);
+
+  const assetSandboxDir = path.join(app.getPath('userData'), 'assets');
+  assetManager = new AssetManager(store, assetSandboxDir);
+
+  // Load persisted doctor report history
+  const savedDoctorHistory = store.get('doctorReportHistory') as DoctorReport[] | undefined;
+  if (savedDoctorHistory && Array.isArray(savedDoctorHistory)) {
+    getDoctorEngine().loadHistory(savedDoctorHistory);
+  }
+
   createWindow();
   createTray();
   loadPlugins();
@@ -2162,6 +2191,42 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 
+  // V2: Schema validation before execution
+  if (tool.inputSchema) {
+    const validation = schemaValidator.validateToolInput(input || {}, tool.inputSchema);
+    if (!validation.valid) {
+      throw new Error(`Schema validation failed: ${validation.errors.join('; ')}`);
+    }
+  }
+
+  // V2: Guardrails - check for dangerous commands
+  const actionType = commandGuardrails.classifyAction(name, input);
+  if (actionType === 'terminal_command') {
+    const cmdCheck = commandGuardrails.checkCommand(
+      input?.command || '',
+      input?.args || []
+    );
+    if (!cmdCheck.allowed) {
+      throw new Error(`Blocked by guardrails: ${cmdCheck.reason}`);
+    }
+  }
+
+  // V2: Path sandbox validation for file operations
+  if ((actionType === 'file_write' || actionType === 'file_delete') && pathSandbox) {
+    const filePath = input?.path || input?.filePath || '';
+    if (filePath) {
+      const pathCheck = pathSandbox.isPathAllowed(filePath);
+      if (!pathCheck.allowed) {
+        throw new Error(`Path blocked by sandbox: ${pathCheck.reason}`);
+      }
+    }
+  }
+
+  // V2: Loop detection
+  if (loopDetector.isInLoop(name, JSON.stringify(input || {}).substring(0, 200))) {
+    throw new Error(loopDetector.getLoopSuggestion(name));
+  }
+
   // Concurrency cap check
   if (!processRegistry.canSpawn()) {
     throw new Error(
@@ -2170,6 +2235,7 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   }
 
   // Create run tracking
+  const riskLevel = commandGuardrails.assessRisk(name, actionType, input);
   const runId = runManager.createRun(name, input, 'user');
 
   try {
@@ -2187,6 +2253,7 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
 
   // Start the run
   runManager.startRun(runId);
+  runManager.setApprovalInfo(runId, riskLevel, 'user');
 
   const runInput =
     name.startsWith("builtin.")
@@ -2245,6 +2312,23 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
       runManager.failRun(runId, error.message);
     }
 
+    // V2: Record failure for loop detection
+    loopDetector.recordFailure(name, error.message);
+
+    // V2: Auto-trigger Doctor on qualifying failures
+    const doctorEngine = getDoctorEngine();
+    const triggerEvent = doctorEngine.shouldAutoTrigger(error.message);
+    if (triggerEvent) {
+      // Fire-and-forget, non-blocking
+      doctorEngine.autoTrigger(triggerEvent, `${name}: ${error.message}`).then(result => {
+        if (result.triggered && result.report && mainWindow) {
+          mainWindow.webContents.send('doctor:autoReport', result.report);
+          // Persist report history
+          store.set('doctorReportHistory', doctorEngine.getReportHistory());
+        }
+      }).catch(() => { /* ignore auto-doctor errors */ });
+    }
+
     // Friendly error handling
     return normalizeToolOutput({
       content: error.message.includes("timeout")
@@ -2255,6 +2339,7 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
         tool: name,
         input,
         timestamp: new Date().toISOString(),
+        riskLevel,
       },
     });
   }
@@ -3284,6 +3369,171 @@ ipcMain.handle("runs:exportBundle", async (_e, runId?: string) => {
 
   fs.writeFileSync(filePath, JSON.stringify(bundle, null, 2), "utf-8");
   return { success: true, filePath, runCount: selectedRuns.length };
+});
+
+// ============================================================================
+// V2: DOCTOR REPORT HISTORY IPC
+// ============================================================================
+
+ipcMain.handle("doctor:getHistory", () => {
+  const engine = getDoctorEngine();
+  return engine.getReportHistory();
+});
+
+// ============================================================================
+// V2: GUARDRAILS IPC
+// ============================================================================
+
+ipcMain.handle("guardrails:validateSchema", (_e, input: any, schema: any) => {
+  return schemaValidator.validateToolInput(input, schema);
+});
+
+ipcMain.handle("guardrails:checkCommand", (_e, command: string, args: string[]) => {
+  return commandGuardrails.checkCommand(command, args);
+});
+
+ipcMain.handle("guardrails:checkPath", (_e, filePath: string) => {
+  if (!pathSandbox) return { allowed: true, riskLevel: 'low' };
+  return pathSandbox.isPathAllowed(filePath);
+});
+
+ipcMain.handle("guardrails:assessRisk", (_e, toolName: string, input: any) => {
+  const actionType = commandGuardrails.classifyAction(toolName, input);
+  return {
+    actionType,
+    riskLevel: commandGuardrails.assessRisk(toolName, actionType, input),
+    proposal: commandGuardrails.createProposal(toolName, actionType, input),
+  };
+});
+
+// ============================================================================
+// V2: ASSET MANAGER IPC HANDLERS
+// ============================================================================
+
+ipcMain.handle("assets:ingest", async (_e, sourcePath: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+  return await assetManager.ingest(sourcePath);
+});
+
+ipcMain.handle("assets:ingestBuffer", async (_e, bufferData: ArrayBuffer, filename: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+  const buffer = Buffer.from(bufferData);
+  return await assetManager.ingestBuffer(buffer, filename);
+});
+
+ipcMain.handle("assets:list", () => {
+  if (!assetManager) return { assets: [], total: 0 };
+  return assetManager.list();
+});
+
+ipcMain.handle("assets:get", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  return assetManager.get(assetId);
+});
+
+ipcMain.handle("assets:open", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  const result = assetManager.open(assetId);
+  if (!result) return null;
+  // Return metadata + base64 content for renderer
+  return {
+    metadata: result.metadata,
+    content: result.content.toString('base64'),
+    contentType: result.metadata.mime_type,
+  };
+});
+
+ipcMain.handle("assets:delete", (_e, assetId: string) => {
+  if (!assetManager) return false;
+  return assetManager.delete(assetId);
+});
+
+ipcMain.handle("assets:export", async (_e, assetId: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+
+  const meta = assetManager.get(assetId);
+  if (!meta) throw new Error("Asset not found");
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Asset",
+    defaultPath: meta.filename,
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  const success = assetManager.export(assetId, filePath);
+  return { success, filePath };
+});
+
+ipcMain.handle("assets:resolvePath", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  return assetManager.resolvePath(assetId);
+});
+
+ipcMain.handle("assets:upload", async () => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+
+  const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow!, {
+    title: "Upload Asset",
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Supported Files', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'txt', 'csv', 'json', 'xml', 'html', 'md', 'yaml', 'yml', 'log', 'wav', 'mp3'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+
+  if (canceled || !filePaths || filePaths.length === 0) {
+    return { success: false, canceled: true, assets: [] };
+  }
+
+  const results: any[] = [];
+  for (const fp of filePaths) {
+    try {
+      const meta = await assetManager.ingest(fp);
+      results.push({ success: true, metadata: meta });
+    } catch (e: any) {
+      results.push({ success: false, filename: path.basename(fp), error: e.message });
+    }
+  }
+
+  return { success: true, assets: results };
+});
+
+// ============================================================================
+// V2: SESSION LOG PERSISTENCE IPC
+// ============================================================================
+
+ipcMain.handle("logs:getSessionLog", () => {
+  return {
+    runs: runManager.getAllRuns(),
+    doctorReports: getDoctorEngine().getReportHistory(),
+    sessionId: assetManager?.getSessionId() || 'unknown',
+    timestamp: new Date().toISOString(),
+  };
+});
+
+ipcMain.handle("logs:exportSessionLog", async () => {
+  const log = {
+    runs: runManager.getAllRuns(),
+    doctorReports: getDoctorEngine().getReportHistory(),
+    sessionId: assetManager?.getSessionId() || 'unknown',
+    exportedAt: new Date().toISOString(),
+    platform: `${process.platform} ${process.arch}`,
+    version: app.getVersion(),
+  };
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Session Log",
+    defaultPath: `workbench-session-${new Date().toISOString().split("T")[0]}.json`,
+    filters: [{ name: "JSON Files", extensions: ["json"] }],
+  });
+
+  if (canceled || !filePath) return { success: false, canceled: true };
+
+  fs.writeFileSync(filePath, JSON.stringify(log, null, 2), "utf-8");
+  return { success: true, filePath };
 });
 
 // ============================================================================

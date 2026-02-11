@@ -152,6 +152,9 @@ export default function App() {
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<{toolName: string, retry: () => void} | null>(null);
 
+  // V2: Auto-doctor notification state
+  const [autoDoctorReport, setAutoDoctorReport] = useState<any>(null);
+
   const onRequestPermission = useCallback((toolName: string, retry: () => void) => {
     setPermissionRequest({ toolName, retry });
   }, []);
@@ -177,6 +180,12 @@ export default function App() {
         setChatHistory(result.history);
       }
     });
+
+    // V2: Listen for auto-doctor reports
+    const unsubDoctor = window.workbench.doctor.onAutoReport((report: any) => {
+      setAutoDoctorReport(report);
+    });
+    return () => { unsubDoctor(); };
     // Load saved presets and apply font settings
     window.workbench.getConfig().then((cfg: any) => {
       if (cfg.chainPresets) setChainPresets(cfg.chainPresets);
@@ -205,6 +214,13 @@ export default function App() {
 
   return (
     <div style={styles.app}>
+      {/* V2: Auto-doctor notification banner */}
+      {autoDoctorReport && (
+        <DoctorNotificationBanner
+          report={autoDoctorReport}
+          onDismiss={() => setAutoDoctorReport(null)}
+        />
+      )}
       <div style={styles.header}>
         {TABS.map(t => (
           <button
@@ -255,6 +271,223 @@ export default function App() {
             setInterruptedRuns([]);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// V2: TOOL APPROVAL GATE COMPONENT
+// ============================================================================
+
+function ToolApprovalGate({ tool, input, onInputChange, onApprove, onReject }: {
+  tool: Tool;
+  input: any;
+  onInputChange: (values: any) => void;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const [riskInfo, setRiskInfo] = useState<any>(null);
+
+  useEffect(() => {
+    window.workbench.guardrails.assessRisk(tool.name, input)
+      .then(setRiskInfo)
+      .catch(() => setRiskInfo(null));
+  }, [tool.name, JSON.stringify(input)]);
+
+  const riskLevel = riskInfo?.riskLevel || 'medium';
+  const riskColors: Record<string, string> = { low: colors.success, medium: colors.warning, high: colors.danger };
+  const riskLabels: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
+
+  return (
+    <div style={{ padding: 16, borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
+      {/* Header with risk indicator */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 600 }}>Tool: {tool.name}</span>
+          <span style={{
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            background: (riskColors[riskLevel] || colors.warning) + '20',
+            color: riskColors[riskLevel] || colors.warning,
+          }}>
+            {riskLabels[riskLevel] || 'Medium'} Risk
+          </span>
+        </div>
+        <button onClick={onReject} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}>x</button>
+      </div>
+
+      {/* Action summary */}
+      {riskInfo?.proposal?.summary && (
+        <div style={{
+          padding: '8px 12px',
+          background: colors.bgTertiary,
+          borderRadius: 6,
+          marginBottom: 12,
+          fontSize: 13,
+          borderLeft: `3px solid ${riskColors[riskLevel] || colors.warning}`,
+        }}>
+          {riskInfo.proposal.summary}
+        </div>
+      )}
+
+      {/* Input form */}
+      <ToolInputForm
+        tool={tool}
+        values={input}
+        onChange={onInputChange}
+      />
+
+      {/* Approve / Reject buttons */}
+      <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+        <button
+          onClick={onApprove}
+          style={{ ...styles.button, ...styles.buttonPrimary }}
+        >
+          Approve & Run
+        </button>
+        <button
+          onClick={onReject}
+          style={{ ...styles.button, ...styles.buttonGhost }}
+        >
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// V2: AUTO-DOCTOR NOTIFICATION BANNER
+// ============================================================================
+
+function DoctorNotificationBanner({ report, onDismiss }: { report: any; onDismiss: () => void }) {
+  if (!report) return null;
+
+  return (
+    <div style={{
+      padding: '10px 16px',
+      background: colors.warning + '20',
+      borderBottom: `1px solid ${colors.warning}`,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      fontSize: 13,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>Doctor Report Available</span>
+        <span style={{ color: colors.textMuted }}>
+          ({report.summary?.pass || 0} pass, {report.summary?.warn || 0} warn, {report.summary?.fail || 0} fail)
+        </span>
+        {report.triggerReason && (
+          <span style={{ color: colors.textMuted, fontSize: 11 }}>
+            | Triggered by: {report.triggerReason}
+          </span>
+        )}
+      </div>
+      <button onClick={onDismiss} style={{ ...styles.button, ...styles.buttonGhost, padding: '2px 8px', fontSize: 12 }}>
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// V2: ASSET UPLOAD PANEL
+// ============================================================================
+
+function AssetPanel() {
+  const [assets, setAssets] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  const loadAssets = useCallback(async () => {
+    try {
+      const result = await window.workbench.assets.list();
+      setAssets(result.assets || []);
+    } catch { setAssets([]); }
+  }, []);
+
+  useEffect(() => { loadAssets(); }, [loadAssets]);
+
+  const handleUpload = async () => {
+    setUploading(true);
+    try {
+      const result = await window.workbench.assets.upload();
+      if (result?.success) {
+        await loadAssets();
+      }
+    } catch (e: any) {
+      console.error('Upload failed:', e.message);
+    }
+    setUploading(false);
+  };
+
+  const handleDelete = async (assetId: string) => {
+    if (!confirm('Delete this asset?')) return;
+    await window.workbench.assets.delete(assetId);
+    await loadAssets();
+  };
+
+  const handleExport = async (assetId: string) => {
+    await window.workbench.assets.export(assetId);
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  return (
+    <div style={styles.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Assets ({assets.length})</h3>
+        <button
+          onClick={handleUpload}
+          disabled={uploading}
+          style={{ ...styles.button, ...styles.buttonPrimary }}
+        >
+          {uploading ? 'Uploading...' : 'Upload File'}
+        </button>
+      </div>
+
+      {assets.length === 0 ? (
+        <div style={{ textAlign: 'center', color: colors.textMuted, padding: 24 }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>No assets uploaded</div>
+          <div style={{ fontSize: 12 }}>Upload files to use them with tools via asset_id</div>
+        </div>
+      ) : (
+        <div style={{ maxHeight: 300, overflow: 'auto' }}>
+          {assets.map((asset: any) => (
+            <div key={asset.asset_id} style={{
+              padding: '8px 12px',
+              borderRadius: 6,
+              marginBottom: 6,
+              background: colors.bgTertiary,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              fontSize: 13,
+            }}>
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {asset.filename}
+                </div>
+                <div style={{ fontSize: 11, color: colors.textMuted }}>
+                  {asset.mime_type} | {formatSize(asset.size)} | {asset.asset_id}
+                </div>
+              </div>
+              <button onClick={() => handleExport(asset.asset_id)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px', fontSize: 11 }}>
+                Export
+              </button>
+              <button onClick={() => handleDelete(asset.asset_id)} style={{ ...styles.button, ...styles.buttonDanger, padding: '4px 8px', fontSize: 11 }}>
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -448,11 +681,31 @@ function ChatTab({
   };
 
   const runToolInChat = async (tool: Tool, toolInput: any) => {
+    // V2: Assess risk and show visible tool call info
+    let riskInfo: any = null;
+    try {
+      riskInfo = await window.workbench.guardrails.assessRisk(tool.name, toolInput);
+    } catch { /* guardrails not available */ }
+
+    const riskLevel = riskInfo?.riskLevel || 'medium';
+    const riskColors: Record<string, string> = { low: colors.success, medium: colors.warning, high: colors.danger };
+    const riskLabels: Record<string, string> = { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' };
+
+    // V2: Show tool call proposal in chat
+    const proposalMsgId = `msg_${Date.now()}_proposal`;
+    const proposalMsg: Message = {
+      id: proposalMsgId,
+      role: 'system',
+      content: `Tool: ${tool.name}\nArguments: ${JSON.stringify(toolInput, null, 2)}\nRisk: ${riskLabels[riskLevel] || 'Unknown'}\n${riskInfo?.proposal?.summary || ''}`,
+      timestamp: new Date(),
+    };
+    setHistory(prev => [...prev, proposalMsg]);
+
     const runningMsgId = `msg_${Date.now()}_running`;
     const runningMsg: Message = {
       id: runningMsgId,
       role: 'system',
-      content: `Running ${tool.name}...`,
+      content: `Executing ${tool.name}...`,
       timestamp: new Date(),
     };
     setHistory(prev => [...prev, runningMsg]);
@@ -534,8 +787,20 @@ function ChatTab({
          onRequestPermission(name, () => runToolInChat(tool, toolInput));
          return;
       }
-      setHistory(prev => prev.map(m => 
-        m.id === runningMsgId ? { ...m, content: `Error: ${e.message}` } : m
+      // V2: Show structured error with recovery suggestions
+      const errorContent = [
+        `Error: ${e.message}`,
+        '',
+        'Suggested actions:',
+        '- Check the tool input parameters',
+        '- Run System Diagnostics (Settings > Doctor)',
+        e.message.includes('loop') ? '- A failure loop was detected. Try a different approach.' : '',
+        e.message.includes('sandbox') ? '- The file path is outside the workspace. Update Safe Paths in Settings.' : '',
+        e.message.includes('guardrails') ? '- The command was blocked for safety. Review the command.' : '',
+      ].filter(Boolean).join('\n');
+
+      setHistory(prev => prev.map(m =>
+        m.id === runningMsgId ? { ...m, content: errorContent } : m
       ));
     }
   };
@@ -637,33 +902,15 @@ function ChatTab({
         </div>
       )}
 
-      {/* Pending tool form */}
+      {/* Pending tool form - V2 Approval Gate */}
       {pendingTool && (
-        <div style={{ padding: 16, borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontWeight: 600 }}>🔧 {pendingTool.tool.name}</span>
-            <button onClick={() => setPendingTool(null)} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 8px' }}>✕</button>
-          </div>
-          <ToolInputForm 
-            tool={pendingTool.tool} 
-            values={pendingTool.input}
-            onChange={(values) => setPendingTool({ ...pendingTool, input: values })}
-          />
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <button 
-              onClick={() => runToolInChat(pendingTool.tool, pendingTool.input)}
-              style={{ ...styles.button, ...styles.buttonPrimary }}
-            >
-              Run Tool
-            </button>
-            <button 
-              onClick={() => setPendingTool(null)}
-              style={{ ...styles.button, ...styles.buttonGhost }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <ToolApprovalGate
+          tool={pendingTool.tool}
+          input={pendingTool.input}
+          onInputChange={(values) => setPendingTool({ ...pendingTool, input: values })}
+          onApprove={() => runToolInChat(pendingTool.tool, pendingTool.input)}
+          onReject={() => setPendingTool(null)}
+        />
       )}
 
       {/* Input area */}
@@ -3231,6 +3478,26 @@ function SettingsTab({ featureFlags, setFeatureFlags }: {
       label: 'N: Export Run Bundle',
       description: 'Export run + doctor bundle as a local JSON file for issue reporting.',
     },
+    {
+      key: 'V2_GUARDRAILS',
+      label: 'V2: Guardrails',
+      description: 'Schema validation, path sandboxing, and dangerous command blocking for tool execution.',
+    },
+    {
+      key: 'V2_ASSET_SYSTEM',
+      label: 'V2: Asset System',
+      description: 'File upload support with MIME validation, sandbox storage, and tool integration via asset_id.',
+    },
+    {
+      key: 'V2_AUTO_DOCTOR',
+      label: 'V2: Auto Doctor',
+      description: 'Automatically trigger diagnostics on spawn failures, timeouts, and other qualifying errors.',
+    },
+    {
+      key: 'V2_SESSION_LOGS',
+      label: 'V2: Session Logs',
+      description: 'Persistent session logs including tool runs, doctor reports, and execution history.',
+    },
   ];
 
   return (
@@ -3433,12 +3700,29 @@ function SettingsTab({ featureFlags, setFeatureFlags }: {
             <DoctorPanel />
           </div>
 
+          <AssetPanel />
+
           <div style={styles.card}>
             <button onClick={save} style={{ ...styles.button, ...styles.buttonSuccess }}>
               {saved ? '✓ Saved!' : 'Save Settings'}
             </button>
             <button onClick={() => window.workbench.reloadPlugins()} style={{ ...styles.button, ...styles.buttonGhost, marginLeft: 8 }}>
               Reload Plugins
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  const result = await window.workbench.logs.exportSessionLog();
+                  if (result?.success) {
+                    alert(`Session log exported to: ${result.filePath}`);
+                  }
+                } catch (e: any) {
+                  alert('Export failed: ' + e.message);
+                }
+              }}
+              style={{ ...styles.button, ...styles.buttonGhost, marginLeft: 8 }}
+            >
+              Export Session Log
             </button>
           </div>
 

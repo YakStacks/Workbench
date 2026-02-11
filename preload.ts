@@ -84,6 +84,12 @@ contextBridge.exposeInMainWorld('workbench', {
     export: (sanitize: boolean = true) => ipcRenderer.invoke('doctor:export', sanitize),
     suggestFailure: (toolName: string, errorText: string) =>
       ipcRenderer.invoke('doctor:suggestFailure', toolName, errorText),
+    getHistory: () => ipcRenderer.invoke('doctor:getHistory'),
+    onAutoReport: (callback: (report: any) => void) => {
+      const handler = (_e: any, report: any) => callback(report);
+      ipcRenderer.on('doctor:autoReport', handler);
+      return () => ipcRenderer.removeListener('doctor:autoReport', handler);
+    },
   },
 
   // Permissions - Declarative permissions system
@@ -223,6 +229,38 @@ contextBridge.exposeInMainWorld('workbench', {
     suggest: (context: string, limit?: number) => 
       ipcRenderer.invoke('dispatch:suggest', context, limit),
     formatPlan: (plan: any) => ipcRenderer.invoke('dispatch:formatPlan', plan),
+  },
+
+  // Guardrails - V2 Trust Core
+  guardrails: {
+    validateSchema: (input: any, schema: any) =>
+      ipcRenderer.invoke('guardrails:validateSchema', input, schema),
+    checkCommand: (command: string, args: string[]) =>
+      ipcRenderer.invoke('guardrails:checkCommand', command, args),
+    checkPath: (filePath: string) =>
+      ipcRenderer.invoke('guardrails:checkPath', filePath),
+    assessRisk: (toolName: string, input: any) =>
+      ipcRenderer.invoke('guardrails:assessRisk', toolName, input),
+  },
+
+  // Assets - V2 File Upload System
+  assets: {
+    upload: () => ipcRenderer.invoke('assets:upload'),
+    ingest: (sourcePath: string) => ipcRenderer.invoke('assets:ingest', sourcePath),
+    ingestBuffer: (buffer: ArrayBuffer, filename: string) =>
+      ipcRenderer.invoke('assets:ingestBuffer', buffer, filename),
+    list: () => ipcRenderer.invoke('assets:list'),
+    get: (assetId: string) => ipcRenderer.invoke('assets:get', assetId),
+    open: (assetId: string) => ipcRenderer.invoke('assets:open', assetId),
+    delete: (assetId: string) => ipcRenderer.invoke('assets:delete', assetId),
+    export: (assetId: string) => ipcRenderer.invoke('assets:export', assetId),
+    resolvePath: (assetId: string) => ipcRenderer.invoke('assets:resolvePath', assetId),
+  },
+
+  // Session Logs - V2 Persistence
+  logs: {
+    getSessionLog: () => ipcRenderer.invoke('logs:getSessionLog'),
+    exportSessionLog: () => ipcRenderer.invoke('logs:exportSessionLog'),
   },
 
   // Environment Detection

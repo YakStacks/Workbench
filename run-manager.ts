@@ -33,6 +33,13 @@ export interface RunMetadata {
   error?: string;
   processId?: number;
   lastOutputSnippet?: string;
+  // V2 Observability fields
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+  arguments?: Record<string, any>;
+  riskLevel?: 'low' | 'medium' | 'high';
+  approvedBy?: 'user' | 'session_policy' | 'permanent_policy';
 }
 
 export interface RunStats {
@@ -192,6 +199,43 @@ export class RunManager {
     run.lastOutputSnippet = snippet;
     this.emitUpdate(runId);
     // Don't persist on every snippet update - too frequent
+  }
+
+  /**
+   * Update stdout/stderr/exitCode for observability
+   */
+  updateObservability(runId: string, data: {
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number | null;
+  }): void {
+    const run = this.runs.get(runId);
+    if (!run) {
+      // Check history
+      const histRun = this.runHistory.find(r => r.runId === runId);
+      if (histRun) {
+        if (data.stdout !== undefined) histRun.stdout = data.stdout;
+        if (data.stderr !== undefined) histRun.stderr = data.stderr;
+        if (data.exitCode !== undefined) histRun.exitCode = data.exitCode;
+        this.persistState();
+      }
+      return;
+    }
+
+    if (data.stdout !== undefined) run.stdout = data.stdout;
+    if (data.stderr !== undefined) run.stderr = data.stderr;
+    if (data.exitCode !== undefined) run.exitCode = data.exitCode;
+    // Don't persist on every update for perf
+  }
+
+  /**
+   * Set risk level and approval info for a run
+   */
+  setApprovalInfo(runId: string, riskLevel: 'low' | 'medium' | 'high', approvedBy: 'user' | 'session_policy' | 'permanent_policy'): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    run.riskLevel = riskLevel;
+    run.approvedBy = approvedBy;
   }
 
   /**

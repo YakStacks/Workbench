@@ -32,6 +32,23 @@ export interface DoctorReport {
     warn: number;
     fail: number;
   };
+  trigger?: 'manual' | 'auto';
+  triggerReason?: string;
+}
+
+export type AutoTriggerEvent =
+  | 'spawn_failure'
+  | 'mcp_timeout'
+  | 'tool_crash'
+  | 'localhost_bind_failure'
+  | 'loop_detected'
+  | 'permission_denied'
+  | 'unexpected_exit';
+
+export interface AutoTriggerResult {
+  triggered: boolean;
+  event: AutoTriggerEvent;
+  report?: DoctorReport;
 }
 
 // ============================================================================
@@ -41,10 +58,88 @@ export interface DoctorReport {
 export class DoctorEngine {
   private configDir: string;
   private appVersion: string;
+  private reportHistory: DoctorReport[] = [];
+  private maxReportHistory = 20;
+  private autoTriggerCooldownMs = 30000; // 30s between auto-triggers
+  private lastAutoTriggerTime = 0;
+  private onAutoReportReady?: (report: DoctorReport) => void;
 
   constructor(configDir: string, appVersion: string = '0.1.1') {
     this.configDir = configDir;
     this.appVersion = appVersion;
+  }
+
+  /**
+   * Register a callback for when an auto-triggered report is ready
+   */
+  setAutoReportCallback(callback: (report: DoctorReport) => void): void {
+    this.onAutoReportReady = callback;
+  }
+
+  /**
+   * Check if an error should auto-trigger diagnostics
+   */
+  shouldAutoTrigger(errorText: string): AutoTriggerEvent | null {
+    const text = errorText.toLowerCase();
+
+    if (/spawn|enoent|command not found|is not recognized/.test(text)) return 'spawn_failure';
+    if (/mcp.*timeout|connection.*timed?\s*out|mcp.*connection/.test(text)) return 'mcp_timeout';
+    if (/eaddrinuse|bind.*fail|localhost.*bind|port.*in.*use/.test(text)) return 'localhost_bind_failure';
+    if (/permission denied|eacces|eperm|access denied/.test(text)) return 'permission_denied';
+    if (/unexpected.*exit|exit code [^0]|exited with code/.test(text)) return 'unexpected_exit';
+    if (/crash|segfault|fatal|unhandled.*exception/.test(text)) return 'tool_crash';
+
+    return null;
+  }
+
+  /**
+   * Auto-trigger diagnostics based on a failure event (non-blocking)
+   */
+  async autoTrigger(event: AutoTriggerEvent, reason: string): Promise<AutoTriggerResult> {
+    const now = Date.now();
+    if (now - this.lastAutoTriggerTime < this.autoTriggerCooldownMs) {
+      return { triggered: false, event };
+    }
+    this.lastAutoTriggerTime = now;
+
+    try {
+      const report = await this.runAll();
+      report.trigger = 'auto';
+      report.triggerReason = `${event}: ${reason}`;
+      this.addToHistory(report);
+
+      if (this.onAutoReportReady) {
+        this.onAutoReportReady(report);
+      }
+
+      return { triggered: true, event, report };
+    } catch {
+      return { triggered: false, event };
+    }
+  }
+
+  /**
+   * Get report history
+   */
+  getReportHistory(): DoctorReport[] {
+    return [...this.reportHistory];
+  }
+
+  /**
+   * Add a report to history
+   */
+  addToHistory(report: DoctorReport): void {
+    this.reportHistory.push(report);
+    if (this.reportHistory.length > this.maxReportHistory) {
+      this.reportHistory = this.reportHistory.slice(-this.maxReportHistory);
+    }
+  }
+
+  /**
+   * Load report history from persisted data
+   */
+  loadHistory(reports: DoctorReport[]): void {
+    this.reportHistory = reports.slice(-this.maxReportHistory);
   }
 
   /**
@@ -76,13 +171,17 @@ export class DoctorEngine {
       fail: results.filter(r => r.status === 'FAIL').length,
     };
 
-    return {
+    const report: DoctorReport = {
       timestamp: new Date().toISOString(),
       platform: `${os.platform()} ${os.release()} (${os.arch()})`,
       version: this.appVersion,
       results,
       summary,
+      trigger: 'manual',
     };
+
+    this.addToHistory(report);
+    return report;
   }
 
   // --------------------------------------------------------------------------

@@ -12,5 +12,5 @@
     },
     "types": ["vite/client"]
   },
-  "include": ["src", "main.ts", "preload.ts"]
+  "include": ["src", "main.ts", "preload.ts", "guardrails.ts", "asset-manager.ts", "doctor.ts", "run-manager.ts", "permissions.ts", "secrets-manager.ts", "tool-manifest.ts", "tool-dispatch.ts", "dry-run.ts", "memory-manager.ts", "process-registry.ts", "environment-detection.ts"]
 }
