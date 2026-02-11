@@ -210,8 +210,15 @@ function createWindow() {
         } }));
     // Set window for RunManager
     runManager.setWindow(mainWindow);
-    // Always load from dist folder - use `npm run dev` for hot reload
-    mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
+    // Dev mode (npm run dev) passes --dev flag to connect to Vite dev server
+    // Production mode (npm start, packaged app) loads from built dist/
+    if (process.argv.includes("--dev")) {
+        mainWindow.loadURL("http://localhost:5173");
+        mainWindow.webContents.openDevTools();
+    }
+    else {
+        mainWindow.loadFile(path_1.default.join(__dirname, "dist", "index.html"));
+    }
     // Minimize to tray instead of closing
     mainWindow.on("close", function (event) {
         if (!isQuitting) {
