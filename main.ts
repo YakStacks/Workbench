@@ -203,7 +203,13 @@ function createWindow() {
   // Set window for RunManager
   runManager.setWindow(mainWindow);
   // Always load from dist folder - use `npm run dev` for hot reload
-  mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  if (!app.isPackaged) {
+    mainWindow.loadURL("http://localhost:5173");
+    // Open tools in dev mode
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  }
 
   // Minimize to tray instead of closing
   mainWindow.on("close", (event) => {
