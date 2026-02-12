@@ -619,3 +619,23 @@ body, #root {
 .badge-pass { background: var(--success-muted); color: var(--success); }
 .badge-warn { background: var(--warning-muted); color: var(--warning); }
 .badge-fail { background: var(--danger-muted); color: var(--danger); }
+
+/* ============================================================
+   SESSION LIST STYLES
+   ============================================================ */
+.session-item:hover {
+  background-color: var(--bg-secondary) !important;
+}
+
+.session-item:hover .session-actions {
+  opacity: 1 !important;
+}
+
+.session-item button:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.new-button:hover {
+  background-color: var(--accent-hover) !important;
+}

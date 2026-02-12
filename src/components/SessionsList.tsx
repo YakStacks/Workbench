@@ -56,7 +56,7 @@ export function SessionsList({
   return (
     <div style={styles.container}>
       {/* New Session Button */}
-      <button style={styles.newButton} onClick={onCreateSession}>
+      <button className="new-button" style={styles.newButton} onClick={onCreateSession}>
         <span style={styles.plusIcon}>+</span> New Session
       </button>
 
@@ -68,6 +68,7 @@ export function SessionsList({
         {sessions.map(session => (
           <div
             key={session.id}
+            className="session-item"
             style={{
               ...styles.sessionItem,
               ...(currentSessionId === session.id ? styles.sessionItemActive : {})
@@ -92,7 +93,7 @@ export function SessionsList({
                   <span style={styles.bullet}>•</span>
                   <span style={styles.sessionName}>{session.name}</span>
                 </div>
-                <div style={styles.sessionActions}>
+                <div className="session-actions" style={styles.sessionActions}>
                   <button
                     style={styles.actionButton}
                     onClick={(e) => {
@@ -243,24 +244,3 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)'
   }
 };
-
-// Add hover styles dynamically
-if (typeof document !== 'undefined') {
-  const style = document.createElement('style');
-  style.textContent = `
-    .session-item:hover {
-      background-color: var(--bg-secondary) !important;
-    }
-    .session-item:hover .session-actions {
-      opacity: 1 !important;
-    }
-    .session-item button:hover {
-      background-color: var(--bg-tertiary);
-      color: var(--text-primary);
-    }
-    .new-button:hover {
-      background-color: var(--accent-hover) !important;
-    }
-  `;
-  document.head.appendChild(style);
-}

@@ -4,6 +4,7 @@ import { DEFAULT_FEATURE_FLAGS, FeatureFlags, mergeFeatureFlags } from './featur
 import { Sidebar, SidebarView } from './components/Sidebar';
 import { ModeToggle, ExecutionMode } from './components/ModeToggle';
 import { SuggestionChips } from './components/SuggestionChips';
+import { SessionsList } from './components/SessionsList';
 // Theme handled by ThemeProvider wrapping in main.tsx
 
 const TABS = ['Chat', 'Tools', 'Running', 'Files', 'Chains', 'Settings'] as const;
@@ -176,6 +177,10 @@ export default function App() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('propose');
   const [chatAssetCount, setChatAssetCount] = useState(0);
 
+  // Sessions
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [currentSession, setCurrentSession] = useState<any>(null);
+
   const onRequestPermission = useCallback((toolName: string, retry: () => void) => {
     setPermissionRequest({ toolName, retry });
   }, []);
@@ -206,6 +211,47 @@ export default function App() {
     setSidebarView(topTabToSidebar[t]);
     setTab(topTabToTab[t]);
   }, []);
+
+  // Session handlers
+  const handleCreateSession = useCallback(async () => {
+    const result = await window.workbench.sessions.create('New Session');
+    if (result.success && result.session) {
+      setSessions(prev => [result.session, ...prev]);
+      await handleSelectSession(result.session.id);
+    }
+  }, []);
+
+  const handleSelectSession = useCallback(async (sessionId: string) => {
+    const result = await window.workbench.sessions.switch(sessionId);
+    if (result.success && result.session) {
+      setCurrentSession(result.session);
+      setChatHistory(result.session.chatHistory || []);
+      setSidebarView('chat');
+      setTopTab('Chat');
+      setTab('Chat');
+      setPendingTool(null);
+    }
+  }, []);
+
+  const handleRenameSession = useCallback(async (sessionId: string, newName: string) => {
+    await window.workbench.sessions.rename(sessionId, newName);
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, name: newName } : s));
+  }, []);
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    await window.workbench.sessions.delete(sessionId);
+    setSessions(prev => prev.filter(s => s.id !== sessionId));
+
+    // If we deleted the current session, switch to first available or create new
+    if (currentSession?.id === sessionId) {
+      const remaining = sessions.filter(s => s.id !== sessionId);
+      if (remaining.length > 0) {
+        await handleSelectSession(remaining[0].id);
+      } else {
+        await handleCreateSession();
+      }
+    }
+  }, [currentSession, sessions, handleSelectSession, handleCreateSession]);
 
   const handleNewChat = useCallback(() => {
     setChatHistory([]);
@@ -249,10 +295,17 @@ export default function App() {
       }
     });
 
-    // Load chat history
-    window.workbench.chat.load().then((result: any) => {
-      if (result.success && result.history && result.history.length > 0) {
-        setChatHistory(result.history);
+    // Load sessions and current session
+    window.workbench.sessions.getAll().then((result: any) => {
+      if (result.success && result.sessions) {
+        setSessions(result.sessions);
+      }
+    });
+
+    window.workbench.sessions.getCurrent().then((result: any) => {
+      if (result.success && result.session) {
+        setCurrentSession(result.session);
+        setChatHistory(result.session.chatHistory || []);
       }
     });
 
@@ -281,12 +334,12 @@ export default function App() {
     return () => { unsubDoctor(); };
   }, []);
 
-  // Save chat history whenever it changes
+  // Save chat history to current session whenever it changes
   useEffect(() => {
-    if (chatHistory.length > 0) {
-      window.workbench.chat.save(chatHistory);
+    if (chatHistory.length > 0 && currentSession) {
+      window.workbench.sessions.updateHistory(currentSession.id, chatHistory);
     }
-  }, [chatHistory]);
+  }, [chatHistory, currentSession]);
 
   const openToolInChat = (tool: Tool) => {
     setSidebarView('chat');
@@ -298,6 +351,18 @@ export default function App() {
   // Determine which workspace content to render
   const renderWorkspace = () => {
     // Sidebar views that bypass top tabs
+    if (sidebarView === 'sessions') {
+      return (
+        <SessionsList
+          sessions={sessions}
+          currentSessionId={currentSession?.id || null}
+          onSelectSession={handleSelectSession}
+          onCreateSession={handleCreateSession}
+          onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
+        />
+      );
+    }
     if (sidebarView === 'files') return <FilesTab />;
     if (sidebarView === 'chains') return <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />;
     if (sidebarView === 'settings') return <SettingsTab featureFlags={featureFlags} setFeatureFlags={setFeatureFlags} />;
@@ -326,7 +391,7 @@ export default function App() {
   };
 
   // Determine whether to show top tabs
-  const showTopTabs = !['files', 'chains', 'settings', 'mcp'].includes(sidebarView);
+  const showTopTabs = !['sessions', 'files', 'chains', 'settings', 'mcp'].includes(sidebarView);
   // Determine whether to show suggestion chips (only in Chat)
   const showChips = sidebarView === 'chat' && topTab === 'Chat' && chatHistory.length === 0 && !pendingTool;
 
