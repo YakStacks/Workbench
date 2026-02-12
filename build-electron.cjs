@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const files = [
-  'main', 'preload', 'doctor', 'permissions', 'run-manager', 
-  'process-registry', 'secrets-manager', 'tool-manifest', 
+  'main', 'preload', 'doctor', 'permissions', 'run-manager',
+  'process-registry', 'secrets-manager', 'sessions-manager', 'tool-manifest',
   'dry-run', 'memory-manager', 'tool-dispatch', 'environment-detection',
   'guardrails', 'asset-manager'
 ];
