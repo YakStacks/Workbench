@@ -227,8 +227,9 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         },
         recallPreference: function (key) { return electron_1.ipcRenderer.invoke('memory:recallPreference', key); },
     },
-    // Tool Dispatcher - Natural language tool selection
+    // Tool Dispatcher - V3 Smart Tool Selection
     dispatch: {
+        // V2-compatible
         createPlan: function (query, context) {
             return electron_1.ipcRenderer.invoke('dispatch:createPlan', query, context);
         },
@@ -236,6 +237,44 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             return electron_1.ipcRenderer.invoke('dispatch:suggest', context, limit);
         },
         formatPlan: function (plan) { return electron_1.ipcRenderer.invoke('dispatch:formatPlan', plan); },
+        // V3: Tool ranking
+        rankTools: function (query) {
+            return electron_1.ipcRenderer.invoke('dispatch:rankTools', query);
+        },
+        // V3: Usage tracking
+        recordUsage: function (toolName, query, success) {
+            return electron_1.ipcRenderer.invoke('dispatch:recordUsage', toolName, query, success);
+        },
+        getUsageData: function () {
+            return electron_1.ipcRenderer.invoke('dispatch:getUsageData');
+        },
+        // V3: Disambiguation
+        disambiguate: function (query) {
+            return electron_1.ipcRenderer.invoke('dispatch:disambiguate', query);
+        },
+        resolveDisambiguation: function (disambiguation, selectedIndex) {
+            return electron_1.ipcRenderer.invoke('dispatch:resolveDisambiguation', disambiguation, selectedIndex);
+        },
+        // V3: Chain planning
+        buildChain: function (query) {
+            return electron_1.ipcRenderer.invoke('dispatch:buildChain', query);
+        },
+        parseChain: function (llmResponse) {
+            return electron_1.ipcRenderer.invoke('dispatch:parseChain', llmResponse);
+        },
+        validateChain: function (plan) {
+            return electron_1.ipcRenderer.invoke('dispatch:validateChain', plan);
+        },
+        formatChain: function (plan) {
+            return electron_1.ipcRenderer.invoke('dispatch:formatChain', plan);
+        },
+        // V3: Config
+        getConfig: function () {
+            return electron_1.ipcRenderer.invoke('dispatch:getConfig');
+        },
+        updateConfig: function (updates) {
+            return electron_1.ipcRenderer.invoke('dispatch:updateConfig', updates);
+        },
     },
     // Guardrails - V2 Trust Core
     guardrails: {

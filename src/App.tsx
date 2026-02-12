@@ -1,9 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type {} from 'react/jsx-runtime';
 import { DEFAULT_FEATURE_FLAGS, FeatureFlags, mergeFeatureFlags } from './featureFlags';
+import { Sidebar, SidebarView } from './components/Sidebar';
+import { ModeToggle, ExecutionMode } from './components/ModeToggle';
+import { SuggestionChips } from './components/SuggestionChips';
+// Theme handled by ThemeProvider wrapping in main.tsx
 
 const TABS = ['Chat', 'Tools', 'Running', 'Files', 'Chains', 'Settings'] as const;
 type Tab = typeof TABS[number];
+
+// Top tabs for workspace sub-navigation
+const TOP_TABS = ['Chat', 'Tools', 'Assets', 'Doctor'] as const;
+type TopTab = typeof TOP_TABS[number];
 
 type Tool = { 
   name: string; 
@@ -49,27 +57,33 @@ declare global {
 // ============================================================================
 
 const colors = {
-  bg: '#0f0f0f',
-  bgSecondary: '#1a1a1a',
-  bgTertiary: '#252525',
-  border: '#333',
-  text: '#e5e5e5',
-  textMuted: '#888',
-  primary: '#3b82f6',
-  primaryHover: '#2563eb',
-  success: '#22c55e',
-  danger: '#ef4444',
-  warning: '#f59e0b',
+  bg: 'var(--bg-primary)',
+  bgSecondary: 'var(--bg-secondary)',
+  bgTertiary: 'var(--bg-tertiary)',
+  border: 'var(--border-muted)',
+  text: 'var(--text-primary)',
+  textMuted: 'var(--text-secondary)',
+  primary: 'var(--accent)',
+  primaryHover: 'var(--accent-hover)',
+  primaryMuted: 'var(--accent-muted)',
+  success: 'var(--success)',
+  successMuted: 'var(--success-muted)',
+  danger: 'var(--danger)',
+  dangerMuted: 'var(--danger-muted)',
+  warning: 'var(--warning)',
+  warningMuted: 'var(--warning-muted)',
+  overlay: 'var(--overlay)',
 };
 
 const styles = {
-  app: { 
-    display: 'flex', 
-    flexDirection: 'column' as const, 
-    height: '100vh', 
-    background: colors.bg, 
+  app: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    height: '100vh',
+    background: colors.bg,
     color: colors.text,
     fontFamily: 'system-ui, -apple-system, sans-serif',
+    overflow: 'hidden',
   },
   baseFontSize: 14,
   header: {
@@ -103,7 +117,7 @@ const styles = {
   },
   card: {
     background: colors.bgSecondary,
-    borderRadius: 8,
+    borderRadius: 10,
     border: `1px solid ${colors.border}`,
     padding: 16,
     marginBottom: 12,
@@ -140,6 +154,7 @@ const styles = {
 // ============================================================================
 
 export default function App() {
+  // Legacy tab compat — maps sidebar views to old tab system
   const [tab, setTab] = useState<Tab>('Chat');
   const [tools, setTools] = useState<Tool[]>([]);
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
@@ -147,7 +162,7 @@ export default function App() {
   const [featureFlags, setFeatureFlags] = useState<FeatureFlags>(DEFAULT_FEATURE_FLAGS);
   const [showCrashRecovery, setShowCrashRecovery] = useState(false);
   const [interruptedRuns, setInterruptedRuns] = useState<any[]>([]);
-  
+
   // Tool-in-chat state
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<{toolName: string, retry: () => void} | null>(null);
@@ -155,13 +170,73 @@ export default function App() {
   // V2: Auto-doctor notification state
   const [autoDoctorReport, setAutoDoctorReport] = useState<any>(null);
 
+  // V4 UI: Sidebar + TopTabs navigation
+  const [sidebarView, setSidebarView] = useState<SidebarView>('chat');
+  const [topTab, setTopTab] = useState<TopTab>('Chat');
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('propose');
+  const [chatAssetCount, setChatAssetCount] = useState(0);
+
   const onRequestPermission = useCallback((toolName: string, retry: () => void) => {
     setPermissionRequest({ toolName, retry });
   }, []);
 
+  // Sync sidebar view → legacy tab + top tab
+  const handleSidebarViewChange = useCallback((view: SidebarView) => {
+    setSidebarView(view);
+    const viewToTab: Partial<Record<SidebarView, Tab>> = {
+      chat: 'Chat', tools: 'Tools', runs: 'Running',
+      files: 'Files', chains: 'Chains', settings: 'Settings',
+    };
+    const viewToTopTab: Partial<Record<SidebarView, TopTab>> = {
+      chat: 'Chat', tools: 'Tools', assets: 'Assets', doctor: 'Doctor',
+    };
+    if (viewToTab[view]) setTab(viewToTab[view]!);
+    if (viewToTopTab[view]) setTopTab(viewToTopTab[view]!);
+  }, []);
+
+  // Handle top tab changes
+  const handleTopTabChange = useCallback((t: TopTab) => {
+    setTopTab(t);
+    const topTabToSidebar: Record<TopTab, SidebarView> = {
+      Chat: 'chat', Tools: 'tools', Assets: 'assets', Doctor: 'doctor',
+    };
+    const topTabToTab: Record<TopTab, Tab> = {
+      Chat: 'Chat', Tools: 'Tools', Assets: 'Chat', Doctor: 'Chat',
+    };
+    setSidebarView(topTabToSidebar[t]);
+    setTab(topTabToTab[t]);
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    setChatHistory([]);
+    window.workbench.chat.clear();
+    setSidebarView('chat');
+    setTopTab('Chat');
+    setTab('Chat');
+    setPendingTool(null);
+  }, []);
+
+  // Handle suggestion chip clicks
+  const handleChipClick = useCallback((action: string) => {
+    if (action === 'upload') {
+      // trigger upload - handled by InputBar
+    } else if (action === 'doctor:run') {
+      handleSidebarViewChange('doctor');
+    } else if (action === 'doctor:export') {
+      handleSidebarViewChange('doctor');
+    } else if (action.startsWith('/')) {
+      // Tool shortcut - find tool and open
+      const toolName = action.slice(1);
+      const tool = tools.find(t => t.name === toolName);
+      if (tool) {
+        openToolInChat(tool);
+      }
+    }
+  }, [tools]);
+
   useEffect(() => {
     window.workbench.listTools().then(setTools);
-    
+
     // Check for crash recovery
     window.workbench.runs.hasInterrupted().then((hasInterrupted: boolean) => {
       if (hasInterrupted) {
@@ -173,7 +248,7 @@ export default function App() {
         });
       }
     });
-    
+
     // Load chat history
     window.workbench.chat.load().then((result: any) => {
       if (result.success && result.history && result.history.length > 0) {
@@ -185,12 +260,11 @@ export default function App() {
     const unsubDoctor = window.workbench.doctor.onAutoReport((report: any) => {
       setAutoDoctorReport(report);
     });
-    return () => { unsubDoctor(); };
+
     // Load saved presets and apply font settings
     window.workbench.getConfig().then((cfg: any) => {
       if (cfg.chainPresets) setChainPresets(cfg.chainPresets);
       setFeatureFlags(mergeFeatureFlags(cfg.featureFlags));
-      // Apply saved font settings globally
       if (cfg.fontSize) {
         document.documentElement.style.fontSize = cfg.fontSize + 'px';
       }
@@ -198,6 +272,13 @@ export default function App() {
         document.documentElement.style.fontFamily = cfg.fontFamily;
       }
     });
+
+    // Load asset count
+    window.workbench.assets.list()
+      .then((r: any) => setChatAssetCount((r.assets || []).length))
+      .catch(() => {});
+
+    return () => { unsubDoctor(); };
   }, []);
 
   // Save chat history whenever it changes
@@ -208,9 +289,46 @@ export default function App() {
   }, [chatHistory]);
 
   const openToolInChat = (tool: Tool) => {
+    setSidebarView('chat');
+    setTopTab('Chat');
     setTab('Chat');
     setPendingTool({ tool, input: {} });
   };
+
+  // Determine which workspace content to render
+  const renderWorkspace = () => {
+    // Sidebar views that bypass top tabs
+    if (sidebarView === 'files') return <FilesTab />;
+    if (sidebarView === 'chains') return <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />;
+    if (sidebarView === 'settings') return <SettingsTab featureFlags={featureFlags} setFeatureFlags={setFeatureFlags} />;
+    if (sidebarView === 'mcp') return <MCPTab onToolsChanged={() => window.workbench.refreshTools().then(setTools)} />;
+
+    // Top tab views
+    if (topTab === 'Chat') {
+      return (
+        <ChatTab
+          tools={tools}
+          history={chatHistory}
+          setHistory={setChatHistory}
+          pendingTool={pendingTool}
+          setPendingTool={setPendingTool}
+          onRequestPermission={onRequestPermission}
+          executionMode={executionMode}
+        />
+      );
+    }
+    if (topTab === 'Tools') {
+      return <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} featureFlags={featureFlags} />;
+    }
+    if (topTab === 'Assets') return <AssetsFullView />;
+    if (topTab === 'Doctor') return <DoctorFullView />;
+    return null;
+  };
+
+  // Determine whether to show top tabs
+  const showTopTabs = !['files', 'chains', 'settings', 'mcp'].includes(sidebarView);
+  // Determine whether to show suggestion chips (only in Chat)
+  const showChips = sidebarView === 'chat' && topTab === 'Chat' && chatHistory.length === 0 && !pendingTool;
 
   return (
     <div style={styles.app}>
@@ -221,38 +339,55 @@ export default function App() {
           onDismiss={() => setAutoDoctorReport(null)}
         />
       )}
-      <div style={styles.header}>
-        {TABS.map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{ ...styles.tab, ...(tab === t ? styles.tabActive : {}) }}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-      <div style={styles.main}>
-        {tab === 'Chat' && (
-          <ChatTab 
-            tools={tools} 
-            history={chatHistory} 
-            setHistory={setChatHistory}
-            pendingTool={pendingTool}
-            setPendingTool={setPendingTool}
-            onRequestPermission={onRequestPermission}
-          />
-        )}
-        {tab === 'Tools' && <ToolsTab tools={tools} onOpenInChat={openToolInChat} onRefresh={() => window.workbench.refreshTools().then(setTools)} onRequestPermission={onRequestPermission} featureFlags={featureFlags} />}
-        {tab === 'Running' && <RunningTab featureFlags={featureFlags} />}
-        {tab === 'Files' && <FilesTab />}
-        {tab === 'Chains' && <ChainsTab tools={tools} presets={chainPresets} setPresets={setChainPresets} />}
 
-        {tab === 'Settings' && <SettingsTab featureFlags={featureFlags} setFeatureFlags={setFeatureFlags} />}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {/* Sidebar (Left Rail) */}
+        <Sidebar
+          activeView={sidebarView}
+          onViewChange={handleSidebarViewChange}
+          onNewChat={handleNewChat}
+        />
+
+        {/* Main Area */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Top Tabs */}
+          {showTopTabs && (
+            <div className="top-tabs">
+              {TOP_TABS.map(t => (
+                <button
+                  key={t}
+                  className={`top-tab${topTab === t ? ' active' : ''}`}
+                  onClick={() => handleTopTabChange(t)}
+                >
+                  {t}
+                </button>
+              ))}
+              <div style={{ flex: 1 }} />
+              {/* Mode Toggle in top tabs */}
+              <ModeToggle mode={executionMode} onChange={setExecutionMode} />
+            </div>
+          )}
+
+          {/* Suggestion Chips */}
+          {showChips && (
+            <SuggestionChips
+              activeView={sidebarView}
+              hasAssets={chatAssetCount > 0}
+              hasTools={tools.length > 0}
+              onChipClick={handleChipClick}
+            />
+          )}
+
+          {/* Workspace Content */}
+          <div style={styles.main}>
+            {renderWorkspace()}
+          </div>
+        </div>
       </div>
+
       {permissionRequest && (
-        <PermissionPrompt 
-          toolName={permissionRequest.toolName} 
+        <PermissionPrompt
+          toolName={permissionRequest.toolName}
           onAllow={() => {
             permissionRequest.retry();
             setPermissionRequest(null);
@@ -261,9 +396,9 @@ export default function App() {
           onClose={() => setPermissionRequest(null)}
         />
       )}
-      
+
       {showCrashRecovery && interruptedRuns.length > 0 && (
-        <CrashRecoveryModal 
+        <CrashRecoveryModal
           runs={interruptedRuns}
           onClose={() => {
             window.workbench.runs.clearInterrupted();
@@ -297,6 +432,7 @@ function ToolApprovalGate({ tool, input, onInputChange, onApprove, onReject }: {
 
   const riskLevel = riskInfo?.riskLevel || 'medium';
   const riskColors: Record<string, string> = { low: colors.success, medium: colors.warning, high: colors.danger };
+  const riskMutedColors: Record<string, string> = { low: colors.successMuted, medium: colors.warningMuted, high: colors.dangerMuted };
   const riskLabels: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
 
   return (
@@ -310,7 +446,7 @@ function ToolApprovalGate({ tool, input, onInputChange, onApprove, onReject }: {
             borderRadius: 4,
             fontSize: 11,
             fontWeight: 600,
-            background: (riskColors[riskLevel] || colors.warning) + '20',
+            background: riskMutedColors[riskLevel] || colors.warningMuted,
             color: riskColors[riskLevel] || colors.warning,
           }}>
             {riskLabels[riskLevel] || 'Medium'} Risk
@@ -369,7 +505,7 @@ function DoctorNotificationBanner({ report, onDismiss }: { report: any; onDismis
   return (
     <div style={{
       padding: '10px 16px',
-      background: colors.warning + '20',
+      background: colors.warningMuted,
       borderBottom: `1px solid ${colors.warning}`,
       display: 'flex',
       alignItems: 'center',
@@ -494,23 +630,248 @@ function AssetPanel() {
 }
 
 // ============================================================================
+// ASSETS FULL VIEW — Standalone assets tab
+// ============================================================================
+
+function AssetsFullView() {
+  const [assets, setAssets] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  const loadAssets = useCallback(async () => {
+    try {
+      const result = await window.workbench.assets.list();
+      setAssets(result.assets || []);
+    } catch { setAssets([]); }
+  }, []);
+
+  useEffect(() => { loadAssets(); }, [loadAssets]);
+
+  const handleUpload = async () => {
+    setUploading(true);
+    try {
+      const result = await window.workbench.assets.upload();
+      if (result?.success) await loadAssets();
+    } catch (e: any) { console.error('Upload failed:', e.message); }
+    setUploading(false);
+  };
+
+  const handleDelete = async (assetId: string) => {
+    if (!confirm('Delete this asset?')) return;
+    await window.workbench.assets.delete(assetId);
+    await loadAssets();
+  };
+
+  const handleExport = async (assetId: string) => {
+    await window.workbench.assets.export(assetId);
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDate = (ts: any) => {
+    try { return new Date(ts).toLocaleDateString(); } catch { return '—'; }
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+      <div className="workspace-center">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Assets</h2>
+          <button onClick={handleUpload} disabled={uploading} style={{ ...styles.button, ...styles.buttonPrimary }}>
+            {uploading ? 'Uploading...' : '+ Upload File'}
+          </button>
+        </div>
+
+        {assets.length === 0 ? (
+          <div style={{ textAlign: 'center', color: colors.textMuted, padding: 60 }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>📎</div>
+            <div style={{ fontSize: 16, marginBottom: 8 }}>No assets uploaded</div>
+            <div style={{ fontSize: 13 }}>Upload files to use them with tools via asset_id</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Header row */}
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 120px 80px 100px 100px',
+              gap: 12, padding: '8px 14px', fontSize: 11, color: colors.textMuted,
+              textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600
+            }}>
+              <span>File Name</span>
+              <span>Type</span>
+              <span>Size</span>
+              <span>Date</span>
+              <span style={{ textAlign: 'right' }}>Actions</span>
+            </div>
+            {assets.map((asset: any) => (
+              <div key={asset.asset_id} style={{
+                display: 'grid', gridTemplateColumns: '1fr 120px 80px 100px 100px',
+                gap: 12, padding: '10px 14px', background: colors.bgSecondary,
+                border: `1px solid ${colors.border}`, borderRadius: 8,
+                alignItems: 'center', fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {asset.filename}
+                </div>
+                <div style={{ color: colors.textMuted, fontSize: 12 }}>{asset.mime_type.split('/')[1]}</div>
+                <div style={{ color: colors.textMuted, fontSize: 12 }}>{formatSize(asset.size)}</div>
+                <div style={{ color: colors.textMuted, fontSize: 12 }}>{formatDate(asset.uploadedAt)}</div>
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button onClick={() => handleExport(asset.asset_id)} style={{ ...styles.button, ...styles.buttonGhost, padding: '3px 8px', fontSize: 11 }}>Open</button>
+                  <button onClick={() => handleDelete(asset.asset_id)} style={{ ...styles.button, ...styles.buttonDanger, padding: '3px 8px', fontSize: 11 }}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// DOCTOR FULL VIEW — Standalone doctor tab
+// ============================================================================
+
+function DoctorFullView() {
+  const [report, setReport] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runDiagnostics = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await window.workbench.doctor.run();
+      setReport(result);
+    } catch (e: any) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const exportReport = async () => {
+    try { await window.workbench.doctor.export(true); } catch (e: any) { setError('Export failed: ' + e.message); }
+  };
+
+  const statusIcon = (status: string) => ({ PASS: '\u2705', WARN: '\u26A0\uFE0F', FAIL: '\u274C' }[status] || '\u2753');
+  const statusColor = (status: string) => ({ PASS: colors.success, WARN: colors.warning, FAIL: colors.danger }[status] || colors.textMuted);
+  const badgeClass = (status: string) => ({ PASS: 'badge-pass', WARN: 'badge-warn', FAIL: 'badge-fail' }[status] || '');
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+      <div className="workspace-center">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>System Diagnostics</h2>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={runDiagnostics} disabled={loading} style={{ ...styles.button, ...styles.buttonPrimary }}>
+              {loading ? 'Running...' : 'Run Diagnostics'}
+            </button>
+            {report && (
+              <button onClick={exportReport} style={{ ...styles.button, ...styles.buttonGhost }}>Export</button>
+            )}
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ padding: 12, background: colors.dangerMuted, borderRadius: 8, color: colors.danger, marginBottom: 16, fontSize: 13 }}>
+            {error}
+          </div>
+        )}
+
+        {report && (
+          <>
+            {/* Summary bar */}
+            <div style={{ display: 'flex', gap: 16, padding: '12px 16px', background: colors.bgSecondary, borderRadius: 8, marginBottom: 16, border: `1px solid ${colors.border}` }}>
+              <span className="badge badge-pass">{'\u2705'} {report.summary.pass} Pass</span>
+              <span className="badge badge-warn">{'\u26A0\uFE0F'} {report.summary.warn} Warn</span>
+              <span className="badge badge-fail">{'\u274C'} {report.summary.fail} Fail</span>
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: colors.textMuted }}>
+                v{report.version} {'\u2022'} {new Date(report.timestamp).toLocaleTimeString()}
+              </span>
+            </div>
+
+            {/* Results table */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {report.results.map((result: any, idx: number) => (
+                <DoctorResultRow key={idx} result={result} statusIcon={statusIcon} statusColor={statusColor} badgeClass={badgeClass} />
+              ))}
+            </div>
+          </>
+        )}
+
+        {!report && !loading && (
+          <div style={{ textAlign: 'center', color: colors.textMuted, padding: 60 }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>{'\uD83E\uDE7A'}</div>
+            <div style={{ fontSize: 16, marginBottom: 8 }}>No diagnostics run yet</div>
+            <div style={{ fontSize: 13 }}>Click "Run Diagnostics" to check system health</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DoctorResultRow({ result, statusIcon, statusColor, badgeClass }: {
+  result: any; statusIcon: (s: string) => string; statusColor: (s: string) => string; badgeClass: (s: string) => string;
+}) {
+  const [expanded, setExpanded] = useState(result.status !== 'PASS');
+
+  return (
+    <div style={{
+      background: colors.bgSecondary,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 8,
+      borderLeft: `3px solid ${statusColor(result.status)}`,
+      overflow: 'hidden',
+    }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', cursor: 'pointer' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>{statusIcon(result.status)}</span>
+          <span style={{ fontWeight: 500, fontSize: 13 }}>{result.name}</span>
+        </div>
+        <span className={`badge ${badgeClass(result.status)}`}>{result.status}</span>
+      </div>
+      {expanded && (
+        <div style={{ padding: '0 14px 12px', borderTop: `1px solid ${colors.border}` }}>
+          <div style={{ fontSize: 12, color: colors.textMuted, padding: '8px 0' }}>{result.evidence}</div>
+          {result.fixSteps && result.fixSteps.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4, fontWeight: 600 }}>Suggested Fix:</div>
+              {result.fixSteps.map((step: string, i: number) => (
+                <div key={i} style={{ fontSize: 12, color: colors.text, marginLeft: 8, padding: '2px 0' }}>{'\u2192'} {step}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // CHAT TAB - Messenger Style with Tool Integration
 // ============================================================================
 
-function ChatTab({ 
-  tools, 
-  history, 
-  setHistory, 
-  pendingTool, 
+function ChatTab({
+  tools,
+  history,
+  setHistory,
+  pendingTool,
   setPendingTool,
-  onRequestPermission
-}: { 
+  onRequestPermission,
+  executionMode = 'propose',
+}: {
   tools: Tool[];
   history: Message[];
   setHistory: React.Dispatch<React.SetStateAction<Message[]>>;
   pendingTool: { tool: Tool; input: any } | null;
   setPendingTool: React.Dispatch<React.SetStateAction<{ tool: Tool; input: any } | null>>;
   onRequestPermission: (toolName: string, retry: () => void) => void;
+  executionMode?: ExecutionMode;
 }) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -521,6 +882,7 @@ function ChatTab({
   const [attachedAsset, setAttachedAsset] = useState<any>(null);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [chatAssets, setChatAssets] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -851,22 +1213,24 @@ function ChatTab({
   );
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Messages */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+      {/* Messages — centered, max-width */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
         {history.length === 0 && !pendingTool && (
-          <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 100 }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>💬</div>
-            <div style={{ fontSize: 18, marginBottom: 8 }}>Start a conversation</div>
-            <div style={{ fontSize: 14 }}>Type a message or use /tool-name to run a tool</div>
+          <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 120 }}>
+            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.6 }}>Workbench</div>
+            <div style={{ fontSize: 15, marginBottom: 6 }}>What would you like to do?</div>
+            <div style={{ fontSize: 13 }}>Type a message, use /tool-name, or attach a file</div>
           </div>
         )}
+
+        <div className="workspace-center">
+          {history.map(msg => (
+            <MessageBubble key={msg.id} message={msg} />
+          ))}
         
-        {history.map(msg => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
-        
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Tool picker dropdown */}
@@ -943,13 +1307,21 @@ function ChatTab({
         />
       )}
 
-      {/* Input area */}
-      <div style={{ padding: 16, borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
+      {/* Read-only mode indicator */}
+      {executionMode === 'read-only' && (
+        <div style={{ padding: '6px 20px', background: colors.bgTertiary, fontSize: 12, color: colors.textMuted, textAlign: 'center', borderTop: `1px solid ${colors.border}` }}>
+          Read-only mode — tool execution disabled
+        </div>
+      )}
+
+      {/* Input Bar (Command Center) */}
+      <div className="input-bar">
+        {/* Top row: Model selector + cost + clear */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-          <select 
-            value={taskType} 
+          <select
+            value={taskType}
             onChange={e => setTaskType(e.target.value)}
-            style={{ ...styles.input, width: 140, padding: '6px 10px' }}
+            style={{ ...styles.input, width: 130, padding: '5px 8px', fontSize: 12, borderRadius: 8 }}
           >
             <option value="writer_cheap">Writer</option>
             <option value="structurer">Structurer</option>
@@ -957,149 +1329,141 @@ function ChatTab({
             <option value="reviewer">Reviewer</option>
           </select>
           {sessionCost && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginLeft: 'auto', marginRight: 8 }}>
-              💰 ${sessionCost.total.toFixed(4)} ({sessionCost.requests} reqs)
+            <div style={{ fontSize: 11, color: colors.textMuted, marginLeft: 'auto', marginRight: 4 }}>
+              ${sessionCost.total.toFixed(4)} ({sessionCost.requests} reqs)
             </div>
           )}
-          <button onClick={clearChat} style={{ ...styles.button, ...styles.buttonGhost }}>Clear</button>
+          <button onClick={clearChat} style={{ ...styles.button, ...styles.buttonGhost, padding: '4px 10px', fontSize: 12 }}>Clear</button>
         </div>
-        {/* Attachment indicator */}
+
+        {/* Attachment chip */}
         {attachedAsset && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '6px 12px',
-            background: colors.primary + '15',
-            borderRadius: 6,
-            marginBottom: 4,
-            fontSize: 13,
-          }}>
-            <span style={{ color: colors.primary }}>📎</span>
-            <span style={{ flex: 1 }}>{attachedAsset.filename}</span>
-            <span style={{ color: colors.textMuted, fontSize: 11 }}>{attachedAsset.mime_type}</span>
-            <button
-              onClick={() => setAttachedAsset(null)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 16, padding: '0 4px' }}
-              title="Remove attachment"
-            >
-              x
-            </button>
+          <div style={{ marginBottom: 8 }}>
+            <div className="asset-chip">
+              <span>📎</span>
+              <span className="asset-chip-name">{attachedAsset.filename}</span>
+              <button className="asset-chip-remove" onClick={() => setAttachedAsset(null)} title="Remove">×</button>
+            </div>
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
-          <button
-            onClick={async () => {
-              if (!showAssetPicker) {
-                try {
-                  const r = await window.workbench.assets.list();
-                  setChatAssets(r.assets || []);
-                } catch { setChatAssets([]); }
-              }
-              setShowAssetPicker(!showAssetPicker);
-              setShowToolPicker(false);
-            }}
-            style={{
-              ...styles.button,
-              ...styles.buttonGhost,
-              padding: '10px 12px',
-              fontSize: 18,
-              background: showAssetPicker ? colors.primary : 'transparent',
-              color: showAssetPicker ? 'white' : colors.textMuted,
-            }}
-            title="Attach a file"
-          >
-            📎
-          </button>
+
+        {/* Main input container */}
+        <div style={{ position: 'relative' }}>
+          {/* Asset picker dropdown */}
           {showAssetPicker && (
             <div style={{
               position: 'absolute',
               bottom: '100%',
               left: 0,
-              width: 300,
-              maxHeight: 250,
+              width: 320,
+              maxHeight: 300,
               overflowY: 'auto',
               background: colors.bgSecondary,
               border: `1px solid ${colors.border}`,
-              borderRadius: 8,
+              borderRadius: 10,
               padding: 8,
               zIndex: 50,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              boxShadow: 'var(--shadow)',
+              marginBottom: 4,
             }}>
-              {chatAssets.length === 0 ? (
-                <div style={{ padding: 16, textAlign: 'center', color: colors.textMuted, fontSize: 13 }}>
-                  No uploaded assets. Upload files in the Assets panel first.
+              <button
+                onClick={async () => {
+                  setUploading(true);
+                  try {
+                    const result = await window.workbench.assets.upload();
+                    if (result?.success && result.asset) {
+                      setAttachedAsset(result.asset);
+                      setShowAssetPicker(false);
+                    } else if (result?.success) {
+                      const r = await window.workbench.assets.list();
+                      const list = r.assets || [];
+                      setChatAssets(list);
+                      if (list.length > 0) {
+                        setAttachedAsset(list[list.length - 1]);
+                        setShowAssetPicker(false);
+                      }
+                    }
+                  } catch (e: any) {
+                    console.error('Upload failed:', e.message);
+                  }
+                  setUploading(false);
+                }}
+                disabled={uploading}
+                style={{ ...styles.button, ...styles.buttonPrimary, width: '100%', marginBottom: 8, padding: '8px 12px', fontSize: 13, opacity: uploading ? 0.6 : 1 }}
+              >
+                {uploading ? 'Uploading...' : 'Upload New File'}
+              </button>
+              {chatAssets.length > 0 && (
+                <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 6, marginTop: 2 }}>
+                  <div style={{ fontSize: 10, color: colors.textMuted, padding: '2px 8px 6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Recent uploads</div>
+                  {chatAssets.map((a: any) => (
+                    <div
+                      key={a.asset_id}
+                      onClick={() => { setAttachedAsset(a); setShowAssetPicker(false); }}
+                      style={{ padding: '8px 12px', cursor: 'pointer', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}
+                      onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>{a.filename}</span>
+                      <span style={{ color: colors.textMuted, fontSize: 11, flexShrink: 0 }}>{a.mime_type.split('/')[1]}</span>
+                    </div>
+                  ))}
                 </div>
-              ) : chatAssets.map((a: any) => (
-                <div
-                  key={a.asset_id}
-                  onClick={() => {
-                    setAttachedAsset(a);
-                    setShowAssetPicker(false);
-                  }}
-                  style={{
-                    padding: '8px 12px',
-                    cursor: 'pointer',
-                    borderRadius: 6,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    fontSize: 13,
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <span>{a.filename}</span>
-                  <span style={{ color: colors.textMuted, fontSize: 11 }}>{a.mime_type}</span>
-                </div>
-              ))}
+              )}
             </div>
           )}
-          <button
-            onClick={() => { setShowToolPicker(!showToolPicker); setShowAssetPicker(false); }}
-            style={{
-              ...styles.button,
-              ...styles.buttonGhost,
-              padding: '10px 12px',
-              fontSize: 18,
-              background: showToolPicker ? colors.primary : 'transparent',
-              color: showToolPicker ? 'white' : colors.textMuted,
-            }}
-            title="Select a tool"
-          >
-            🔧
-          </button>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            }}
-            placeholder="Type a message... (/ for tools, Enter to send)"
-            style={{ 
-              ...styles.input, 
-              flex: 1, 
-              resize: 'none',
-              minHeight: 44,
-              maxHeight: 120,
-            }}
-            rows={1}
-          />
-          <button 
-            onClick={sendMessage} 
-            disabled={isStreaming || !input.trim()}
-            style={{ 
-              ...styles.button, 
-              ...styles.buttonPrimary,
-              opacity: isStreaming || !input.trim() ? 0.5 : 1,
-            }}
-          >
-            {isStreaming ? '...' : 'Send'}
-          </button>
+
+          <div className="input-bar-container">
+            {/* Attach button */}
+            <button
+              className={`input-bar-btn${showAssetPicker ? ' active' : ''}`}
+              onClick={async () => {
+                if (!showAssetPicker) {
+                  try { const r = await window.workbench.assets.list(); setChatAssets(r.assets || []); } catch { setChatAssets([]); }
+                }
+                setShowAssetPicker(!showAssetPicker);
+                setShowToolPicker(false);
+              }}
+              title="Attach a file"
+            >
+              📎
+            </button>
+
+            {/* Tools button */}
+            <button
+              className={`input-bar-btn${showToolPicker ? ' active' : ''}`}
+              onClick={() => { setShowToolPicker(!showToolPicker); setShowAssetPicker(false); }}
+              title="Select a tool"
+            >
+              🔧
+            </button>
+
+            {/* Text input */}
+            <textarea
+              ref={inputRef}
+              className="input-bar-textarea"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (executionMode !== 'read-only') sendMessage();
+                }
+              }}
+              placeholder={executionMode === 'read-only' ? 'Read-only mode' : 'Type a message... (/ for tools)'}
+              rows={1}
+              disabled={executionMode === 'read-only'}
+            />
+
+            {/* Send button */}
+            <button
+              className="input-bar-send"
+              onClick={sendMessage}
+              disabled={isStreaming || !input.trim() || executionMode === 'read-only'}
+            >
+              {isStreaming ? '···' : '↑'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1107,36 +1471,107 @@ function ChatTab({
 }
 
 function MessageBubble({ message }: { message: Message }) {
+  const [argsExpanded, setArgsExpanded] = useState(false);
+  const [outputExpanded, setOutputExpanded] = useState(false);
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const isSystem = message.role === 'system';
 
+  const timestamp = message.timestamp instanceof Date ? message.timestamp.toLocaleTimeString() : new Date(message.timestamp).toLocaleTimeString();
+
+  // Tool messages render as structured ToolCards
+  if (isTool) {
+    const hasError = message.content?.startsWith('\u274C') || message.toolOutput?.error;
+    const statusColor = hasError ? colors.danger : colors.success;
+    const statusLabel = hasError ? 'ERROR' : 'OK';
+
+    return (
+      <div className="tool-card" style={{ maxWidth: 960, margin: '8px auto' }}>
+        <div className="tool-card-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 14 }}>🔧</span>
+            <span className="tool-card-name">{message.toolName}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: statusColor }}>{statusLabel}</span>
+            <span style={{ fontSize: 10, color: colors.textMuted }}>{timestamp}</span>
+          </div>
+        </div>
+
+        {/* Collapsible arguments */}
+        {message.toolInput && (
+          <div className="tool-card-body">
+            <button
+              onClick={() => setArgsExpanded(!argsExpanded)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 12, padding: 0 }}
+            >
+              {argsExpanded ? '\u25BC' : '\u25B6'} Arguments
+            </button>
+            {argsExpanded && (
+              <div className="tool-card-args" style={{ marginTop: 6 }}>
+                {JSON.stringify(message.toolInput, null, 2)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Output */}
+        <div className="tool-card-result">
+          <button
+            onClick={() => setOutputExpanded(!outputExpanded)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 12, padding: 0, marginBottom: 4 }}
+          >
+            {outputExpanded ? '\u25BC' : '\u25B6'} Output
+          </button>
+          {outputExpanded && (
+            <div className="tool-card-output">
+              {message.content}
+            </div>
+          )}
+          {!outputExpanded && message.content && (
+            <div style={{ fontSize: 12, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 600 }}>
+              {message.content.slice(0, 120)}{message.content.length > 120 ? '...' : ''}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // System messages render inline
+  if (isSystem) {
+    return (
+      <div style={{ padding: '6px 0', maxWidth: 960, margin: '0 auto' }}>
+        <div style={{ fontSize: 13, color: colors.textMuted, fontStyle: 'italic' }}>
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
+  // User / Assistant messages
   return (
     <div style={{
       display: 'flex',
       justifyContent: isUser ? 'flex-end' : 'flex-start',
       marginBottom: 12,
+      maxWidth: 960,
+      margin: '0 auto 12px',
     }}>
       <div style={{
         maxWidth: '80%',
         padding: '10px 14px',
         borderRadius: 12,
-        background: isUser ? colors.primary : isTool ? colors.bgTertiary : isSystem ? 'transparent' : colors.bgSecondary,
-        border: isTool ? `1px solid ${colors.border}` : isSystem ? 'none' : `1px solid ${colors.border}`,
-        color: isSystem ? colors.textMuted : colors.text,
-        fontStyle: isSystem ? 'italic' : 'normal',
+        background: isUser ? colors.primary : colors.bgSecondary,
+        border: `1px solid ${isUser ? 'transparent' : colors.border}`,
+        color: colors.text,
       }}>
-        {isTool && (
-          <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>
-            🔧 {message.toolName}
-          </div>
-        )}
         <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.5 }}>
           {message.content}
-          {message.isStreaming && <span style={{ opacity: 0.5 }}>▊</span>}
+          {message.isStreaming && <span style={{ opacity: 0.5 }}>{'\u258A'}</span>}
         </div>
-        <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
-          {message.timestamp instanceof Date ? message.timestamp.toLocaleTimeString() : new Date(message.timestamp).toLocaleTimeString()}
+        <div style={{ fontSize: 10, color: isUser ? 'rgba(255,255,255,0.6)' : colors.textMuted, marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
+          {timestamp}
         </div>
       </div>
     </div>
@@ -1825,7 +2260,7 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission, feature
             <div style={styles.card}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14 }}>Parameters</h3>
               <ToolInputForm tool={selected} values={formValues} onChange={setFormValues} />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, padding: 8, background: testMode ? colors.warning + '22' : 'transparent', borderRadius: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, padding: 8, background: testMode ? colors.warningMuted : 'transparent', borderRadius: 6 }}>
                 <input 
                   type="checkbox" 
                   checked={testMode} 
@@ -1854,7 +2289,7 @@ function ToolsTab({ tools, onOpenInChat, onRefresh, onRequestPermission, feature
                     <div style={{ width: 8 }} />
                     <button 
                       onClick={deleteTool} 
-                      style={{ ...styles.button, background: '#dc2626', color: 'white' }}
+                      style={{ ...styles.button, background: colors.danger, color: 'white' }}
                     >
                       Delete
                     </button>
@@ -2497,7 +2932,7 @@ function CrashRecoveryModal({ runs, onClose }: { runs: any[]; onClose: () => voi
         left: 0,
         right: 0,
         bottom: 0,
-        background: 'rgba(0,0,0,0.8)',
+        background: colors.overlay,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -2641,6 +3076,14 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
     }
   };
 
+  const riskColorMuted = (risk: 'low' | 'medium' | 'high') => {
+    switch (risk) {
+      case 'low': return colors.successMuted;
+      case 'medium': return colors.warningMuted;
+      case 'high': return colors.dangerMuted;
+    }
+  };
+
   const riskLabel = (risk: 'low' | 'medium' | 'high') => {
     switch (risk) {
       case 'low': return 'Low Risk';
@@ -2653,7 +3096,7 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+        background: colors.overlay, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
       }}>
         <div style={{ ...styles.card, maxWidth: 400, textAlign: 'center' }}>
           <div style={{ fontSize: 24 }}>⏳</div>
@@ -2668,7 +3111,7 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+        background: colors.overlay, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
       }} onClick={onClose}>
         <div style={{ ...styles.card, maxWidth: 400, minWidth: 300 }} onClick={e => e.stopPropagation()}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
@@ -2693,7 +3136,7 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-      background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+      background: colors.overlay, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
     }} onClick={onClose}>
       <div style={{ ...styles.card, maxWidth: 450, minWidth: 350 }} onClick={e => e.stopPropagation()}>
         {/* Header */}
@@ -2708,7 +3151,7 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
         {/* Destructive warning */}
         {permissionInfo.isDestructive && (
           <div style={{
-            background: colors.danger + '20',
+            background: colors.dangerMuted,
             border: `1px solid ${colors.danger}`,
             borderRadius: 6,
             padding: '8px 12px',
@@ -2748,7 +3191,7 @@ function PermissionPrompt({ toolName, onAllow, onDeny, onClose }: PermissionProm
                   <span>{action.description}</span>
                   <span style={{
                     fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                    background: riskColor(action.risk) + '20', color: riskColor(action.risk)
+                    background: riskColorMuted(action.risk), color: riskColor(action.risk)
                   }}>
                     {riskLabel(action.risk)}
                   </span>
@@ -2857,6 +3300,15 @@ function DoctorPanel() {
     }
   };
 
+  const statusColorMuted = (status: string) => {
+    switch (status) {
+      case 'PASS': return colors.successMuted;
+      case 'WARN': return colors.warningMuted;
+      case 'FAIL': return colors.dangerMuted;
+      default: return 'transparent';
+    }
+  };
+
   return (
     <div>
       <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
@@ -2892,7 +3344,7 @@ function DoctorPanel() {
       {error && (
         <div style={{ 
           padding: 12, 
-          background: colors.danger + '20', 
+          background: colors.dangerMuted, 
           borderRadius: 6, 
           color: colors.danger,
           marginBottom: 12 
@@ -2944,7 +3396,7 @@ function DoctorPanel() {
                     fontSize: 11, 
                     padding: '2px 6px', 
                     borderRadius: 4,
-                    background: statusColor(result.status) + '20',
+                    background: statusColorMuted(result.status),
                     color: statusColor(result.status)
                   }}>
                     {result.status}
@@ -3237,7 +3689,7 @@ function RunningTab({ featureFlags }: { featureFlags: FeatureFlags }) {
             left: 0,
             right: 0,
             bottom: 0,
-            background: 'rgba(0,0,0,0.7)',
+            background: colors.overlay,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3938,7 +4390,7 @@ function SettingsTab({ featureFlags, setFeatureFlags }: {
             </div>
 
             {modelError && (
-              <div style={{ padding: 12, background: colors.danger + '20', borderRadius: 6, color: colors.danger, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: colors.dangerMuted, borderRadius: 6, color: colors.danger, marginBottom: 12 }}>
                 {modelError}
               </div>
             )}
