@@ -4,7 +4,7 @@ import { DEFAULT_FEATURE_FLAGS, FeatureFlags, mergeFeatureFlags } from './featur
 import { Sidebar, SidebarView } from './components/Sidebar';
 import { ModeToggle, ExecutionMode } from './components/ModeToggle';
 import { SuggestionChips } from './components/SuggestionChips';
-import { SessionsList } from './components/SessionsList';
+import { SessionsView } from './components/SessionsView';
 // Theme handled by ThemeProvider wrapping in main.tsx
 
 const TABS = ['Chat', 'Tools', 'Running', 'Files', 'Chains', 'Settings'] as const;
@@ -353,13 +353,28 @@ export default function App() {
     // Sidebar views that bypass top tabs
     if (sidebarView === 'sessions') {
       return (
-        <SessionsList
+        <SessionsView
           sessions={sessions}
-          currentSessionId={currentSession?.id || null}
+          currentSession={currentSession}
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onRenameSession={handleRenameSession}
           onDeleteSession={handleDeleteSession}
+          chatComponent={
+            currentSession ? (
+              <ChatTab
+                tools={tools}
+                history={currentSession.chatHistory || []}
+                setHistory={(newHistory) => {
+                  window.workbench.sessions.updateHistory(currentSession.id, newHistory);
+                }}
+                pendingTool={pendingTool}
+                setPendingTool={setPendingTool}
+                onRequestPermission={onRequestPermission}
+                executionMode={executionMode}
+              />
+            ) : null
+          }
         />
       );
     }
