@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git stash push:*)",
+      "Bash(git merge:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run package-win:*)",
+      "Bash(npm run:*)",
+      "Bash(ls:*)",
+      "Bash(npx png-to-ico:*)",
+      "Bash(converter \")",
+      "Bash(node fix-icon.js:*)",
+      "Bash(node fix-icon.cjs:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

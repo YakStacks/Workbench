@@ -13,10 +13,10 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && npm run build:electron && electron . --dev\"",
     "dev:mcp-debug": "npm run build:electron && electron .",
     "build": "vite build && npm run build:electron",
-    "build:electron": "tsc main.ts preload.ts doctor.ts permissions.ts run-manager.ts process-registry.ts secrets-manager.ts tool-manifest.ts dry-run.ts memory-manager.ts tool-dispatch.ts environment-detection.ts --outDir . --esModuleInterop --module commonjs --strict --skipLibCheck && node build-electron.cjs",
+    "build:electron": "tsc main.ts preload.ts doctor.ts permissions.ts run-manager.ts process-registry.ts secrets-manager.ts tool-manifest.ts dry-run.ts memory-manager.ts tool-dispatch.ts environment-detection.ts guardrails.ts asset-manager.ts --outDir . --esModuleInterop --module commonjs --strict --skipLibCheck && node build-electron.cjs",
     "typecheck:electron": "tsc -p tsconfig.electron.json --noEmit",
     "start": "electron .",
-    "package": "npm run build && electron-builder --win --x64 && node set-icon.cjs && electron-builder build --win nsis --x64 --prepackaged release/win-unpacked",
+    "package": "npm run build && electron-builder --win --x64",
     "package:all": "npm run build && electron-builder -mwl"
   },
   "dependencies": {
@@ -63,6 +63,8 @@
       "memory-manager.cjs",
       "tool-dispatch.cjs",
       "environment-detection.cjs",
+      "guardrails.cjs",
+      "asset-manager.cjs",
       "plugins/**/*",
       "build/**/*",
       "icon.ico",

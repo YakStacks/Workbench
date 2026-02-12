@@ -14,19 +14,19 @@ interface Chip {
 }
 
 const BASE_CHIPS: Chip[] = [
-  { label: 'Search Files', action: '/builtin.searchFiles' },
-  { label: 'Run Doctor', action: '/builtin.doctor' },
+  { label: 'System Info', action: '/builtin.systemInfo' },
+  { label: 'Clipboard', action: '/builtin.clipboardRead' },
 ];
 
 const ASSET_CHIPS: Chip[] = [
   { label: 'Upload PDF', action: 'upload' },
-  { label: 'Extract Fields', action: '/builtin.analyzeAsset' },
+  { label: 'Analyze Asset', action: '/builtin.analyzeAsset' },
 ];
 
 const TOOL_CHIPS: Chip[] = [
-  { label: 'List Directory', action: '/builtin.listDir' },
   { label: 'Read File', action: '/builtin.readFile' },
-  { label: 'Export Report', action: '/builtin.exportReport' },
+  { label: 'List Directory', action: '/builtin.listDir' },
+  { label: 'Write File', action: '/builtin.writeFile' },
 ];
 
 function getChipsForView(view: SidebarView, hasAssets: boolean, hasTools: boolean): Chip[] {
