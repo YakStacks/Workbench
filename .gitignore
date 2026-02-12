@@ -30,3 +30,4 @@ npm-debug.log*
 # Personal plugins
 plugins/ASAM/
 plugins/Asam_Updater/
+plugins/intake_note_generator/

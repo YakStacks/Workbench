@@ -12,7 +12,14 @@
       "Bash(converter \")",
       "Bash(node fix-icon.js:*)",
       "Bash(node fix-icon.cjs:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(awk:*)"
     ]
   }
 }

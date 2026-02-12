@@ -114,7 +114,21 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
             return electron_1.ipcRenderer.invoke('permissions:resetAll');
         },
     },
-    // Chat history persistence
+    // Sessions
+    sessions: {
+        getAll: function () { return electron_1.ipcRenderer.invoke('sessions:getAll'); },
+        getCurrent: function () { return electron_1.ipcRenderer.invoke('sessions:getCurrent'); },
+        getById: function (sessionId) { return electron_1.ipcRenderer.invoke('sessions:getById', sessionId); },
+        create: function (name) { return electron_1.ipcRenderer.invoke('sessions:create', name); },
+        switch: function (sessionId) { return electron_1.ipcRenderer.invoke('sessions:switch', sessionId); },
+        rename: function (sessionId, newName) { return electron_1.ipcRenderer.invoke('sessions:rename', sessionId, newName); },
+        delete: function (sessionId) { return electron_1.ipcRenderer.invoke('sessions:delete', sessionId); },
+        updateHistory: function (sessionId, history) { return electron_1.ipcRenderer.invoke('sessions:updateHistory', sessionId, history); },
+        updateMode: function (sessionId, mode) { return electron_1.ipcRenderer.invoke('sessions:updateMode', sessionId, mode); },
+        updateModel: function (sessionId, model) { return electron_1.ipcRenderer.invoke('sessions:updateModel', sessionId, model); },
+        updateProvider: function (sessionId, provider) { return electron_1.ipcRenderer.invoke('sessions:updateProvider', sessionId, provider); },
+    },
+    // Chat history persistence (legacy - uses current session)
     chat: {
         save: function (history) { return electron_1.ipcRenderer.invoke('chat:save', history); },
         load: function () { return electron_1.ipcRenderer.invoke('chat:load'); },

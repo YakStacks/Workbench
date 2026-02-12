@@ -2,6 +2,7 @@ import React from 'react';
 import { ThemeToggle } from './ThemeProvider';
 
 export type SidebarView =
+  | 'sessions'
   | 'chat'
   | 'tools'
   | 'assets'
@@ -19,7 +20,7 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS: { view: SidebarView; icon: string; label: string }[] = [
-  { view: 'chat', icon: '\u{1F4AC}', label: 'Chat' },
+  { view: 'sessions', icon: '\u{1F4C4}', label: 'Sessions' },
   { view: 'tools', icon: '\u{1F527}', label: 'Tools' },
   { view: 'assets', icon: '\u{1F4CE}', label: 'Assets' },
   { view: 'runs', icon: '\u25B6\uFE0F', label: 'Runs' },
@@ -40,22 +41,6 @@ export function Sidebar({ activeView, onViewChange, onNewChat }: SidebarProps) {
       <div className="sidebar-header">
         <span style={{ fontSize: 18 }}>{'\u2692\uFE0F'}</span>
         Workbench
-      </div>
-
-      {/* New Chat button */}
-      <div style={{ padding: '0 10px 4px' }}>
-        <button
-          className="sidebar-item"
-          onClick={onNewChat}
-          style={{
-            background: 'var(--accent-muted)',
-            color: 'var(--accent)',
-            justifyContent: 'center',
-            fontWeight: 600,
-          }}
-        >
-          + New Chat
-        </button>
       </div>
 
       {/* Main navigation */}

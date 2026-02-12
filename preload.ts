@@ -112,7 +112,22 @@ contextBridge.exposeInMainWorld('workbench', {
       ipcRenderer.invoke('permissions:resetAll'),
   },
 
-  // Chat history persistence
+  // Sessions
+  sessions: {
+    getAll: () => ipcRenderer.invoke('sessions:getAll'),
+    getCurrent: () => ipcRenderer.invoke('sessions:getCurrent'),
+    getById: (sessionId: string) => ipcRenderer.invoke('sessions:getById', sessionId),
+    create: (name?: string) => ipcRenderer.invoke('sessions:create', name),
+    switch: (sessionId: string) => ipcRenderer.invoke('sessions:switch', sessionId),
+    rename: (sessionId: string, newName: string) => ipcRenderer.invoke('sessions:rename', sessionId, newName),
+    delete: (sessionId: string) => ipcRenderer.invoke('sessions:delete', sessionId),
+    updateHistory: (sessionId: string, history: any[]) => ipcRenderer.invoke('sessions:updateHistory', sessionId, history),
+    updateMode: (sessionId: string, mode: 'read' | 'propose' | 'execute') => ipcRenderer.invoke('sessions:updateMode', sessionId, mode),
+    updateModel: (sessionId: string, model: string) => ipcRenderer.invoke('sessions:updateModel', sessionId, model),
+    updateProvider: (sessionId: string, provider: string) => ipcRenderer.invoke('sessions:updateProvider', sessionId, provider),
+  },
+
+  // Chat history persistence (legacy - uses current session)
   chat: {
     save: (history: any[]) => ipcRenderer.invoke('chat:save', history),
     load: () => ipcRenderer.invoke('chat:load'),

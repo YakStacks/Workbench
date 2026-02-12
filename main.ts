@@ -28,6 +28,7 @@ import { ToolDispatcher, ToolUsageRecord, ChainPlan } from "./tool-dispatch";
 import { EnvironmentDetector } from "./environment-detection";
 import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
 import { AssetManager } from "./asset-manager";
+import { SessionsManager } from "./sessions-manager";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -45,6 +46,7 @@ const commandGuardrails = new CommandGuardrails();
 const loopDetector = new LoopDetector();
 let pathSandbox: PathSandbox;
 let assetManager: AssetManager;
+let sessionsManager: SessionsManager;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -296,6 +298,7 @@ app.whenReady().then(() => {
 
   const assetSandboxDir = path.join(app.getPath('userData'), 'assets');
   assetManager = new AssetManager(store, assetSandboxDir);
+  sessionsManager = new SessionsManager(store);
 
   // Load persisted doctor report history
   const savedDoctorHistory = store.get('doctorReportHistory') as DoctorReport[] | undefined;
@@ -3555,13 +3558,149 @@ ipcMain.handle("permissions:resetAll", () => {
 });
 
 // ============================================================================
-// CHAT HISTORY PERSISTENCE
+// SESSION MANAGEMENT
+// ============================================================================
+
+// Get all sessions metadata
+ipcMain.handle("sessions:getAll", () => {
+  try {
+    const sessions = sessionsManager.getAllSessionMetadata();
+    return { success: true, sessions };
+  } catch (error: any) {
+    console.error('[sessions:getAll] Error:', error);
+    return { success: false, error: error.message, sessions: [] };
+  }
+});
+
+// Get current session
+ipcMain.handle("sessions:getCurrent", () => {
+  try {
+    const session = sessionsManager.getCurrentSession();
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:getCurrent] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Get session by ID
+ipcMain.handle("sessions:getById", (_e, sessionId: string) => {
+  try {
+    const session = sessionsManager.getSession(sessionId);
+    if (!session) {
+      return { success: false, error: 'Session not found' };
+    }
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:getById] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Create new session
+ipcMain.handle("sessions:create", (_e, name?: string) => {
+  try {
+    const session = sessionsManager.createSession(name);
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:create] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Switch to session
+ipcMain.handle("sessions:switch", (_e, sessionId: string) => {
+  try {
+    const success = sessionsManager.setCurrentSession(sessionId);
+    if (!success) {
+      return { success: false, error: 'Session not found' };
+    }
+    const session = sessionsManager.getSession(sessionId);
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:switch] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Rename session
+ipcMain.handle("sessions:rename", (_e, sessionId: string, newName: string) => {
+  try {
+    const success = sessionsManager.renameSession(sessionId, newName);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:rename] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete session
+ipcMain.handle("sessions:delete", (_e, sessionId: string) => {
+  try {
+    const success = sessionsManager.deleteSession(sessionId);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:delete] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session chat history
+ipcMain.handle("sessions:updateHistory", (_e, sessionId: string, history: any[]) => {
+  try {
+    const success = sessionsManager.updateChatHistory(sessionId, history);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateHistory] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session mode
+ipcMain.handle("sessions:updateMode", (_e, sessionId: string, mode: 'read' | 'propose' | 'execute') => {
+  try {
+    const success = sessionsManager.updateMode(sessionId, mode);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateMode] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session model
+ipcMain.handle("sessions:updateModel", (_e, sessionId: string, model: string) => {
+  try {
+    const success = sessionsManager.updateModel(sessionId, model);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateModel] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session provider
+ipcMain.handle("sessions:updateProvider", (_e, sessionId: string, provider: string) => {
+  try {
+    const success = sessionsManager.updateProvider(sessionId, provider);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateProvider] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// ============================================================================
+// CHAT HISTORY PERSISTENCE (Legacy - kept for backward compat)
 // ============================================================================
 
 // Save chat history
 ipcMain.handle("chat:save", (_e, history: any[]) => {
   try {
-    store.set('chatHistory', history);
+    // Save to current session
+    const sessionId = sessionsManager.getCurrentSessionId();
+    if (sessionId) {
+      sessionsManager.updateChatHistory(sessionId, history);
+    }
     return { success: true };
   } catch (error: any) {
     console.error('[chat:save] Error:', error);
@@ -3572,8 +3711,9 @@ ipcMain.handle("chat:save", (_e, history: any[]) => {
 // Load chat history
 ipcMain.handle("chat:load", () => {
   try {
-    const history = store.get('chatHistory', []) as any[];
-    return { success: true, history };
+    // Load from current session
+    const session = sessionsManager.getCurrentSession();
+    return { success: true, history: session.chatHistory };
   } catch (error: any) {
     console.error('[chat:load] Error:', error);
     return { success: false, error: error.message, history: [] };
@@ -3583,7 +3723,11 @@ ipcMain.handle("chat:load", () => {
 // Clear chat history
 ipcMain.handle("chat:clear", () => {
   try {
-    store.delete('chatHistory');
+    // Clear current session history
+    const sessionId = sessionsManager.getCurrentSessionId();
+    if (sessionId) {
+      sessionsManager.updateChatHistory(sessionId, []);
+    }
     return { success: true };
   } catch (error: any) {
     console.error('[chat:clear] Error:', error);
@@ -4214,3 +4358,4 @@ ipcMain.handle("runs:clearInterrupted", () => {
 ipcMain.handle("runs:hasInterrupted", () => {
   return runManager.hasInterruptedRuns();
 });
+}
