@@ -22,7 +22,7 @@
   "dependencies": {
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@modelcontextprotocol/server-memory": "^2026.1.26",
-    "axios": "^1.13.4",
+    "axios": "^1.13.5",
     "electron-store": "^8.1.0",
     "node-fetch": "^3.3.2",
     "pdf-parse": "^2.4.5",
@@ -31,6 +31,7 @@
     "youtube-transcript": "^1.2.1"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.0.0",
