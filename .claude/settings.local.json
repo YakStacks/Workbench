@@ -20,7 +20,8 @@
       "Bash(npm install:*)",
       "Bash(npx tsc:*)",
       "Bash(awk:*)",
-      "Bash(\"C:\\\\Workbench\\\\src\\\\base.css\" << 'EOF'\n\n/* ============================================================\n   SESSION LIST STYLES\n   ============================================================ */\n.session-item:hover {\n  background-color: var\\(--bg-secondary\\) !important;\n}\n\n.session-item:hover .session-actions {\n  opacity: 1 !important;\n}\n\n.session-item button:hover {\n  background-color: var\\(--bg-tertiary\\);\n  color: var\\(--text-primary\\);\n}\n\n.new-button:hover {\n  background-color: var\\(--accent-hover\\) !important;\n}\nEOF)"
+      "Bash(\"C:\\\\Workbench\\\\src\\\\base.css\" << 'EOF'\n\n/* ============================================================\n   SESSION LIST STYLES\n   ============================================================ */\n.session-item:hover {\n  background-color: var\\(--bg-secondary\\) !important;\n}\n\n.session-item:hover .session-actions {\n  opacity: 1 !important;\n}\n\n.session-item button:hover {\n  background-color: var\\(--bg-tertiary\\);\n  color: var\\(--text-primary\\);\n}\n\n.new-button:hover {\n  background-color: var\\(--accent-hover\\) !important;\n}\nEOF)",
+      "Bash(npx asar:*)"
     ]
   }
 }
