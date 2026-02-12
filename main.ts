@@ -215,6 +215,10 @@ function createWindow() {
   // Production mode (npm start, packaged app) loads from built dist/
   if (process.argv.includes("--dev")) {
     mainWindow.loadURL("http://localhost:5173");
+  // Always load from dist folder - use `npm run dev` for hot reload
+  if (!app.isPackaged) {
+    mainWindow.loadURL("http://localhost:5173");
+    // Open tools in dev mode
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
