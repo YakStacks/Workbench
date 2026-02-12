@@ -213,18 +213,22 @@ function createWindow() {
   
   // Set window for RunManager
   runManager.setWindow(mainWindow);
-  // Dev mode (npm run dev) passes --dev flag to connect to Vite dev server
-  // Production mode (npm start, packaged app) loads from built dist/
-  if (process.argv.includes("--dev")) {
-    mainWindow.loadURL("http://localhost:5173");
-  // Always load from dist folder - use `npm run dev` for hot reload
+  
+  // Load content based on environment
   if (!app.isPackaged) {
+    // Development mode - connect to Vite dev server
     mainWindow.loadURL("http://localhost:5173");
-    // Open tools in dev mode
+    // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
+    // Production mode - load from built files
     mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
   }
+
+  // Show the window after it's ready
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+  });
 
   // Minimize to tray instead of closing
   mainWindow.on("close", (event) => {
@@ -4358,4 +4362,3 @@ ipcMain.handle("runs:clearInterrupted", () => {
 ipcMain.handle("runs:hasInterrupted", () => {
   return runManager.hasInterruptedRuns();
 });
-}
