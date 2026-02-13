@@ -29,6 +29,7 @@ import { EnvironmentDetector } from "./environment-detection";
 import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./sessions-manager";
+import { runnerRegistry, ToolSpec as RunnerToolSpec } from "./src/core/runner";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -2500,6 +2501,22 @@ ipcMain.handle(
 ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
+
+  // Phase 1: Runner routing (guardrail - ensures all tools go through runner system)
+  const toolSpec: RunnerToolSpec = {
+    name: tool.name,
+    input: input
+  };
+  const selectedRunner = runnerRegistry.findRunner(toolSpec);
+  if (!selectedRunner) {
+    console.error(`[tools:run] No runner available for tool: ${name}`);
+    throw new Error(`No runner available for tool: ${name}`);
+  }
+  // ASSERTION: Phase 1 - must be ShellRunner
+  if (selectedRunner.name !== 'shell') {
+    console.error(`[tools:run] PHASE 1 VIOLATION: Non-shell runner selected: ${selectedRunner.name}`);
+  }
+  console.log(`[tools:run] Tool "${name}" → Runner "${selectedRunner.name}"`);
 
   // V2: Schema validation before execution
   if (tool.inputSchema) {

@@ -88,6 +88,7 @@ var environment_detection_1 = require("./environment-detection.cjs");
 var guardrails_1 = require("./guardrails.cjs");
 var asset_manager_1 = require("./asset-manager.cjs");
 var sessions_manager_1 = require("./sessions-manager.cjs");
+var runner_1 = require("./src/core/runner");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
@@ -2282,13 +2283,27 @@ electron_1.ipcMain.handle("toolHealth:removeKnownIssue", function (_e, toolName,
     return { success: true, issues: current };
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, validation, actionType, cmdCheck, filePath, pathCheck, riskLevel, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1, doctorEngine_1, triggerEvent;
+    var tool, toolSpec, selectedRunner, validation, actionType, cmdCheck, filePath, pathCheck, riskLevel, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1, doctorEngine_1, triggerEvent;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                toolSpec = {
+                    name: tool.name,
+                    input: input
+                };
+                selectedRunner = runner_1.runnerRegistry.findRunner(toolSpec);
+                if (!selectedRunner) {
+                    console.error("[tools:run] No runner available for tool: ".concat(name));
+                    throw new Error("No runner available for tool: ".concat(name));
+                }
+                // ASSERTION: Phase 1 - must be ShellRunner
+                if (selectedRunner.name !== 'shell') {
+                    console.error("[tools:run] PHASE 1 VIOLATION: Non-shell runner selected: ".concat(selectedRunner.name));
+                }
+                console.log("[tools:run] Tool \"".concat(name, "\" \u2192 Runner \"").concat(selectedRunner.name, "\""));
                 // V2: Schema validation before execution
                 if (tool.inputSchema) {
                     validation = schemaValidator.validateToolInput(input || {}, tool.inputSchema);
