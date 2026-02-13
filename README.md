@@ -181,4 +181,6 @@ MIT © 2025 YakStacks
 
 ---
 
+**Any questions or concerns? Start a Discussion or submit an issue. I'd love to hear from you.**
+
 **Local-first. Open source. Yours to extend.**
