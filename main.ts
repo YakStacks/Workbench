@@ -29,7 +29,7 @@ import { EnvironmentDetector } from "./environment-detection";
 import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./sessions-manager";
-import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult } from "./src/core";
+import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics } from "./src/core";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -3433,6 +3433,16 @@ function getDoctorEngine(): DoctorEngine {
 }
 
 // Run all diagnostics
+// Phase 1: Core doctor diagnostics (callable from anywhere)
+ipcMain.handle("doctor:runCore", async () => {
+  console.log("[doctor:runCore] Running foundation diagnostics...");
+  const report = await coreDiagnostics(app.getVersion());
+  console.log("[doctor:runCore] Complete:", report.summary);
+  return report;
+});
+
+// Legacy doctor handler (uses DoctorEngine class)
+// TODO Phase 2: Migrate fully to core diagnostics
 ipcMain.handle("doctor:run", async () => {
   console.log("[doctor:run] Running diagnostics...");
   const engine = getDoctorEngine();

@@ -39,3 +39,10 @@ export {
   isVerifiedResult,
   getVerificationStatus,
 } from './verification';
+
+export {
+  // Doctor diagnostics (foundation layer)
+  DiagnosticResult,
+  DoctorReport,
+  runDiagnostics,
+} from './doctor';

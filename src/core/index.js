@@ -17,7 +17,7 @@
  * - Hardcode language implementations
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getVerificationStatus = exports.isVerifiedResult = exports.wrapToolResult = exports.createVerification = exports.runnerRegistry = exports.RunnerRegistry = exports.ShellRunner = void 0;
+exports.runDiagnostics = exports.getVerificationStatus = exports.isVerifiedResult = exports.wrapToolResult = exports.createVerification = exports.runnerRegistry = exports.RunnerRegistry = exports.ShellRunner = void 0;
 var runner_1 = require("./runner");
 Object.defineProperty(exports, "ShellRunner", { enumerable: true, get: function () { return runner_1.ShellRunner; } });
 Object.defineProperty(exports, "RunnerRegistry", { enumerable: true, get: function () { return runner_1.RunnerRegistry; } });
@@ -27,3 +27,5 @@ Object.defineProperty(exports, "createVerification", { enumerable: true, get: fu
 Object.defineProperty(exports, "wrapToolResult", { enumerable: true, get: function () { return verification_1.wrapToolResult; } });
 Object.defineProperty(exports, "isVerifiedResult", { enumerable: true, get: function () { return verification_1.isVerifiedResult; } });
 Object.defineProperty(exports, "getVerificationStatus", { enumerable: true, get: function () { return verification_1.getVerificationStatus; } });
+var doctor_1 = require("./doctor");
+Object.defineProperty(exports, "runDiagnostics", { enumerable: true, get: function () { return doctor_1.runDiagnostics; } });

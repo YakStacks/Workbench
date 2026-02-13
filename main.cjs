@@ -3086,6 +3086,23 @@ function getDoctorEngine() {
     return doctorEngine;
 }
 // Run all diagnostics
+// Phase 1: Core doctor diagnostics (callable from anywhere)
+electron_1.ipcMain.handle("doctor:runCore", function () { return __awaiter(void 0, void 0, void 0, function () {
+    var report;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                console.log("[doctor:runCore] Running foundation diagnostics...");
+                return [4 /*yield*/, (0, core_1.runDiagnostics)(electron_1.app.getVersion())];
+            case 1:
+                report = _a.sent();
+                console.log("[doctor:runCore] Complete:", report.summary);
+                return [2 /*return*/, report];
+        }
+    });
+}); });
+// Legacy doctor handler (uses DoctorEngine class)
+// TODO Phase 2: Migrate fully to core diagnostics
 electron_1.ipcMain.handle("doctor:run", function () { return __awaiter(void 0, void 0, void 0, function () {
     var engine;
     return __generator(this, function (_a) {
