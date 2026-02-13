@@ -3,9 +3,9 @@
  * Smart tool selection with scoring, disambiguation, and controlled chaining
  */
 
-import { ToolManifest } from "./tool-manifest";
-import { PermissionManager } from "./permissions";
-import { PreviewManager, PreviewPlan } from "./dry-run";
+import { ToolManifest } from "../../tool-manifest";
+import { PermissionManager } from "../../permissions";
+import { PreviewManager, PreviewPlan } from "../../dry-run";
 
 // ============================================================================
 // TYPES
