@@ -46,3 +46,11 @@ export {
   DoctorReport,
   runDiagnostics,
 } from './doctor';
+
+export {
+  // Event system (runtime observability)
+  RuntimeEvent,
+  EventBus,
+  eventBus,
+  createTimestamp,
+} from './events';

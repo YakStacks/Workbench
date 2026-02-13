@@ -17,7 +17,7 @@
  * - Hardcode language implementations
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.runDiagnostics = exports.getVerificationStatus = exports.isVerifiedResult = exports.wrapToolResult = exports.createVerification = exports.runnerRegistry = exports.RunnerRegistry = exports.ShellRunner = void 0;
+exports.createTimestamp = exports.eventBus = exports.EventBus = exports.runDiagnostics = exports.getVerificationStatus = exports.isVerifiedResult = exports.wrapToolResult = exports.createVerification = exports.runnerRegistry = exports.RunnerRegistry = exports.ShellRunner = void 0;
 var runner_1 = require("./runner");
 Object.defineProperty(exports, "ShellRunner", { enumerable: true, get: function () { return runner_1.ShellRunner; } });
 Object.defineProperty(exports, "RunnerRegistry", { enumerable: true, get: function () { return runner_1.RunnerRegistry; } });
@@ -29,3 +29,7 @@ Object.defineProperty(exports, "isVerifiedResult", { enumerable: true, get: func
 Object.defineProperty(exports, "getVerificationStatus", { enumerable: true, get: function () { return verification_1.getVerificationStatus; } });
 var doctor_1 = require("./doctor");
 Object.defineProperty(exports, "runDiagnostics", { enumerable: true, get: function () { return doctor_1.runDiagnostics; } });
+var events_1 = require("./events");
+Object.defineProperty(exports, "EventBus", { enumerable: true, get: function () { return events_1.EventBus; } });
+Object.defineProperty(exports, "eventBus", { enumerable: true, get: function () { return events_1.eventBus; } });
+Object.defineProperty(exports, "createTimestamp", { enumerable: true, get: function () { return events_1.createTimestamp; } });

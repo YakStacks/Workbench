@@ -29,7 +29,7 @@ import { EnvironmentDetector } from "./environment-detection";
 import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./sessions-manager";
-import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics } from "./src/core";
+import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics, eventBus, createTimestamp } from "./src/core";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -2502,6 +2502,13 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 
+  // Phase 1: Emit tool requested event
+  eventBus.emit({
+    type: 'tool:requested',
+    toolName: name,
+    timestamp: createTimestamp()
+  });
+
   // Phase 1: Runner routing (guardrail - ensures all tools go through runner system)
   const toolSpec: RunnerToolSpec = {
     name: tool.name,
@@ -2582,6 +2589,14 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   runManager.startRun(runId);
   runManager.setApprovalInfo(runId, riskLevel, 'user');
 
+  // Phase 1: Emit tool started event
+  eventBus.emit({
+    type: 'tool:started',
+    toolName: name,
+    runId,
+    timestamp: createTimestamp()
+  });
+
   let runInput =
     name.startsWith("builtin.")
       ? input && typeof input === "object" && !Array.isArray(input)
@@ -2643,6 +2658,15 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
     const verifiedResult = wrapToolResult(normalized, name);
     console.log(`[tools:run] Verification: ${verifiedResult.verification.status} for tool "${name}"`);
     
+    // Phase 1: Emit tool verified event
+    eventBus.emit({
+      type: 'tool:verified',
+      toolName: name,
+      runId,
+      status: verifiedResult.verification.status,
+      timestamp: createTimestamp()
+    });
+    
     return verifiedResult;
   } catch (error: any) {
     // Mark run as failed or timed out
@@ -2692,6 +2716,15 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
     // Phase 1: Wrap error result with verification
     const verifiedErrorResult = wrapToolResult(errorResult, name);
     console.log(`[tools:run] Verification: ${verifiedErrorResult.verification.status} for tool "${name}" (error case)`);
+    
+    // Phase 1: Emit tool failed event
+    eventBus.emit({
+      type: 'tool:failed',
+      toolName: name,
+      runId,
+      reason: error.message,
+      timestamp: createTimestamp()
+    });
     
     return verifiedErrorResult;
   }
@@ -3438,6 +3471,15 @@ ipcMain.handle("doctor:runCore", async () => {
   console.log("[doctor:runCore] Running foundation diagnostics...");
   const report = await coreDiagnostics(app.getVersion());
   console.log("[doctor:runCore] Complete:", report.summary);
+  
+  // Phase 1: Emit doctor run event
+  eventBus.emit({
+    type: 'doctor:run',
+    trigger: 'manual',
+    timestamp: createTimestamp(),
+    summary: report.summary
+  });
+  
   return report;
 });
 

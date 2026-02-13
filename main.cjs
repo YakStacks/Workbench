@@ -2290,6 +2290,12 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 tool = tools.get(name);
                 if (!tool)
                     throw new Error("Tool not found: ".concat(name));
+                // Phase 1: Emit tool requested event
+                core_1.eventBus.emit({
+                    type: 'tool:requested',
+                    toolName: name,
+                    timestamp: (0, core_1.createTimestamp)()
+                });
                 toolSpec = {
                     name: tool.name,
                     input: input
@@ -2351,6 +2357,13 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 // Start the run
                 runManager.startRun(runId);
                 runManager.setApprovalInfo(runId, riskLevel, 'user');
+                // Phase 1: Emit tool started event
+                core_1.eventBus.emit({
+                    type: 'tool:started',
+                    toolName: name,
+                    runId: runId,
+                    timestamp: (0, core_1.createTimestamp)()
+                });
                 runInput = name.startsWith("builtin.")
                     ? input && typeof input === "object" && !Array.isArray(input)
                         ? __assign(__assign({}, input), { __runId: runId }) : { __runId: runId }
@@ -2392,6 +2405,14 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 }
                 verifiedResult = (0, core_1.wrapToolResult)(normalized, name);
                 console.log("[tools:run] Verification: ".concat(verifiedResult.verification.status, " for tool \"").concat(name, "\""));
+                // Phase 1: Emit tool verified event
+                core_1.eventBus.emit({
+                    type: 'tool:verified',
+                    toolName: name,
+                    runId: runId,
+                    status: verifiedResult.verification.status,
+                    timestamp: (0, core_1.createTimestamp)()
+                });
                 return [2 /*return*/, verifiedResult];
             case 3:
                 error_1 = _a.sent();
@@ -2435,6 +2456,14 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                 });
                 verifiedErrorResult = (0, core_1.wrapToolResult)(errorResult, name);
                 console.log("[tools:run] Verification: ".concat(verifiedErrorResult.verification.status, " for tool \"").concat(name, "\" (error case)"));
+                // Phase 1: Emit tool failed event
+                core_1.eventBus.emit({
+                    type: 'tool:failed',
+                    toolName: name,
+                    runId: runId,
+                    reason: error_1.message,
+                    timestamp: (0, core_1.createTimestamp)()
+                });
                 return [2 /*return*/, verifiedErrorResult];
             case 4: return [2 /*return*/];
         }
@@ -3097,6 +3126,13 @@ electron_1.ipcMain.handle("doctor:runCore", function () { return __awaiter(void 
             case 1:
                 report = _a.sent();
                 console.log("[doctor:runCore] Complete:", report.summary);
+                // Phase 1: Emit doctor run event
+                core_1.eventBus.emit({
+                    type: 'doctor:run',
+                    trigger: 'manual',
+                    timestamp: (0, core_1.createTimestamp)(),
+                    summary: report.summary
+                });
                 return [2 /*return*/, report];
         }
     });
