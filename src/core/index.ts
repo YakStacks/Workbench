@@ -29,3 +29,13 @@ export {
   ExecutionResult,
   VerificationOutcome,
 } from './runner';
+
+export {
+  // Verification system
+  VerificationStatus,
+  VerifiedToolResult,
+  createVerification,
+  wrapToolResult,
+  isVerifiedResult,
+  getVerificationStatus,
+} from './verification';

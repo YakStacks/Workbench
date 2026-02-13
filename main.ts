@@ -29,7 +29,7 @@ import { EnvironmentDetector } from "./environment-detection";
 import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./sessions-manager";
-import { runnerRegistry, ToolSpec as RunnerToolSpec } from "./src/core/runner";
+import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult } from "./src/core";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -2639,7 +2639,11 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
       store.set("toolUsageData", toolDispatcher.getUsageData());
     }
 
-    return normalized;
+    // Phase 1: Wrap result with verification (preserves all existing fields)
+    const verifiedResult = wrapToolResult(normalized, name);
+    console.log(`[tools:run] Verification: ${verifiedResult.verification.status} for tool "${name}"`);
+    
+    return verifiedResult;
   } catch (error: any) {
     // Mark run as failed or timed out
     if (error.message.includes("timeout")) {
@@ -2672,7 +2676,7 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
     }
 
     // Friendly error handling
-    return normalizeToolOutput({
+    const errorResult = normalizeToolOutput({
       content: error.message.includes("timeout")
         ? "Tool execution timed out. Please try again or simplify your request."
         : `Tool error: ${error.message}`,
@@ -2684,6 +2688,12 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
         riskLevel,
       },
     });
+    
+    // Phase 1: Wrap error result with verification
+    const verifiedErrorResult = wrapToolResult(errorResult, name);
+    console.log(`[tools:run] Verification: ${verifiedErrorResult.verification.status} for tool "${name}" (error case)`);
+    
+    return verifiedErrorResult;
   }
 });
 

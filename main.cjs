@@ -88,7 +88,7 @@ var environment_detection_1 = require("./environment-detection.cjs");
 var guardrails_1 = require("./guardrails.cjs");
 var asset_manager_1 = require("./asset-manager.cjs");
 var sessions_manager_1 = require("./sessions-manager.cjs");
-var runner_1 = require("./src/core/runner");
+var core_1 = require("./src/core");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
@@ -2283,7 +2283,7 @@ electron_1.ipcMain.handle("toolHealth:removeKnownIssue", function (_e, toolName,
     return { success: true, issues: current };
 });
 electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awaiter(void 0, void 0, void 0, function () {
-    var tool, toolSpec, selectedRunner, validation, actionType, cmdCheck, filePath, pathCheck, riskLevel, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, error_1, doctorEngine_1, triggerEvent;
+    var tool, toolSpec, selectedRunner, validation, actionType, cmdCheck, filePath, pathCheck, riskLevel, runId, message, runInput, DEFAULT_TOOL_TIMEOUT, manifest, TOOL_TIMEOUT, MAX_OUTPUT_SIZE, timeoutPromise, rawOutput, normalized, snippet, verifiedResult, error_1, doctorEngine_1, triggerEvent, errorResult, verifiedErrorResult;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -2294,7 +2294,7 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                     name: tool.name,
                     input: input
                 };
-                selectedRunner = runner_1.runnerRegistry.findRunner(toolSpec);
+                selectedRunner = core_1.runnerRegistry.findRunner(toolSpec);
                 if (!selectedRunner) {
                     console.error("[tools:run] No runner available for tool: ".concat(name));
                     throw new Error("No runner available for tool: ".concat(name));
@@ -2390,7 +2390,9 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                     toolDispatcher.recordToolUsage(name, JSON.stringify(input).slice(0, 200), true);
                     store.set("toolUsageData", toolDispatcher.getUsageData());
                 }
-                return [2 /*return*/, normalized];
+                verifiedResult = (0, core_1.wrapToolResult)(normalized, name);
+                console.log("[tools:run] Verification: ".concat(verifiedResult.verification.status, " for tool \"").concat(name, "\""));
+                return [2 /*return*/, verifiedResult];
             case 3:
                 error_1 = _a.sent();
                 // Mark run as failed or timed out
@@ -2419,19 +2421,21 @@ electron_1.ipcMain.handle("tools:run", function (_e, name, input) { return __awa
                         }
                     }).catch(function () { });
                 }
-                // Friendly error handling
-                return [2 /*return*/, normalizeToolOutput({
-                        content: error_1.message.includes("timeout")
-                            ? "Tool execution timed out. Please try again or simplify your request."
-                            : "Tool error: ".concat(error_1.message),
-                        error: error_1.message,
-                        metadata: {
-                            tool: name,
-                            input: input,
-                            timestamp: new Date().toISOString(),
-                            riskLevel: riskLevel,
-                        },
-                    })];
+                errorResult = normalizeToolOutput({
+                    content: error_1.message.includes("timeout")
+                        ? "Tool execution timed out. Please try again or simplify your request."
+                        : "Tool error: ".concat(error_1.message),
+                    error: error_1.message,
+                    metadata: {
+                        tool: name,
+                        input: input,
+                        timestamp: new Date().toISOString(),
+                        riskLevel: riskLevel,
+                    },
+                });
+                verifiedErrorResult = (0, core_1.wrapToolResult)(errorResult, name);
+                console.log("[tools:run] Verification: ".concat(verifiedErrorResult.verification.status, " for tool \"").concat(name, "\" (error case)"));
+                return [2 /*return*/, verifiedErrorResult];
             case 4: return [2 /*return*/];
         }
     });
