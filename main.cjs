@@ -198,20 +198,26 @@ function resolveAssetReferences(input) {
 }
 var mcpServers = new Map();
 function createWindow() {
+    // Resolve icon path
+    var iconFileName = "icon.ico";
     var iconPath;
     if (electron_1.app.isPackaged) {
         // For Windows, use .ico file
-        iconPath = path_1.default.join(process.resourcesPath, "icon.ico");
+        iconPath = path_1.default.join(process.resourcesPath, iconFileName);
     }
     else {
-        iconPath = path_1.default.join(electron_1.app.getAppPath(), "icon.ico");
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), iconFileName);
     }
     // Fallback if icon not found
     if (!fs_1.default.existsSync(iconPath)) {
-        console.log("[createWindow] Icon not found at:", iconPath);
-        iconPath = "";
+        console.log("[createWindow] Icon not found at:", iconPath, "- trying fallback");
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), "icon.ico");
+        if (!fs_1.default.existsSync(iconPath)) {
+            console.log("[createWindow] Fallback icon also not found");
+            iconPath = "";
+        }
     }
-    mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800 }, (iconPath && { icon: iconPath })), { webPreferences: {
+    mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800, title: "Workbench" }, (iconPath && { icon: iconPath })), { webPreferences: {
             preload: path_1.default.join(__dirname, "preload.cjs"),
             nodeIntegration: false,
             contextIsolation: true,
@@ -242,13 +248,25 @@ function createWindow() {
     });
 }
 function createTray() {
+    // Resolve tray icon
+    var iconFileName = "icon.ico";
     var iconPath;
     if (electron_1.app.isPackaged) {
-        // Use the same icon.ico that's embedded in the exe
-        iconPath = path_1.default.join(process.resourcesPath, "icon.ico");
+        iconPath = path_1.default.join(process.resourcesPath, iconFileName);
     }
     else {
-        iconPath = path_1.default.join(electron_1.app.getAppPath(), "build", "icon.png");
+        iconPath = path_1.default.join(electron_1.app.getAppPath(), iconFileName);
+    }
+    // Fallback: try .png version of the product icon
+    if (!fs_1.default.existsSync(iconPath)) {
+        var pngPath = iconPath.replace(/\.ico$/, ".png");
+        if (fs_1.default.existsSync(pngPath)) {
+            iconPath = pngPath;
+        }
+        else {
+            // Final fallback to default build icon
+            iconPath = path_1.default.join(electron_1.app.getAppPath(), "build", "icon.png");
+        }
     }
     console.log("[createTray] Looking for icon at:", iconPath);
     if (!fs_1.default.existsSync(iconPath)) {

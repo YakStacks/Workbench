@@ -13,6 +13,9 @@ const runtimeFiles = [
   'run-manager', 'process-registry', 'sessions-manager', 'tool-dispatch'
 ];
 
+// Core config files (in core/)
+const coreConfigFiles = ['product-config'];
+
 // Core files (in src/core/)
 const coreFiles = [
   'index', 'runner', 'verification', 'doctor', 'events'
@@ -138,6 +141,14 @@ if (fs.existsSync(mainCjsPath)) {
   if (content.includes(searchCoreSingle)) {
       content = content.split(searchCoreSingle).join(replaceCoreSingle);
       console.log(`  Updated ${searchCoreSingle} to ${replaceCoreSingle}`);
+  }
+  
+  // Fix core/product-config require
+  const searchProductConfig = `require("./core/product-config")`;
+  const replaceProductConfig = `require("./core/product-config.cjs")`;
+  if (content.includes(searchProductConfig)) {
+      content = content.split(searchProductConfig).join(replaceProductConfig);
+      console.log(`  Updated ${searchProductConfig} to ${replaceProductConfig}`);
   }
   
   fs.writeFileSync(mainCjsPath, content);

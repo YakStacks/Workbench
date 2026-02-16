@@ -187,23 +187,30 @@ interface MCPServer {
 let mcpServers: Map<string, MCPServer> = new Map();
 
 function createWindow() {
+  // Resolve icon path
+  const iconFileName = "icon.ico";
   let iconPath: string;
   if (app.isPackaged) {
     // For Windows, use .ico file
-    iconPath = path.join(process.resourcesPath, "icon.ico");
+    iconPath = path.join(process.resourcesPath, iconFileName);
   } else {
-    iconPath = path.join(app.getAppPath(), "icon.ico");
+    iconPath = path.join(app.getAppPath(), iconFileName);
   }
 
   // Fallback if icon not found
   if (!fs.existsSync(iconPath)) {
-    console.log("[createWindow] Icon not found at:", iconPath);
-    iconPath = "";
+    console.log("[createWindow] Icon not found at:", iconPath, "- trying fallback");
+    iconPath = path.join(app.getAppPath(), "icon.ico");
+    if (!fs.existsSync(iconPath)) {
+      console.log("[createWindow] Fallback icon also not found");
+      iconPath = "";
+    }
   }
 
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: "Workbench",
     ...(iconPath && { icon: iconPath }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -241,12 +248,24 @@ function createWindow() {
 }
 
 function createTray() {
+  // Resolve tray icon
+  const iconFileName = "icon.ico";
   let iconPath: string;
   if (app.isPackaged) {
-    // Use the same icon.ico that's embedded in the exe
-    iconPath = path.join(process.resourcesPath, "icon.ico");
+    iconPath = path.join(process.resourcesPath, iconFileName);
   } else {
-    iconPath = path.join(app.getAppPath(), "build", "icon.png");
+    iconPath = path.join(app.getAppPath(), iconFileName);
+  }
+
+  // Fallback: try .png version of the product icon
+  if (!fs.existsSync(iconPath)) {
+    const pngPath = iconPath.replace(/\.ico$/, ".png");
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    } else {
+      // Final fallback to default build icon
+      iconPath = path.join(app.getAppPath(), "build", "icon.png");
+    }
   }
 
   console.log("[createTray] Looking for icon at:", iconPath);

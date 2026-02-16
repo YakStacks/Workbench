@@ -163,6 +163,7 @@ export default function App() {
   const [featureFlags, setFeatureFlags] = useState<FeatureFlags>(DEFAULT_FEATURE_FLAGS);
   const [showCrashRecovery, setShowCrashRecovery] = useState(false);
   const [interruptedRuns, setInterruptedRuns] = useState<any[]>([]);
+  const [productConfig, setProductConfig] = useState<any>({ branding: { title: 'Workbench' } });
 
   // Tool-in-chat state
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
@@ -363,6 +364,7 @@ export default function App() {
           chatComponent={
             currentSession ? (
               <ChatTab
+                productConfig={productConfig}
                 tools={tools}
                 history={currentSession.chatHistory || []}
                 setHistory={(newHistory) => {
@@ -387,6 +389,7 @@ export default function App() {
     if (topTab === 'Chat') {
       return (
         <ChatTab
+          productConfig={productConfig}
           tools={tools}
           history={chatHistory}
           setHistory={setChatHistory}
@@ -944,7 +947,9 @@ function ChatTab({
   setPendingTool,
   onRequestPermission,
   executionMode = 'propose',
+  productConfig,
 }: {
+  productConfig: any;
   tools: Tool[];
   history: Message[];
   setHistory: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -1298,7 +1303,7 @@ function ChatTab({
       <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
         {history.length === 0 && !pendingTool && (
           <div style={{ textAlign: 'center', color: colors.textMuted, marginTop: 120 }}>
-            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.6 }}>Workbench</div>
+            <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.6 }}>{productConfig.branding.title}</div>
             <div style={{ fontSize: 15, marginBottom: 6 }}>What would you like to do?</div>
             <div style={{ fontSize: 13 }}>Type a message, use /tool-name, or attach a file</div>
           </div>

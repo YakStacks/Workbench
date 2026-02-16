@@ -17,39 +17,48 @@
  */
 
 export {
-  // Runner system
-  Runner,
+  // Core runtime exports
   ShellRunner,
   RunnerRegistry,
   runnerRegistry,
-  
-  // Types
+} from './runner';
+
+export type {
   ToolSpec,
   ExecutionPlan,
   ExecutionResult,
   VerificationOutcome,
+  Runner,
 } from './runner';
 
-export {
-  // Verification system
+export type {
   VerificationStatus,
   VerifiedToolResult,
-  createVerification,
-  wrapToolResult,
-  isVerifiedResult,
-  getVerificationStatus,
 } from './verification';
 
 export {
-  // Doctor diagnostics (foundation layer)
+  // Verification system
+  createVerification,
+  wrapToolResult,
+  isVerifiedResult,
+} from './verification';
+
+export type {
   DiagnosticResult,
   DoctorReport,
+} from './doctor';
+ 
+export {
+  // Doctor diagnostics (foundation layer)
   runDiagnostics,
 } from './doctor';
 
+export type {
+  RuntimeEvent,
+} from './events';
+
 export {
   // Event system (runtime observability)
-  RuntimeEvent,
   EventBus,
   eventBus,
   createTimestamp,
