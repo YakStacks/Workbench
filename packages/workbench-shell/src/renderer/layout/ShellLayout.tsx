@@ -16,6 +16,8 @@ import { MainPanel } from './MainPanel';
 import { LogDrawer } from './LogDrawer';
 import { RuntimeBridge } from './RuntimeBridge';
 import { SupervisorBridge } from './SupervisorBridge';
+import { HotkeyBridge } from './HotkeyBridge';
+import { CommandPalette } from '../components/CommandPalette';
 import { useShellStore } from '../state/shellStore';
 import type { SidebarSection } from '../state/shellStore';
 
@@ -74,6 +76,8 @@ export function ShellLayout({ pages }: ShellLayoutProps): React.ReactElement {
       <RuntimeBridge />
       {/* Pappy supervisor — reacts to failures/warnings */}
       <SupervisorBridge />
+      {/* Global Ctrl+K hotkey listener */}
+      <HotkeyBridge />
 
       {/* Left sidebar */}
       <Sidebar active={activeSection} onSelect={setActiveSection} />
@@ -99,6 +103,8 @@ export function ShellLayout({ pages }: ShellLayoutProps): React.ReactElement {
           onToggle={toggleLogDrawer}
         />
       </div>
+      {/* Command Palette overlay — position:fixed, overlays everything */}
+      <CommandPalette />
     </div>
   );
 }

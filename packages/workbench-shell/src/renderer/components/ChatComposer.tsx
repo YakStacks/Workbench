@@ -35,6 +35,8 @@ const TOOL_PICKER_ITEMS: ToolPickerItem[] = [
 interface ChatComposerProps {
   placeholder?: string;
   onSend(text: string): void;
+  /** When true, disables the textarea and send button (e.g. during LLM generation). */
+  disabled?: boolean;
 }
 
 // ============================================================================
@@ -206,7 +208,7 @@ function ToolPickerPopover({ onSelect, onClose }: ToolPickerPopoverProps): React
 // COMPONENT
 // ============================================================================
 
-export function ChatComposer({ placeholder = 'Type a message…', onSend }: ChatComposerProps): React.ReactElement {
+export function ChatComposer({ placeholder = 'Type a message…', onSend, disabled = false }: ChatComposerProps): React.ReactElement {
   const [value, setValue] = React.useState('');
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
@@ -250,7 +252,7 @@ export function ChatComposer({ placeholder = 'Type a message…', onSend }: Chat
     }, 0);
   }
 
-  const btnStyle: React.CSSProperties = isEmpty
+  const btnStyle: React.CSSProperties = isEmpty || disabled
     ? { ...styles.sendBtn, ...styles.sendBtnDisabled }
     : styles.sendBtn;
 
@@ -281,18 +283,22 @@ export function ChatComposer({ placeholder = 'Type a message…', onSend }: Chat
 
       <textarea
         ref={textareaRef}
-        style={styles.textarea}
+        style={{
+          ...styles.textarea,
+          ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+        }}
         value={value}
-        placeholder={placeholder}
+        placeholder={disabled ? 'Generating…' : placeholder}
         rows={1}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        disabled={disabled}
         aria-label="Message input"
       />
       <button
         style={btnStyle}
         onClick={handleSend}
-        disabled={isEmpty}
+        disabled={isEmpty || disabled}
         aria-label="Send message"
       >
         Send

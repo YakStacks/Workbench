@@ -19,7 +19,7 @@
 
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import type { ChatMessage, ToolMessage } from '../types/chat';
+import type { ChatMessage, AssistantMessage, ToolMessage } from '../types/chat';
 import type { RuntimeEvent } from '../types/runtimeEvents';
 import { storageGet, storageSet } from '../storage/storageClient';
 
@@ -47,6 +47,23 @@ interface ChatStoreState {
 
   /** Remove all messages for a workspace (call on workspace delete). */
   clearWorkspace(workspaceId: string): void;
+
+  /**
+   * Patch an existing AssistantMessage in-place (for streaming).
+   *
+   * Typically called with { content: newContent } during streaming to append
+   * delta text to the assistant bubble without creating new messages.
+   * Does NOT persist to disk mid-stream (caller must call appendMessage first,
+   * then use this to update content, and let the final persist happen naturally
+   * via setMessages or a terminal appendMessage call if needed).
+   *
+   * Persists to disk on each call (acceptable cost for streaming UX).
+   */
+  updateAssistantMessage(
+    workspaceId: string,
+    messageId: string,
+    patch: Partial<Pick<AssistantMessage, 'content'>>,
+  ): void;
 
   /**
    * Ingest a Shell RuntimeEvent and update the ToolMessage timeline.
@@ -108,6 +125,19 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     delete next[workspaceId];
     set({ messagesByWorkspaceId: next });
     storageSet('chat', next);
+  },
+
+  updateAssistantMessage: (workspaceId, messageId, patch) => {
+    const current = get().messagesByWorkspaceId;
+    const msgs = current[workspaceId] ?? [];
+    const next = (msgs as ChatMessage[]).map((m) =>
+      m.id === messageId && m.role === 'assistant'
+        ? ({ ...m, ...patch } as AssistantMessage)
+        : m
+    );
+    const nextMap = { ...current, [workspaceId]: next };
+    set({ messagesByWorkspaceId: nextMap });
+    storageSet('chat', nextMap);
   },
 
   ingestRuntimeEvent: (evt) => {
