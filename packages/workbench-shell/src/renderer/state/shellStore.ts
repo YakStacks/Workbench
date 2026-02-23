@@ -41,6 +41,8 @@ export interface LogEntry {
   type: string;
   timestamp: number;
   label: string;
+  /** Optional: workspace that generated this event (for Runs filtered view). */
+  workspaceId?: string;
 }
 
 // ============================================================================

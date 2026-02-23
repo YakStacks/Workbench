@@ -8,6 +8,7 @@
 import React from 'react';
 import type { WorkbenchWorkspace } from '../../types';
 import type { SidebarSection } from '../state/shellStore';
+import { WorkspaceTabsPanel } from './WorkspaceTabsPanel';
 
 // ============================================================================
 // TYPES
@@ -27,7 +28,7 @@ interface MainPanelProps {
 const styles: Record<string, React.CSSProperties> = {
   panel: {
     flex: 1,
-    overflow: 'auto',
+    overflow: 'hidden',
     background: '#111',
     position: 'relative',
   },
@@ -47,10 +48,11 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function MainPanel({ activeSection, activeWorkspace, pages }: MainPanelProps): React.ReactElement {
   // If we're in 'workspaces' section and have an active workspace, render it
+  // wrapped in WorkspaceTabsPanel (Chat / Artifacts / Runs tabs).
   if (activeSection === 'workspaces' && activeWorkspace) {
     return (
       <main style={styles.panel} role="main">
-        {activeWorkspace.render()}
+        <WorkspaceTabsPanel workspace={activeWorkspace} />
       </main>
     );
   }

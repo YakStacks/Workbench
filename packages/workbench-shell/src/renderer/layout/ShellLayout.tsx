@@ -14,6 +14,7 @@ import { Sidebar } from './Sidebar';
 import { TabBar } from './TabBar';
 import { MainPanel } from './MainPanel';
 import { LogDrawer } from './LogDrawer';
+import { RuntimeBridge } from './RuntimeBridge';
 import { useShellStore } from '../state/shellStore';
 import type { SidebarSection } from '../state/shellStore';
 
@@ -68,6 +69,9 @@ export function ShellLayout({ pages }: ShellLayoutProps): React.ReactElement {
 
   return (
     <div style={styles.root}>
+      {/* Single runtime subscription — feeds LogDrawer + ChatTimeline */}
+      <RuntimeBridge />
+
       {/* Left sidebar */}
       <Sidebar active={activeSection} onSelect={setActiveSection} />
 
@@ -86,7 +90,7 @@ export function ShellLayout({ pages }: ShellLayoutProps): React.ReactElement {
           pages={pages}
         />
 
-        {/* LogDrawer is self-contained: subscribes to runtime, reads from store */}
+        {/* LogDrawer reads from store only — no direct runtime subscription */}
         <LogDrawer
           open={logDrawerOpen}
           onToggle={toggleLogDrawer}

@@ -1,14 +1,13 @@
 /**
  * LogDrawer — collapsible bottom drawer for runtime observability.
  *
- * Phase 6: Self-contained. Subscribes to EventBus via useRuntime() on mount.
- * Writes entries into shellStore.logEvents (cap 200).
- * Unsubscribes on unmount — no memory leaks.
+ * Phase A: Reads logEvents from shellStore only.
+ * The single runtime subscription now lives in RuntimeBridge (ShellLayout).
+ * This component is purely presentational — no direct runtime access.
  */
 
 import React from 'react';
 import { useShellStore } from '../state/shellStore';
-import { useRuntime } from '../../runtime/runtimeContext';
 
 // ============================================================================
 // TYPES
@@ -30,32 +29,6 @@ function formatTs(timestamp: number): string {
     minute: '2-digit',
     second: '2-digit',
   });
-}
-
-/**
- * Convert a raw Core RuntimeEvent (unknown shape) to a human-readable label.
- * Only the `type` field is trusted for branching; everything else is optional.
- */
-function eventToLabel(event: unknown): string {
-  if (event === null || typeof event !== 'object') return String(event);
-  const e = event as Record<string, unknown>;
-  const type = typeof e['type'] === 'string' ? e['type'] : '?';
-  switch (type) {
-    case 'tool:requested':
-      return `Tool requested: ${e['toolName'] ?? '?'}`;
-    case 'tool:started':
-      return `Tool started: ${e['toolName'] ?? '?'} (${e['runId'] ?? '?'})`;
-    case 'tool:verified':
-      return `Tool verified: ${e['toolName'] ?? '?'} — ${e['status'] ?? '?'}`;
-    case 'tool:failed':
-      return `Tool failed: ${e['toolName'] ?? '?'} — ${e['reason'] ?? '?'}`;
-    case 'doctor:run': {
-      const s = (e['summary'] ?? {}) as Record<string, unknown>;
-      return `Doctor ran — PASS ${s['pass'] ?? 0} WARN ${s['warn'] ?? 0} FAIL ${s['fail'] ?? 0}`;
-    }
-    default:
-      return type;
-  }
 }
 
 const DRAWER_HEIGHT = 200;
@@ -134,21 +107,7 @@ const styles: Record<string, React.CSSProperties> = {
 // ============================================================================
 
 export function LogDrawer({ open, onToggle }: LogDrawerProps): React.ReactElement {
-  const { logEvents, addLogEvent } = useShellStore();
-  const runtime = useRuntime();
-
-  // Subscribe once on mount; runtime is a stable singleton.
-  React.useEffect(() => {
-    const unsubscribe = runtime.subscribeToEvents((event) => {
-      const e = event as Record<string, unknown>;
-      addLogEvent({
-        type: typeof e['type'] === 'string' ? e['type'] : 'unknown',
-        timestamp: typeof e['timestamp'] === 'number' ? e['timestamp'] : Date.now(),
-        label: eventToLabel(event),
-      });
-    });
-    return unsubscribe;
-  }, [runtime, addLogEvent]);
+  const { logEvents } = useShellStore();
 
   return (
     <div style={styles.wrapper}>

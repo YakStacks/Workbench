@@ -59,7 +59,7 @@ function PipewrenchPanel({ title }: { title: string }): React.ReactElement {
       ]);
 
       try {
-        const raw = await runtime.runTool({ name: 'pipewrench', payload: { probe } });
+        const raw = await runtime.runTool({ toolName: 'pipewrench', input: { probe } });
         const detail = raw != null ? JSON.stringify(raw) : 'ok';
         setResults((prev) =>
           prev.map((r) =>

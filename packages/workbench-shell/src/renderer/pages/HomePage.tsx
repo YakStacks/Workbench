@@ -7,12 +7,18 @@
  *
  * Does NOT manage persistence directly — delegates to workspaceStore.
  * Does NOT import specific apps — reads from appRegistry.
+ *
+ * Chat-first additions:
+ *   - Empty state shows "Start a session" button (creates Butler workspace).
+ *   - Deleting a workspace also clears its chat messages from chatStore.
  */
 
 import React from 'react';
 import { getAllApps, getApp } from '../../appRegistry';
 import { useWorkspaceStore } from '../state/workspaceStore';
 import { useShellStore } from '../state/shellStore';
+import { useChatStore } from '../state/chatStore';
+import { useArtifactStore } from '../state/artifactStore';
 import { WorkspaceCard } from '../components/WorkspaceCard';
 import type { WorkbenchApp } from '../../types';
 
@@ -75,6 +81,35 @@ const styles: Record<string, React.CSSProperties> = {
     fontStyle: 'italic',
     padding: '12px 0',
   },
+  // Empty state (no workspaces at all)
+  emptyState: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    padding: '48px 0',
+    color: '#333',
+  },
+  emptyStateTitle: {
+    fontSize: 15,
+    color: '#444',
+  },
+  emptyStateDesc: {
+    fontSize: 12,
+    color: '#2a2a2a',
+    textAlign: 'center',
+  },
+  startBtn: {
+    padding: '10px 24px',
+    background: '#1e2a3a',
+    border: '1px solid #2a3f5a',
+    borderRadius: 8,
+    color: '#4d9fff',
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
 };
 
 // ============================================================================
@@ -84,6 +119,8 @@ const styles: Record<string, React.CSSProperties> = {
 export function HomePage(): React.ReactElement {
   const { workspaces, upsertWorkspace, deleteWorkspace, touchWorkspace } = useWorkspaceStore();
   const { openTab } = useShellStore();
+  const { clearWorkspace } = useChatStore();
+  const { clearWorkspace: clearArtifacts } = useArtifactStore();
   const apps = getAllApps();
 
   // Sort recent: newest first
@@ -109,11 +146,10 @@ export function HomePage(): React.ReactElement {
     const app = getApp(persisted.appId);
     if (!app) return;
 
-    // Re-hydrate workspace from persisted record
+    // Re-hydrate workspace from persisted record.
     // In Phase 5, apps will provide a hydrate() method.
-    // For now we call createWorkspace() with the persisted ID overridden.
     app.createWorkspace().then((ws) => {
-      // Patch with persisted data
+      // Patch with persisted ID/title so messages resolve correctly
       (ws as { id: string }).id = persisted.id;
       (ws as { title: string }).title = persisted.title;
       touchWorkspace(persisted.id);
@@ -122,7 +158,17 @@ export function HomePage(): React.ReactElement {
   }
 
   function handleDelete(workspaceId: string) {
+    // Clear chat messages and artifacts for this workspace before removing it
+    clearWorkspace(workspaceId);
+    clearArtifacts(workspaceId);
     deleteWorkspace(workspaceId);
+  }
+
+  async function handleStartSession() {
+    const butlerApp = apps.find((a) => a.id === 'butler');
+    if (butlerApp) {
+      await handleNew(butlerApp);
+    }
   }
 
   return (
@@ -131,7 +177,19 @@ export function HomePage(): React.ReactElement {
       <section>
         <div style={styles.sectionLabel}>Recent Workspaces</div>
         {recent.length === 0 ? (
-          <div style={styles.emptyHint}>No workspaces yet. Create one below.</div>
+          <div style={styles.emptyState}>
+            <div style={styles.emptyStateTitle}>No workspaces yet</div>
+            <div style={styles.emptyStateDesc}>
+              Start a Butler session to begin working.
+            </div>
+            <button
+              style={styles.startBtn}
+              onClick={handleStartSession}
+              aria-label="Start a session"
+            >
+              Start a session
+            </button>
+          </div>
         ) : (
           <div style={styles.grid}>
             {recent.map((ws) => {

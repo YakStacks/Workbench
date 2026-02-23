@@ -25,7 +25,7 @@ function MaestroPanel({ title }: { title: string }): React.ReactElement {
     const ts = new Date().toLocaleTimeString();
     setLog((prev) => [...prev, `[${ts}] Running tool — echo...`]);
     try {
-      const result = await runtime.runTool({ name: 'echo', payload: 'hello from maestro' });
+      const result = await runtime.runTool({ toolName: 'echo', input: 'hello from maestro' });
       const out = JSON.stringify(result);
       setLog((prev) => [...prev, `[${ts}] Done: ${out}`]);
     } catch (err) {
