@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    // noUnusedLocals / noUnusedParameters intentionally omitted:
+    // Core's Phase 1 runner stubs have unused parameter names and
+    // TypeScript applies these checks to transitive imports too.
+    // Core must not be modified to fix Shell-level config choices.
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@workbench/core": ["../../src/core/index.ts"],
+      "@workbench/core/events": ["../../src/core/events.ts"],
+      "@workbench/core/runner": ["../../src/core/runner.ts"]
+    }
+  },
+  "include": ["src"]
+}
