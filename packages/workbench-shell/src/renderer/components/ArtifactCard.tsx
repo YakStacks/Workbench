@@ -2,12 +2,15 @@
  * ArtifactCard — displays a single artifact in the Artifacts tab.
  *
  * Shows: kind badge, title, createdAt, content preview (~120 chars).
- * Buttons: Open (shows full content in Modal), Copy, Delete.
+ * Buttons: Open (modal), Copy ▼ (dropdown: Markdown/Text/JSON), Open as Workspace, Delete.
  */
 
 import React from 'react';
 import type { Artifact } from '../types/artifacts';
 import { Modal } from './Modal';
+import { openArtifactAsWorkspace } from '../templates/openArtifactAsWorkspace';
+import { copyText } from '../utils/clipboard';
+import { artifactToMarkdown, artifactToJsonString, artifactToPlainText } from '../utils/exportFormatters';
 
 // ============================================================================
 // HELPERS
@@ -82,6 +85,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 6,
     marginTop: 2,
+    flexWrap: 'wrap',
+    alignItems: 'center',
   },
   btn: {
     fontSize: 11,
@@ -96,6 +101,50 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#4d9fff',
     borderColor: '#1e2a3a',
     background: '#0d1a26',
+  },
+  btnWorkspace: {
+    color: '#8b6fde',
+    borderColor: '#2a1e3a',
+    background: '#1a0d26',
+  },
+  // Copy dropdown wrapper
+  copyWrapper: {
+    position: 'relative' as const,
+    display: 'inline-block',
+  },
+  copyDropdown: {
+    position: 'absolute' as const,
+    bottom: '100%',
+    left: 0,
+    marginBottom: 4,
+    background: '#1a1a1a',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '4px 0',
+    zIndex: 100,
+    minWidth: 140,
+    boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+  },
+  copyOption: {
+    display: 'block',
+    width: '100%',
+    padding: '6px 12px',
+    fontSize: 11,
+    color: '#999',
+    background: 'transparent',
+    border: 'none',
+    textAlign: 'left' as const,
+    cursor: 'pointer',
+  },
+  copyOptionDisabled: {
+    color: '#333',
+    cursor: 'default',
+  },
+  // Inline toast
+  toast: {
+    fontSize: 10,
+    color: '#4d9fff',
+    marginLeft: 4,
   },
   // Modal content
   modalContent: {
@@ -119,19 +168,56 @@ interface ArtifactCardProps {
 
 export function ArtifactCard({ artifact, onDelete }: ArtifactCardProps): React.ReactElement {
   const [modalOpen, setModalOpen] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
+  const [copyMenuOpen, setCopyMenuOpen] = React.useState(false);
+  const [toast, setToast] = React.useState<string | null>(null);
 
   const kindColor = KIND_COLORS[artifact.kind] ?? '#888';
   const preview = artifact.content.length > 120
     ? artifact.content.slice(0, 120) + '…'
     : artifact.content;
 
-  function handleCopy() {
-    navigator.clipboard?.writeText(artifact.content).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+  // Close copy menu on outside click
+  React.useEffect(() => {
+    if (!copyMenuOpen) return;
+    function handleClick() { setCopyMenuOpen(false); }
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [copyMenuOpen]);
+
+  function showToast(msg: string) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 1200);
+  }
+
+  async function handleCopyMarkdown() {
+    const text = artifactToMarkdown(artifact);
+    const ok = await copyText(text);
+    showToast(ok ? 'Copied!' : 'Failed');
+    setCopyMenuOpen(false);
+  }
+
+  async function handleCopyText() {
+    const text = artifactToPlainText(artifact);
+    const ok = await copyText(text);
+    showToast(ok ? 'Copied!' : 'Failed');
+    setCopyMenuOpen(false);
+  }
+
+  async function handleCopyJson() {
+    const text = artifactToJsonString(artifact);
+    if (!text) return;
+    const ok = await copyText(text);
+    showToast(ok ? 'Copied!' : 'Failed');
+    setCopyMenuOpen(false);
+  }
+
+  function handleOpenAsWorkspace() {
+    openArtifactAsWorkspace(artifact).catch((err) => {
+      console.error('[ArtifactCard] Open as Workspace failed:', err);
     });
   }
+
+  const jsonAvailable = artifact.kind === 'json';
 
   return (
     <>
@@ -148,12 +234,42 @@ export function ArtifactCard({ artifact, onDelete }: ArtifactCardProps): React.R
           <button style={{ ...styles.btn, ...styles.btnOpen }} onClick={() => setModalOpen(true)}>
             Open
           </button>
-          <button style={styles.btn} onClick={handleCopy}>
-            {copied ? 'Copied!' : 'Copy'}
+
+          {/* Copy dropdown */}
+          <div style={styles.copyWrapper}>
+            <button
+              style={styles.btn}
+              onClick={(e) => { e.stopPropagation(); setCopyMenuOpen(!copyMenuOpen); }}
+            >
+              Copy ▾
+            </button>
+            {copyMenuOpen && (
+              <div style={styles.copyDropdown} onClick={(e) => e.stopPropagation()}>
+                <button style={styles.copyOption} onClick={handleCopyMarkdown}>
+                  Copy as Markdown
+                </button>
+                <button style={styles.copyOption} onClick={handleCopyText}>
+                  Copy as Text
+                </button>
+                <button
+                  style={jsonAvailable ? styles.copyOption : { ...styles.copyOption, ...styles.copyOptionDisabled }}
+                  onClick={jsonAvailable ? handleCopyJson : undefined}
+                  disabled={!jsonAvailable}
+                >
+                  Copy as JSON
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button style={{ ...styles.btn, ...styles.btnWorkspace }} onClick={handleOpenAsWorkspace}>
+            Open as Workspace
           </button>
           <button style={styles.btn} onClick={() => onDelete(artifact.id)}>
             Delete
           </button>
+
+          {toast && <span style={styles.toast}>{toast}</span>}
         </div>
       </div>
 
