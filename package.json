@@ -13,7 +13,7 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && npm run build:electron && electron . --dev\"",
     "dev:mcp-debug": "npm run build:electron && electron .",
     "build": "vite build && npm run build:electron",
-    "build:electron": "tsc main.ts preload.ts doctor.ts permissions.ts src/runtime/run-manager.ts src/runtime/process-registry.ts secrets-manager.ts src/runtime/sessions-manager.ts tool-manifest.ts dry-run.ts memory-manager.ts src/runtime/tool-dispatch.ts environment-detection.ts guardrails.ts asset-manager.ts --outDir . --esModuleInterop --module commonjs --strict --skipLibCheck && node build-electron.cjs",
+    "build:electron": "tsc main.ts preload.ts storage.ts doctor.ts permissions.ts src/runtime/run-manager.ts src/runtime/process-registry.ts secrets-manager.ts src/runtime/sessions-manager.ts tool-manifest.ts dry-run.ts memory-manager.ts src/runtime/tool-dispatch.ts environment-detection.ts guardrails.ts asset-manager.ts --outDir . --esModuleInterop --module commonjs --strict --skipLibCheck && node build-electron.cjs",
     "typecheck:electron": "tsc -p tsconfig.electron.json --noEmit",
     "start": "electron .",
     "package": "npm run build && electron-builder --win --x64",
@@ -30,6 +30,9 @@
     "react-dom": "^18.0.0",
     "uuid": "^9.0.1",
     "youtube-transcript": "^1.2.1"
+  },
+  "overrides": {
+    "ajv": "^8.18.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
@@ -64,6 +67,7 @@
       "environment-detection.cjs",
       "guardrails.cjs",
       "asset-manager.cjs",
+      "storage.cjs",
       "src/**/*",
       "plugins/**/*",
       "build/**/*",
