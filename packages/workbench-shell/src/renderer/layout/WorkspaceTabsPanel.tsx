@@ -13,6 +13,7 @@ import React from 'react';
 import type { WorkbenchWorkspace } from '../../types';
 import { ArtifactList } from '../components/ArtifactList';
 import { RunsList } from '../components/RunsList';
+import { useShellStore } from '../state/shellStore';
 
 // ============================================================================
 // TYPES
@@ -72,7 +73,8 @@ const styles: Record<string, React.CSSProperties> = {
 // ============================================================================
 
 export function WorkspaceTabsPanel({ workspace }: WorkspaceTabsPanelProps): React.ReactElement {
-  const [activeTab, setActiveTab] = React.useState<InnerTab>('chat');
+  const defaultPane = useShellStore((s) => s.workspacePaneById[workspace.id]);
+  const [activeTab, setActiveTab] = React.useState<InnerTab>(defaultPane ?? 'chat');
 
   const tabs: { id: InnerTab; label: string }[] = [
     { id: 'chat', label: 'Chat' },

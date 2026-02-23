@@ -49,6 +49,8 @@ export interface LogEntry {
 // STORE SHAPE
 // ============================================================================
 
+type InnerPane = 'chat' | 'artifacts' | 'runs';
+
 interface ShellState {
   // ── Sidebar
   activeSection: SidebarSection;
@@ -61,6 +63,11 @@ interface ShellState {
   openTab(workspace: WorkbenchWorkspace): void;
   closeTab(workspaceId: string): void;
   activateTab(workspaceId: string): void;
+
+  // ── Default pane per workspace (set by templates)
+  workspacePaneById: Record<string, InnerPane>;
+  setWorkspacePane(workspaceId: string, pane: InnerPane): void;
+  getWorkspacePane(workspaceId: string): InnerPane | undefined;
 
   // ── Log drawer
   logDrawerOpen: boolean;
@@ -130,6 +137,17 @@ export const useShellStore = create<ShellState>((set, get) => ({
     if (!tab) return;
     set({ activeTabId: workspaceId, activeSection: 'workspaces' });
     tab.workspace.onMount?.();
+  },
+
+  // ── Default pane per workspace
+  workspacePaneById: {},
+  setWorkspacePane: (workspaceId, pane) => {
+    set((s) => ({
+      workspacePaneById: { ...s.workspacePaneById, [workspaceId]: pane },
+    }));
+  },
+  getWorkspacePane: (workspaceId) => {
+    return get().workspacePaneById[workspaceId];
   },
 
   // ── Log drawer

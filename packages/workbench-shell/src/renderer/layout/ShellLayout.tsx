@@ -15,6 +15,7 @@ import { TabBar } from './TabBar';
 import { MainPanel } from './MainPanel';
 import { LogDrawer } from './LogDrawer';
 import { RuntimeBridge } from './RuntimeBridge';
+import { SupervisorBridge } from './SupervisorBridge';
 import { useShellStore } from '../state/shellStore';
 import type { SidebarSection } from '../state/shellStore';
 
@@ -71,6 +72,8 @@ export function ShellLayout({ pages }: ShellLayoutProps): React.ReactElement {
     <div style={styles.root}>
       {/* Single runtime subscription — feeds LogDrawer + ChatTimeline */}
       <RuntimeBridge />
+      {/* Pappy supervisor — reacts to failures/warnings */}
+      <SupervisorBridge />
 
       {/* Left sidebar */}
       <Sidebar active={activeSection} onSelect={setActiveSection} />

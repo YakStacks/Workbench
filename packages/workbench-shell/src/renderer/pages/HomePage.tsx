@@ -20,6 +20,7 @@ import { useShellStore } from '../state/shellStore';
 import { useChatStore } from '../state/chatStore';
 import { useArtifactStore } from '../state/artifactStore';
 import { WorkspaceCard } from '../components/WorkspaceCard';
+import { NewWorkspaceWizard } from '../components/NewWorkspaceWizard';
 import type { WorkbenchApp } from '../../types';
 
 // ============================================================================
@@ -122,6 +123,7 @@ export function HomePage(): React.ReactElement {
   const { clearWorkspace } = useChatStore();
   const { clearWorkspace: clearArtifacts } = useArtifactStore();
   const apps = getAllApps();
+  const [wizardOpen, setWizardOpen] = React.useState(false);
 
   // Sort recent: newest first
   const recent = [...workspaces].sort(
@@ -173,6 +175,9 @@ export function HomePage(): React.ReactElement {
 
   return (
     <div style={styles.page}>
+      {/* Wizard modal */}
+      {wizardOpen && <NewWorkspaceWizard onClose={() => setWizardOpen(false)} />}
+
       {/* Recent workspaces */}
       <section>
         <div style={styles.sectionLabel}>Recent Workspaces</div>
@@ -180,14 +185,14 @@ export function HomePage(): React.ReactElement {
           <div style={styles.emptyState}>
             <div style={styles.emptyStateTitle}>No workspaces yet</div>
             <div style={styles.emptyStateDesc}>
-              Start a Butler session to begin working.
+              Start a Butler session or create a workspace from a template.
             </div>
             <button
               style={styles.startBtn}
-              onClick={handleStartSession}
-              aria-label="Start a session"
+              onClick={() => setWizardOpen(true)}
+              aria-label="New Workspace"
             >
-              Start a session
+              New Workspace
             </button>
           </div>
         ) : (
@@ -212,23 +217,27 @@ export function HomePage(): React.ReactElement {
       {/* App templates */}
       <section>
         <div style={styles.sectionLabel}>New Workspace</div>
-        {apps.length === 0 ? (
-          <div style={styles.emptyHint}>No apps installed.</div>
-        ) : (
-          <div style={styles.appRow}>
-            {apps.map((app) => (
-              <button
-                key={app.id}
-                style={styles.newBtn}
-                onClick={() => handleNew(app)}
-                aria-label={`New ${app.name} workspace`}
-              >
-                <span style={styles.newBtnIcon}>{app.icon ?? '◻'}</span>
-                {app.name}
-              </button>
-            ))}
-          </div>
-        )}
+        <div style={styles.appRow}>
+          <button
+            style={{ ...styles.newBtn, borderColor: '#2a3f5a', color: '#4d9fff' }}
+            onClick={() => setWizardOpen(true)}
+            aria-label="New Workspace from template"
+          >
+            <span style={styles.newBtnIcon}>+</span>
+            From Template…
+          </button>
+          {apps.map((app) => (
+            <button
+              key={app.id}
+              style={styles.newBtn}
+              onClick={() => handleNew(app)}
+              aria-label={`New ${app.name} workspace`}
+            >
+              <span style={styles.newBtnIcon}>{app.icon ?? '◻'}</span>
+              {app.name}
+            </button>
+          ))}
+        </div>
       </section>
     </div>
   );

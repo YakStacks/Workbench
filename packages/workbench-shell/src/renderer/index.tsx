@@ -20,6 +20,7 @@ import { ShellLayout } from './layout/ShellLayout';
 import { HomePage } from './pages/HomePage';
 import { createRuntime } from '../runtime/createRuntime';
 import { RuntimeContext } from '../runtime/runtimeContext';
+import { setRuntime } from './runtime/runtimeSingleton';
 import { useWorkspaceStore, waitForHydration } from './state/workspaceStore';
 import { useShellStore } from './state/shellStore';
 import { useSettingsStore, waitForSettings } from './state/settingsStore';
@@ -38,7 +39,9 @@ registerApp(PipewrenchApp);
 
 // Created once at app launch. Never re-created. Never stored in Zustand.
 // All components access it via useRuntime() through RuntimeContext.
+// Non-React code (e.g. applyTemplate) accesses it via runtimeSingleton.
 const runtime = createRuntime();
+setRuntime(runtime);
 
 // ============================================================================
 // BOOTSTRAP — auto-create Butler workspace on first clean launch
