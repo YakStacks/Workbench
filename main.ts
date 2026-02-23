@@ -56,6 +56,25 @@ let tools: Map<string, any> = new Map();
 // Add isQuitting flag to app
 let isQuitting = false;
 
+// Load product branding from product.json if present
+function loadProductConfig(): { title: string } {
+  const locations = [
+    path.join(process.resourcesPath || '', '..', 'product.json'),
+    path.join(app.getAppPath(), '..', 'product.json'),
+    path.join(app.getAppPath(), 'product.json'),
+  ];
+  for (const loc of locations) {
+    try {
+      if (fs.existsSync(loc)) {
+        const cfg = JSON.parse(fs.readFileSync(loc, 'utf-8'));
+        if (cfg?.branding?.title) return { title: cfg.branding.title };
+      }
+    } catch {}
+  }
+  return { title: 'Workbench' };
+}
+const productConfig = loadProductConfig();
+
 type FeatureFlagKey =
   | "L_TOOL_HEALTH_SIGNALS"
   | "M_SMART_AUTO_DIAGNOSTICS"
@@ -210,7 +229,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: "Workbench",
+    title: productConfig.title,
     ...(iconPath && { icon: iconPath }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -288,7 +307,7 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: "Show Workbench",
+      label: `Show ${productConfig.title}`,
       click: () => {
         mainWindow?.show();
         mainWindow?.focus();
@@ -304,7 +323,7 @@ function createTray() {
     },
   ]);
 
-  tray.setToolTip("Workbench");
+  tray.setToolTip(productConfig.title);
   tray.setContextMenu(contextMenu);
 
   // Double-click to show window
@@ -2363,6 +2382,9 @@ function applySafeFix(fixId: string, changes: SafeFixChange[]): {
 // ============================================================================
 // IPC HANDLERS
 // ============================================================================
+
+// Product config
+ipcMain.handle("product:config", () => productConfig);
 
 // Config
 ipcMain.handle("config:get", () => store.store);

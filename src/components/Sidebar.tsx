@@ -17,6 +17,7 @@ interface SidebarProps {
   activeView: SidebarView;
   onViewChange: (view: SidebarView) => void;
   onNewChat: () => void;
+  productName?: string;
 }
 
 const NAV_ITEMS: { view: SidebarView; icon: string; label: string }[] = [
@@ -34,13 +35,12 @@ const MORE_ITEMS: { view: SidebarView; icon: string; label: string }[] = [
   { view: 'settings', icon: '\u2699\uFE0F', label: 'Settings' },
 ];
 
-export function Sidebar({ activeView, onViewChange, onNewChat }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange, onNewChat, productName = 'Workbench' }: SidebarProps) {
   return (
     <nav className="sidebar">
       {/* Header */}
       <div className="sidebar-header">
-        <span style={{ fontSize: 18 }}>{'\u2692\uFE0F'}</span>
-        Workbench
+        {productName}
       </div>
 
       {/* Main navigation */}

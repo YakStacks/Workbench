@@ -24,6 +24,9 @@ ipcRenderer.on('stream:error', (_e, data) => {
 });
 
 contextBridge.exposeInMainWorld('workbench', {
+  // Product branding
+  getProductConfig: () => ipcRenderer.invoke('product:config'),
+
   // Config
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial: any) => ipcRenderer.invoke('config:set', partial),

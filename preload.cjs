@@ -22,6 +22,8 @@ electron_1.ipcRenderer.on('stream:error', function (_e, data) {
     streamCallbacks.delete(data.requestId);
 });
 electron_1.contextBridge.exposeInMainWorld('workbench', {
+    // Product branding
+    getProductConfig: function () { return electron_1.ipcRenderer.invoke('product:config'); },
     // Config
     getConfig: function () { return electron_1.ipcRenderer.invoke('config:get'); },
     setConfig: function (partial) { return electron_1.ipcRenderer.invoke('config:set', partial); },

@@ -112,6 +112,28 @@ var plugins = [];
 var tools = new Map();
 // Add isQuitting flag to app
 var isQuitting = false;
+// Load product branding from product.json if present
+function loadProductConfig() {
+    var _a;
+    var locations = [
+        path_1.default.join(process.resourcesPath || '', '..', 'product.json'),
+        path_1.default.join(electron_1.app.getAppPath(), '..', 'product.json'),
+        path_1.default.join(electron_1.app.getAppPath(), 'product.json'),
+    ];
+    for (var _i = 0, locations_1 = locations; _i < locations_1.length; _i++) {
+        var loc = locations_1[_i];
+        try {
+            if (fs_1.default.existsSync(loc)) {
+                var cfg = JSON.parse(fs_1.default.readFileSync(loc, 'utf-8'));
+                if ((_a = cfg === null || cfg === void 0 ? void 0 : cfg.branding) === null || _a === void 0 ? void 0 : _a.title)
+                    return { title: cfg.branding.title };
+            }
+        }
+        catch (_b) { }
+    }
+    return { title: 'Workbench' };
+}
+var productConfig = loadProductConfig();
 var DEFAULT_FEATURE_FLAGS = {
     L_TOOL_HEALTH_SIGNALS: false,
     M_SMART_AUTO_DIAGNOSTICS: false,
@@ -217,7 +239,7 @@ function createWindow() {
             iconPath = "";
         }
     }
-    mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800, title: "Workbench" }, (iconPath && { icon: iconPath })), { webPreferences: {
+    mainWindow = new electron_1.BrowserWindow(__assign(__assign({ width: 1200, height: 800, title: productConfig.title }, (iconPath && { icon: iconPath })), { webPreferences: {
             preload: path_1.default.join(__dirname, "preload.cjs"),
             nodeIntegration: false,
             contextIsolation: true,
@@ -283,7 +305,7 @@ function createTray() {
     tray = new electron_1.Tray(icon.resize({ width: 16, height: 16 }));
     var contextMenu = electron_1.Menu.buildFromTemplate([
         {
-            label: "Show Workbench",
+            label: "Show ".concat(productConfig.title),
             click: function () {
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.show();
                 mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
@@ -298,7 +320,7 @@ function createTray() {
             },
         },
     ]);
-    tray.setToolTip("Workbench");
+    tray.setToolTip(productConfig.title);
     tray.setContextMenu(contextMenu);
     // Double-click to show window
     tray.on("double-click", function () {
@@ -2170,6 +2192,8 @@ function applySafeFix(fixId, changes) {
 // ============================================================================
 // IPC HANDLERS
 // ============================================================================
+// Product config
+electron_1.ipcMain.handle("product:config", function () { return productConfig; });
 // Config
 electron_1.ipcMain.handle("config:get", function () { return store.store; });
 electron_1.ipcMain.handle("config:set", function (_e, partial) {

@@ -163,7 +163,7 @@ export default function App() {
   const [featureFlags, setFeatureFlags] = useState<FeatureFlags>(DEFAULT_FEATURE_FLAGS);
   const [showCrashRecovery, setShowCrashRecovery] = useState(false);
   const [interruptedRuns, setInterruptedRuns] = useState<any[]>([]);
-  const [productConfig, setProductConfig] = useState<any>({ branding: { title: 'Workbench' } });
+  const [productConfig, setProductConfig] = useState<any>({ branding: { title: '' } });
 
   // Tool-in-chat state
   const [pendingTool, setPendingTool] = useState<{ tool: Tool; input: any } | null>(null);
@@ -282,6 +282,7 @@ export default function App() {
   }, [tools]);
 
   useEffect(() => {
+    window.workbench.getProductConfig().then(setProductConfig);
     window.workbench.listTools().then(setTools);
 
     // Check for crash recovery
@@ -429,6 +430,7 @@ export default function App() {
           activeView={sidebarView}
           onViewChange={handleSidebarViewChange}
           onNewChat={handleNewChat}
+          productName={productConfig.branding?.title}
         />
 
         {/* Main Area */}
