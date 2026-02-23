@@ -8,12 +8,17 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      // Sub-path imports — only browser-safe Core files.
-      // The barrel (index.ts) re-exports doctor.ts which uses Node built-ins.
+      // Core sub-path imports — specific before barrel (Vite first-match wins)
       '@workbench/core/events': resolve(__dirname, '../../src/core/events.ts'),
       '@workbench/core/runner': resolve(__dirname, '../../src/core/runner.ts'),
-      // Full barrel alias kept for future type-only imports (no tree includes doctor)
       '@workbench/core': resolve(__dirname, '../../src/core/index.ts'),
+      // Shell sub-path aliases for use by apps in /apps/*
+      '@workbench/shell/types': resolve(__dirname, 'src/types.ts'),
+      '@workbench/shell/runtime': resolve(__dirname, 'src/runtime/runtimeContext.ts'),
+      // Per-app aliases
+      '@workbench-apps/maestro': resolve(__dirname, '../../apps/maestro/index.tsx'),
+      '@workbench-apps/butler': resolve(__dirname, '../../apps/butler/index.tsx'),
+      '@workbench-apps/pipewrench': resolve(__dirname, '../../apps/pipewrench/index.tsx'),
     },
   },
   server: {

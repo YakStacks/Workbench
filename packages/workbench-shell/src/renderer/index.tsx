@@ -14,6 +14,7 @@ import { createRoot } from 'react-dom/client';
 import { registerApp } from '../appRegistry';
 import { MaestroApp } from './apps/maestro';
 import { ButlerApp } from './apps/butler';
+import PipewrenchApp from '@workbench-apps/pipewrench';
 import { ShellLayout } from './layout/ShellLayout';
 import { HomePage } from './pages/HomePage';
 import { createRuntime } from '../runtime/createRuntime';
@@ -25,6 +26,7 @@ import { RuntimeContext } from '../runtime/runtimeContext';
 
 registerApp(MaestroApp);
 registerApp(ButlerApp);
+registerApp(PipewrenchApp);
 
 // ============================================================================
 // RUNTIME SINGLETON

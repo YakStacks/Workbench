@@ -18,10 +18,18 @@
     // Core must not be modified to fix Shell-level config choices.
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@workbench/core": ["../../src/core/index.ts"],
+      // Core sub-path aliases (specific before barrel)
       "@workbench/core/events": ["../../src/core/events.ts"],
-      "@workbench/core/runner": ["../../src/core/runner.ts"]
+      "@workbench/core/runner": ["../../src/core/runner.ts"],
+      "@workbench/core": ["../../src/core/index.ts"],
+      // Shell sub-path aliases for use by apps in /apps/*
+      "@workbench/shell/types": ["./src/types.ts"],
+      "@workbench/shell/runtime": ["./src/runtime/runtimeContext.ts"],
+      // Per-app aliases
+      "@workbench-apps/maestro": ["../../apps/maestro/index.tsx"],
+      "@workbench-apps/butler": ["../../apps/butler/index.tsx"],
+      "@workbench-apps/pipewrench": ["../../apps/pipewrench/index.tsx"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "../../apps"]
 }
