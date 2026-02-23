@@ -338,3 +338,10 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
         },
     },
 });
+// Shell Storage — narrow key/value API for workspaces, chat, artifacts, settings.
+// Exposed separately so renderer can detect presence via window.workbenchStorage.
+electron_1.contextBridge.exposeInMainWorld('workbenchStorage', {
+    get: function (key) { return electron_1.ipcRenderer.invoke('workbench:storage:get', { key: key }); },
+    set: function (key, value) { return electron_1.ipcRenderer.invoke('workbench:storage:set', { key: key, value: value }); },
+    del: function (key) { return electron_1.ipcRenderer.invoke('workbench:storage:delete', { key: key }); },
+});

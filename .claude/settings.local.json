@@ -41,7 +41,14 @@
       "Bash(git remote add:*)",
       "Bash(gh repo create:*)",
       "Bash(where:*)",
-      "Bash(git remote set-url:*)"
+      "Bash(git remote set-url:*)",
+      "Bash(echo:*)",
+      "Bash(node_modules/.bin/tsc:*)",
+      "Bash(tee:*)",
+      "Bash(npx vite build:*)",
+      "Bash(node_modules/.bin/vite build)",
+      "Bash(node -e \"require\\(''child_process''\\).execSync\\(''node_modules/.bin/vite build'', {stdio:''pipe'', encoding:''utf8''}\\)\")",
+      "Bash(node -e \"const {execSync}=require\\(''child_process''\\);try{execSync\\(''node_modules/.bin/vite build'',{encoding:''utf8''}\\)}catch\\(e\\){console.log\\(e.stdout\\);console.log\\(e.stderr\\)}\")"
     ]
   }
 }

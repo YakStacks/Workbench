@@ -89,6 +89,8 @@ var guardrails_1 = require("./guardrails.cjs");
 var asset_manager_1 = require("./asset-manager.cjs");
 var sessions_manager_1 = require("./src/runtime/sessions-manager.cjs");
 var core_1 = require("./src/core/index.cjs");
+var os_1 = __importDefault(require("os"));
+var storage_1 = require("./storage.cjs");
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
@@ -4154,3 +4156,90 @@ electron_1.ipcMain.handle("runs:clearInterrupted", function () {
 electron_1.ipcMain.handle("runs:hasInterrupted", function () {
     return runManager.hasInterruptedRuns();
 });
+// ── Shell Storage (workspaces, chat, artifacts, settings) ──────────────────
+// Narrow key/value IPC for the Shell renderer.  Only whitelisted keys allowed;
+// no arbitrary file paths are accessible from the renderer.
+var WORKBENCH_DIR = path_1.default.join(os_1.default.homedir(), '.workbench');
+var ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings']);
+var KEY_TO_FILE = {
+    workspaces: 'workspaces.v1.json',
+    chat: 'chat.v1.json',
+    artifacts: 'artifacts.v1.json',
+    settings: 'settings.v1.json',
+};
+electron_1.ipcMain.handle('workbench:storage:get', function (_e_1, _a) { return __awaiter(void 0, [_e_1, _a], void 0, function (_e, _b) {
+    var value, err_1;
+    var _c;
+    var key = _b.key;
+    return __generator(this, function (_d) {
+        switch (_d.label) {
+            case 0:
+                if (!ALLOWED_STORAGE_KEYS.has(key))
+                    return [2 /*return*/, { ok: false, error: 'Invalid key' }];
+                _d.label = 1;
+            case 1:
+                _d.trys.push([1, 4, , 5]);
+                return [4 /*yield*/, (0, storage_1.ensureDir)(WORKBENCH_DIR)];
+            case 2:
+                _d.sent();
+                return [4 /*yield*/, (0, storage_1.readJson)(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null)];
+            case 3:
+                value = _d.sent();
+                return [2 /*return*/, { ok: true, value: value }];
+            case 4:
+                err_1 = _d.sent();
+                return [2 /*return*/, { ok: false, error: (_c = err_1 === null || err_1 === void 0 ? void 0 : err_1.message) !== null && _c !== void 0 ? _c : String(err_1) }];
+            case 5: return [2 /*return*/];
+        }
+    });
+}); });
+electron_1.ipcMain.handle('workbench:storage:set', function (_e_1, _a) { return __awaiter(void 0, [_e_1, _a], void 0, function (_e, _b) {
+    var err_2;
+    var _c;
+    var key = _b.key, value = _b.value;
+    return __generator(this, function (_d) {
+        switch (_d.label) {
+            case 0:
+                if (!ALLOWED_STORAGE_KEYS.has(key))
+                    return [2 /*return*/, { ok: false, error: 'Invalid key' }];
+                _d.label = 1;
+            case 1:
+                _d.trys.push([1, 4, , 5]);
+                return [4 /*yield*/, (0, storage_1.ensureDir)(WORKBENCH_DIR)];
+            case 2:
+                _d.sent();
+                return [4 /*yield*/, (0, storage_1.writeJsonAtomic)(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), value)];
+            case 3:
+                _d.sent();
+                return [2 /*return*/, { ok: true }];
+            case 4:
+                err_2 = _d.sent();
+                return [2 /*return*/, { ok: false, error: (_c = err_2 === null || err_2 === void 0 ? void 0 : err_2.message) !== null && _c !== void 0 ? _c : String(err_2) }];
+            case 5: return [2 /*return*/];
+        }
+    });
+}); });
+electron_1.ipcMain.handle('workbench:storage:delete', function (_e_1, _a) { return __awaiter(void 0, [_e_1, _a], void 0, function (_e, _b) {
+    var fp, err_3;
+    var _c;
+    var key = _b.key;
+    return __generator(this, function (_d) {
+        switch (_d.label) {
+            case 0:
+                if (!ALLOWED_STORAGE_KEYS.has(key))
+                    return [2 /*return*/, { ok: false, error: 'Invalid key' }];
+                _d.label = 1;
+            case 1:
+                _d.trys.push([1, 3, , 4]);
+                fp = path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]);
+                return [4 /*yield*/, fs_1.default.promises.unlink(fp).catch(function () { })];
+            case 2:
+                _d.sent();
+                return [2 /*return*/, { ok: true }];
+            case 3:
+                err_3 = _d.sent();
+                return [2 /*return*/, { ok: false, error: (_c = err_3 === null || err_3 === void 0 ? void 0 : err_3.message) !== null && _c !== void 0 ? _c : String(err_3) }];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
