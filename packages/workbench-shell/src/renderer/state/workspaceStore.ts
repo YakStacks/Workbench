@@ -1,11 +1,12 @@
 /**
  * Workspace Store — persistence of workspaces to disk.
  *
- * Persists to localStorage in browser context.
- * In Electron, this is backed by a file via the preload bridge (future).
+ * Phase C: Hydrates asynchronously from storageGet('workspaces', []).
+ * In Electron, data is stored in ~/.workbench/workspaces.v1.json.
+ * In Vite renderer-only dev mode, falls back to localStorage.
  *
- * Phase 1: localStorage persistence (sufficient for dev/renderer).
- * Phase 6: Bridge to ~/.workbench/workspaces.json via IPC.
+ * Migration: on first load, if disk is empty, promotes data from the
+ * old localStorage key ('workbench:workspaces') to disk.
  *
  * Separate from shellStore intentionally:
  * - shellStore = ephemeral UI state (open tabs, active view)
@@ -14,29 +15,23 @@
 
 import { create } from 'zustand';
 import type { PersistedWorkspace } from '../../types';
+import { storageGet, storageSet } from '../storage/storageClient';
 
-const STORAGE_KEY = 'workbench:workspaces';
+// Old localStorage key (migration only)
+const OLD_STORAGE_KEY = 'workbench:workspaces';
 
 // ============================================================================
-// HELPERS
+// HYDRATION PROMISE
 // ============================================================================
 
-function load(): PersistedWorkspace[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as PersistedWorkspace[];
-  } catch {
-    return [];
-  }
-}
+const _ws = { resolve: null as (() => void) | null };
+const _wsReady = new Promise<void>((resolve) => {
+  _ws.resolve = resolve;
+});
 
-function save(workspaces: PersistedWorkspace[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaces));
-  } catch {
-    // Storage unavailable — fail silently in Phase 1
-  }
+/** Resolves once workspaceStore has been hydrated from disk. */
+export function waitForHydration(): Promise<void> {
+  return _wsReady;
 }
 
 // ============================================================================
@@ -48,11 +43,11 @@ interface WorkspaceStoreState {
 
   upsertWorkspace(ws: PersistedWorkspace): void;
   deleteWorkspace(id: string): void;
-  touchWorkspace(id: string): void; // updates lastOpened to now
+  touchWorkspace(id: string): void;
 }
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => ({
-  workspaces: load(),
+  workspaces: [],
 
   upsertWorkspace: (ws) => {
     const existing = get().workspaces;
@@ -60,21 +55,47 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => ({
     const next = idx === -1
       ? [...existing, ws]
       : existing.map((w, i) => (i === idx ? ws : w));
-    save(next);
     set({ workspaces: next });
+    storageSet('workspaces', next);
   },
 
   deleteWorkspace: (id) => {
     const next = get().workspaces.filter((w) => w.id !== id);
-    save(next);
     set({ workspaces: next });
+    storageSet('workspaces', next);
   },
 
   touchWorkspace: (id) => {
     const next = get().workspaces.map((w) =>
       w.id === id ? { ...w, lastOpened: new Date().toISOString() } : w
     );
-    save(next);
     set({ workspaces: next });
+    storageSet('workspaces', next);
   },
 }));
+
+// ============================================================================
+// ASYNC HYDRATION (runs once at module load)
+// ============================================================================
+
+(async () => {
+  const fromDisk = await storageGet<PersistedWorkspace[] | null>('workspaces', null);
+
+  if (fromDisk != null) {
+    useWorkspaceStore.setState({ workspaces: fromDisk });
+  } else {
+    // No disk data — migrate from old localStorage key
+    try {
+      const raw = localStorage.getItem(OLD_STORAGE_KEY);
+      if (raw) {
+        const migrated = JSON.parse(raw) as PersistedWorkspace[];
+        useWorkspaceStore.setState({ workspaces: migrated });
+        await storageSet('workspaces', migrated);
+      }
+    } catch {
+      // localStorage unavailable or unparseable — start fresh
+    }
+  }
+
+  _ws.resolve?.();
+})();

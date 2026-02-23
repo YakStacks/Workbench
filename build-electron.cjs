@@ -3,9 +3,9 @@ const path = require('path');
 
 // Root-level files
 const rootFiles = [
-  'main', 'preload', 'doctor', 'permissions', 'secrets-manager', 
+  'main', 'preload', 'doctor', 'permissions', 'secrets-manager',
   'tool-manifest', 'dry-run', 'memory-manager', 'environment-detection',
-  'guardrails', 'asset-manager'
+  'guardrails', 'asset-manager', 'storage'
 ];
 
 // Runtime files (in src/runtime/)

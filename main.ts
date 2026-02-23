@@ -30,6 +30,8 @@ import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from ".
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./src/runtime/sessions-manager";
 import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics, eventBus, createTimestamp } from "./src/core";
+import os from "os";
+import { ensureDir, readJson, writeJsonAtomic } from "./storage";
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -4481,4 +4483,49 @@ ipcMain.handle("runs:clearInterrupted", () => {
 // Check if there are interrupted runs
 ipcMain.handle("runs:hasInterrupted", () => {
   return runManager.hasInterruptedRuns();
+});
+
+// ── Shell Storage (workspaces, chat, artifacts, settings) ──────────────────
+// Narrow key/value IPC for the Shell renderer.  Only whitelisted keys allowed;
+// no arbitrary file paths are accessible from the renderer.
+const WORKBENCH_DIR = path.join(os.homedir(), '.workbench');
+const ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings']);
+const KEY_TO_FILE: Record<string, string> = {
+  workspaces: 'workspaces.v1.json',
+  chat: 'chat.v1.json',
+  artifacts: 'artifacts.v1.json',
+  settings: 'settings.v1.json',
+};
+
+ipcMain.handle('workbench:storage:get', async (_e, { key }: { key: string }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    await ensureDir(WORKBENCH_DIR);
+    const value = await readJson(path.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null);
+    return { ok: true, value };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('workbench:storage:set', async (_e, { key, value }: { key: string; value: unknown }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    await ensureDir(WORKBENCH_DIR);
+    await writeJsonAtomic(path.join(WORKBENCH_DIR, KEY_TO_FILE[key]), value);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('workbench:storage:delete', async (_e, { key }: { key: string }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    const fp = path.join(WORKBENCH_DIR, KEY_TO_FILE[key]);
+    await fs.promises.unlink(fp).catch(() => { /* already absent — ignore */ });
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 });

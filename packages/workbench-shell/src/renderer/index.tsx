@@ -20,8 +20,9 @@ import { ShellLayout } from './layout/ShellLayout';
 import { HomePage } from './pages/HomePage';
 import { createRuntime } from '../runtime/createRuntime';
 import { RuntimeContext } from '../runtime/runtimeContext';
-import { useWorkspaceStore } from './state/workspaceStore';
+import { useWorkspaceStore, waitForHydration } from './state/workspaceStore';
 import { useShellStore } from './state/shellStore';
+import { useSettingsStore, waitForSettings } from './state/settingsStore';
 
 // ============================================================================
 // REGISTER APPS
@@ -43,21 +44,24 @@ const runtime = createRuntime();
 // BOOTSTRAP — auto-create Butler workspace on first clean launch
 // ============================================================================
 
-const BOOTSTRAP_FLAG = 'workbench.hasBootstrapped';
-
 async function maybeBootstrap(): Promise<void> {
-  // Only run once per installation. Never re-create if user cleared all workspaces.
-  if (localStorage.getItem(BOOTSTRAP_FLAG)) return;
+  // Wait for disk hydration before checking state
+  await Promise.all([waitForHydration(), waitForSettings()]);
+
+  const settings = useSettingsStore.getState();
+
+  // Only run once per installation.
+  if (settings.hasBootstrapped) return;
 
   const workspaces = useWorkspaceStore.getState().workspaces;
   if (workspaces.length > 0) {
     // Existing data — mark bootstrapped and leave state alone
-    localStorage.setItem(BOOTSTRAP_FLAG, 'true');
+    settings.setHasBootstrapped(true);
     return;
   }
 
   // Fresh install: create default Butler workspace
-  localStorage.setItem(BOOTSTRAP_FLAG, 'true');
+  settings.setHasBootstrapped(true);
 
   const ws = await ButlerApp.createWorkspace();
   useWorkspaceStore.getState().upsertWorkspace({

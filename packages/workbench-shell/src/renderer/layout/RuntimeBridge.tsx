@@ -18,14 +18,13 @@ import { useRuntime } from '../../runtime/runtimeContext';
 import { useShellStore } from '../state/shellStore';
 import { useChatStore } from '../state/chatStore';
 import { useArtifactStore } from '../state/artifactStore';
+import { useSettingsStore } from '../state/settingsStore';
 import type { RuntimeEvent, ToolVerifiedEvent, DoctorRunEvent } from '../types/runtimeEvents';
 import type { Artifact, ArtifactKind } from '../types/artifacts';
 
 // ── Auto-artifact whitelist ───────────────────────────────────────────────────
 // Only tools in this set produce automatic artifacts to avoid spam.
 const AUTO_ARTIFACT_TOOLS = new Set(['doctor', 'echo', 'pipewrench']);
-
-const AUTO_ARTIFACTS_FLAG = 'workbench.autoArtifacts';
 
 // ── Human-readable log label ──────────────────────────────────────────────────
 
@@ -48,17 +47,7 @@ function eventToLabel(evt: RuntimeEvent): string {
   }
 }
 
-// ── Auto-artifact helper ──────────────────────────────────────────────────────
-
-function autoArtifactsEnabled(): boolean {
-  try {
-    const flag = localStorage.getItem(AUTO_ARTIFACTS_FLAG);
-    // Default true: only disabled if explicitly set to "false"
-    return flag !== 'false';
-  } catch {
-    return true;
-  }
-}
+// ── Auto-artifact helpers ─────────────────────────────────────────────────────
 
 function makeArtifactFromVerified(evt: ToolVerifiedEvent): Artifact | null {
   if (!evt.workspaceId) return null;
@@ -105,6 +94,7 @@ export function RuntimeBridge(): null {
   const addLogEvent = useShellStore((s) => s.addLogEvent);
   const ingestRuntimeEvent = useChatStore((s) => s.ingestRuntimeEvent);
   const addArtifact = useArtifactStore((s) => s.addArtifact);
+  const autoArtifacts = useSettingsStore((s) => s.autoArtifacts);
 
   React.useEffect(() => {
     const unsubscribe = runtime.subscribeToEvents((evt: RuntimeEvent) => {
@@ -119,8 +109,8 @@ export function RuntimeBridge(): null {
       // 2. Chat timeline (no-op if evt.workspaceId is absent)
       ingestRuntimeEvent(evt);
 
-      // 3. Auto-artifacts (whitelist-gated, opt-out via localStorage flag)
-      if (autoArtifactsEnabled()) {
+      // 3. Auto-artifacts (whitelist-gated, opt-out via settingsStore.autoArtifacts)
+      if (autoArtifacts) {
         if (evt.type === 'tool:verified') {
           const artifact = makeArtifactFromVerified(evt);
           if (artifact) addArtifact(artifact);
@@ -132,7 +122,7 @@ export function RuntimeBridge(): null {
     });
 
     return unsubscribe;
-  }, [runtime, addLogEvent, ingestRuntimeEvent, addArtifact]);
+  }, [runtime, addLogEvent, ingestRuntimeEvent, addArtifact, autoArtifacts]);
 
   return null;
 }

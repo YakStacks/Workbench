@@ -1,8 +1,11 @@
 /**
  * Chat Store — per-workspace message persistence.
  *
- * Messages are keyed by workspaceId. Persisted to localStorage under
- * a dedicated key so they survive page reloads.
+ * Messages are keyed by workspaceId. Phase C: persisted to disk via
+ * storageGet/storageSet('chat'). Falls back to localStorage in Vite dev mode.
+ *
+ * Migration: on first load, if disk is empty, promotes data from the
+ * old localStorage key ('workbench.chat.v1') to disk.
  *
  * Lifecycle:
  * - On workspace creation: call appendMessage() with an initial SystemMessage.
@@ -18,30 +21,10 @@ import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import type { ChatMessage, ToolMessage } from '../types/chat';
 import type { RuntimeEvent } from '../types/runtimeEvents';
+import { storageGet, storageSet } from '../storage/storageClient';
 
-const STORAGE_KEY = 'workbench.chat.v1';
-
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-function loadFromStorage(): Record<string, ChatMessage[]> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, ChatMessage[]>;
-  } catch {
-    return {};
-  }
-}
-
-function saveToStorage(data: Record<string, ChatMessage[]>): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // Storage unavailable — fail silently
-  }
-}
+// Old localStorage key (migration only)
+const OLD_STORAGE_KEY = 'workbench.chat.v1';
 
 // ============================================================================
 // STORE SHAPE
@@ -90,7 +73,7 @@ interface ChatStoreState {
 const runIndex = new Map<string, { workspaceId: string; messageId: string }>();
 
 export const useChatStore = create<ChatStoreState>((set, get) => ({
-  messagesByWorkspaceId: loadFromStorage(),
+  messagesByWorkspaceId: {},
 
   getMessages: (workspaceId) => {
     return get().messagesByWorkspaceId[workspaceId] ?? [];
@@ -100,31 +83,31 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     const current = get().messagesByWorkspaceId;
     const existing = current[msg.workspaceId] ?? [];
     const next = { ...current, [msg.workspaceId]: [...existing, msg] };
-    saveToStorage(next);
     set({ messagesByWorkspaceId: next });
+    storageSet('chat', next);
   },
 
   appendMany: (workspaceId, msgs) => {
     const current = get().messagesByWorkspaceId;
     const existing = current[workspaceId] ?? [];
     const next = { ...current, [workspaceId]: [...existing, ...msgs] };
-    saveToStorage(next);
     set({ messagesByWorkspaceId: next });
+    storageSet('chat', next);
   },
 
   setMessages: (workspaceId, msgs) => {
     const current = get().messagesByWorkspaceId;
     const next = { ...current, [workspaceId]: msgs };
-    saveToStorage(next);
     set({ messagesByWorkspaceId: next });
+    storageSet('chat', next);
   },
 
   clearWorkspace: (workspaceId) => {
     const current = get().messagesByWorkspaceId;
     const next = { ...current };
     delete next[workspaceId];
-    saveToStorage(next);
     set({ messagesByWorkspaceId: next });
+    storageSet('chat', next);
   },
 
   ingestRuntimeEvent: (evt) => {
@@ -146,16 +129,16 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
           : m
       );
       const nextMap = { ...current, [wid]: next };
-      saveToStorage(nextMap);
       set({ messagesByWorkspaceId: nextMap });
+      storageSet('chat', nextMap);
     }
 
     // ── Helper: append a new ToolMessage ─────────────────────────────────
     function appendTool(msg: ToolMessage): void {
       const msgs = current[wid] ?? [];
       const nextMap = { ...current, [wid]: [...(msgs as ChatMessage[]), msg] };
-      saveToStorage(nextMap);
       set({ messagesByWorkspaceId: nextMap });
+      storageSet('chat', nextMap);
     }
 
     switch (evt.type) {
@@ -231,3 +214,27 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     }
   },
 }));
+
+// ============================================================================
+// ASYNC HYDRATION (runs once at module load)
+// ============================================================================
+
+(async () => {
+  const fromDisk = await storageGet<Record<string, ChatMessage[]> | null>('chat', null);
+
+  if (fromDisk != null) {
+    useChatStore.setState({ messagesByWorkspaceId: fromDisk });
+  } else {
+    // No disk data — migrate from old localStorage key
+    try {
+      const raw = localStorage.getItem(OLD_STORAGE_KEY);
+      if (raw) {
+        const migrated = JSON.parse(raw) as Record<string, ChatMessage[]>;
+        useChatStore.setState({ messagesByWorkspaceId: migrated });
+        await storageSet('chat', migrated);
+      }
+    } catch {
+      // localStorage unavailable or unparseable — start fresh
+    }
+  }
+})();

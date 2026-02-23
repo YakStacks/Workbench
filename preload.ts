@@ -313,9 +313,17 @@ contextBridge.exposeInMainWorld('workbench', {
   environment: {
     getInfo: () => ipcRenderer.invoke('environment:getInfo'),
     format: (info: any) => ipcRenderer.invoke('environment:format', info),
-    getUnsupportedMessage: (info: any) => 
+    getUnsupportedMessage: (info: any) =>
       ipcRenderer.invoke('environment:getUnsupportedMessage', info),
-    getLockdownWarning: (info: any) => 
+    getLockdownWarning: (info: any) =>
       ipcRenderer.invoke('environment:getLockdownWarning', info),
   },
+});
+
+// Shell Storage — narrow key/value API for workspaces, chat, artifacts, settings.
+// Exposed separately so renderer can detect presence via window.workbenchStorage.
+contextBridge.exposeInMainWorld('workbenchStorage', {
+  get: (key: string) => ipcRenderer.invoke('workbench:storage:get', { key }),
+  set: (key: string, value: unknown) => ipcRenderer.invoke('workbench:storage:set', { key, value }),
+  del: (key: string) => ipcRenderer.invoke('workbench:storage:delete', { key }),
 });
