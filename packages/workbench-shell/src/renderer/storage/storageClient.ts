@@ -12,7 +12,7 @@
  * Never import electron or Node modules here.
  */
 
-export type StorageKey = 'workspaces' | 'chat' | 'artifacts' | 'settings';
+export type StorageKey = 'workspaces' | 'chat' | 'artifacts' | 'settings' | 'context';
 
 const FALLBACK_PREFIX = 'workbench.diskFallback';
 

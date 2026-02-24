@@ -18,12 +18,14 @@ import { ButlerApp } from './apps/butler';
 import PipewrenchApp from '@workbench-apps/pipewrench';
 import { ShellLayout } from './layout/ShellLayout';
 import { HomePage } from './pages/HomePage';
+import { BenchPanel } from './components/BenchPanel';
 import { createRuntime } from '../runtime/createRuntime';
 import { RuntimeContext } from '../runtime/runtimeContext';
 import { setRuntime } from './runtime/runtimeSingleton';
 import { useWorkspaceStore, waitForHydration } from './state/workspaceStore';
 import { useShellStore } from './state/shellStore';
 import { useSettingsStore, waitForSettings } from './state/settingsStore';
+import { registerBuiltInTools } from './tools/toolStore';
 
 // ============================================================================
 // REGISTER APPS
@@ -32,6 +34,15 @@ import { useSettingsStore, waitForSettings } from './state/settingsStore';
 registerApp(MaestroApp);
 registerApp(ButlerApp);
 registerApp(PipewrenchApp);
+
+// ============================================================================
+// REGISTER BUILT-IN TOOLS (COLD state — no auto-start)
+// ============================================================================
+// This populates the ToolRegistry with manifests only.
+// No tool modules are loaded, no processes started.
+// Tools become WARM only when explicitly mounted by user/agent action.
+
+registerBuiltInTools();
 
 // ============================================================================
 // RUNTIME SINGLETON
@@ -83,6 +94,7 @@ async function maybeBootstrap(): Promise<void> {
 
 const pages = {
   home: <HomePage />,
+  bench: <BenchPanel />,
 };
 
 // ============================================================================

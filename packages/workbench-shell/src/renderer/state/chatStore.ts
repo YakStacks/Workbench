@@ -62,7 +62,7 @@ interface ChatStoreState {
   updateAssistantMessage(
     workspaceId: string,
     messageId: string,
-    patch: Partial<Pick<AssistantMessage, 'content'>>,
+    patch: Partial<Pick<AssistantMessage, 'content' | 'suggestions'>>,
   ): void;
 
   /**

@@ -5,7 +5,7 @@
  * It is absent in Vite renderer-only dev mode — always check for presence.
  */
 
-type WorkbenchStorageKey = 'workspaces' | 'chat' | 'artifacts' | 'settings';
+type WorkbenchStorageKey = 'workspaces' | 'chat' | 'artifacts' | 'settings' | 'context';
 
 interface WorkbenchStorageAPI {
   get(

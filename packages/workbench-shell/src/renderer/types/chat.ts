@@ -5,6 +5,8 @@
  * No `any`. Use `unknown` for flexible payload fields.
  */
 
+import type { Suggestion } from './suggestions';
+
 export type ChatRole = 'user' | 'assistant' | 'tool' | 'system';
 
 export interface ChatMessageBase {
@@ -22,6 +24,12 @@ export interface UserMessage extends ChatMessageBase {
 export interface AssistantMessage extends ChatMessageBase {
   role: 'assistant';
   content: string;
+  /**
+   * Optional tool-call suggestions attached to this message.
+   * Generated post-completion by generateSuggestions(); never from LLM output directly.
+   * Presented as clickable chips — user must click to execute (never auto-run).
+   */
+  suggestions?: Suggestion[];
 }
 
 export interface ToolMessage extends ChatMessageBase {

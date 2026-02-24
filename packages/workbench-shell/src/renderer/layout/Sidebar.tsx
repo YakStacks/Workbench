@@ -66,6 +66,19 @@ const IconSettings = () => (
   </svg>
 );
 
+/** Pegboard icon — represents the tool bench / resource panel. */
+const IconBench = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="14" width="20" height="6" rx="1"/>
+    <line x1="6" y1="14" x2="6" y2="4"/>
+    <line x1="12" y1="14" x2="12" y2="7"/>
+    <line x1="18" y1="14" x2="18" y2="4"/>
+    <circle cx="6" cy="4" r="1.5"/>
+    <circle cx="12" cy="7" r="1.5"/>
+    <circle cx="18" cy="4" r="1.5"/>
+  </svg>
+);
+
 // ============================================================================
 // DATA
 // ============================================================================
@@ -75,6 +88,7 @@ const ITEMS: SidebarItem[] = [
   { id: 'workspaces', label: 'Workspaces', icon: <IconWorkspaces /> },
   { id: 'apps',       label: 'Apps',       icon: <IconApps /> },
   { id: 'doctor',     label: 'Doctor',     icon: <IconDoctor /> },
+  { id: 'bench',      label: 'Bench',      icon: <IconBench /> },
   { id: 'settings',   label: 'Settings',   icon: <IconSettings /> },
 ];
 

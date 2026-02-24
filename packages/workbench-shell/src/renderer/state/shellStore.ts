@@ -20,7 +20,7 @@ import type { WorkbenchWorkspace } from '../../types';
 // NAVIGATION
 // ============================================================================
 
-export type SidebarSection = 'home' | 'workspaces' | 'apps' | 'doctor' | 'settings';
+export type SidebarSection = 'home' | 'workspaces' | 'apps' | 'doctor' | 'bench' | 'settings';
 
 // ============================================================================
 // TAB

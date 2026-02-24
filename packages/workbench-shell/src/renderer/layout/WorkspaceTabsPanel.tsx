@@ -1,10 +1,11 @@
 /**
- * WorkspaceTabsPanel — wraps an active workspace with Chat / Artifacts / Runs tabs.
+ * WorkspaceTabsPanel — wraps an active workspace with Chat / Artifacts / Runs / Context tabs.
  *
  * This is a Shell-level wrapper. Apps do NOT need to change.
  * The "Chat" tab renders workspace.render() as-is.
  * The "Artifacts" tab renders ArtifactList for this workspace.
  * The "Runs" tab renders RunsList (filtered log events) for this workspace.
+ * The "Context" tab renders ContextPanel (Phase M) for this workspace.
  *
  * The outer tab row is distinct from the global workspace TabBar at the top.
  */
@@ -13,13 +14,14 @@ import React from 'react';
 import type { WorkbenchWorkspace } from '../../types';
 import { ArtifactList } from '../components/ArtifactList';
 import { RunsList } from '../components/RunsList';
+import { ContextPanel } from '../components/ContextPanel';
 import { useShellStore } from '../state/shellStore';
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-type InnerTab = 'chat' | 'artifacts' | 'runs';
+type InnerTab = 'chat' | 'artifacts' | 'runs' | 'context';
 
 interface WorkspaceTabsPanelProps {
   workspace: WorkbenchWorkspace;
@@ -80,6 +82,7 @@ export function WorkspaceTabsPanel({ workspace }: WorkspaceTabsPanelProps): Reac
     { id: 'chat', label: 'Chat' },
     { id: 'artifacts', label: 'Artifacts' },
     { id: 'runs', label: 'Runs' },
+    { id: 'context', label: 'Context' },
   ];
 
   return (
@@ -107,6 +110,7 @@ export function WorkspaceTabsPanel({ workspace }: WorkspaceTabsPanelProps): Reac
         {activeTab === 'chat' && workspace.render()}
         {activeTab === 'artifacts' && <ArtifactList workspaceId={workspace.id} />}
         {activeTab === 'runs' && <RunsList workspaceId={workspace.id} />}
+        {activeTab === 'context' && <ContextPanel workspaceId={workspace.id} />}
       </div>
     </div>
   );

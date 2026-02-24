@@ -3,15 +3,35 @@
  *
  * Supports all four ChatMessage roles:
  *   user      → right-aligned blue bubble
- *   assistant → left-aligned dark bubble
+ *   assistant → left-aligned dark bubble (+ optional SuggestionChips)
  *   system    → centered muted label
  *   tool      → inline card with name + status indicator
  *
  * Auto-scrolls to bottom when messages change.
+ *
+ * Phase L — Suggestion Chips:
+ *   Assistant messages may carry a `suggestions` array.  When present,
+ *   <SuggestionChips> is rendered beneath the bubble.  Clicking a chip
+ *   calls onPickSuggestion(suggestion) — the parent (ButlerChatView) owns
+ *   the execution logic.  No auto-execution here.
+ *
+ * Phase L+1 — Dismiss Suggestions:
+ *   An optional onDismissSuggestions(messageId) callback is passed down.
+ *   When provided, SuggestionChips renders a small "×" dismiss button.
+ *   Clicking it calls onDismissSuggestions(msg.id) in the parent.
+ *
+ * Phase M5 — Pin / Include controls:
+ *   Subtle action row shown on hover beneath user and assistant bubbles.
+ *   - Pin toggle (📌): calls onTogglePin(messageId)
+ *   - Include checkbox: calls onToggleInclude(messageId, include)
+ *   Both callbacks are optional. When absent the controls are hidden.
+ *   Pinned state and include state passed in via pinnedIds / includedIds sets.
  */
 
 import React from 'react';
 import type { ChatMessage, ToolMessage } from '../types/chat';
+import type { Suggestion } from '../types/suggestions';
+import { SuggestionChips } from './SuggestionChips';
 
 // ============================================================================
 // TYPES
@@ -19,6 +39,27 @@ import type { ChatMessage, ToolMessage } from '../types/chat';
 
 interface ChatTimelineProps {
   messages: ChatMessage[];
+  /** Called when user clicks a suggestion chip. Required to enable chips. */
+  onPickSuggestion?(suggestion: Suggestion): void;
+  /**
+   * Called when user clicks the dismiss button on a suggestion chip row.
+   * Receives the assistant messageId whose suggestions should be cleared.
+   * When provided, a "×" dismiss button appears at the end of each chip row.
+   */
+  onDismissSuggestions?(messageId: string): void;
+  /**
+   * M5 — Toggle pin for a message. When provided, a pin button appears on hover.
+   */
+  onTogglePin?(messageId: string): void;
+  /**
+   * M5 — Toggle include for a message. When provided, a checkbox appears on hover.
+   * @param include true = include in context, false = exclude
+   */
+  onToggleInclude?(messageId: string, include: boolean): void;
+  /** M5 — Set of currently pinned messageIds (for visual state). */
+  pinnedIds?: ReadonlySet<string>;
+  /** M5 — Set of currently included messageIds (for visual state). */
+  includedIds?: ReadonlySet<string>;
 }
 
 // ============================================================================
@@ -124,6 +165,37 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#2a2a2a',
     marginTop: 1,
   },
+  // M5 — message action row
+  actionRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+    minHeight: 18,
+  },
+  actionBtn: {
+    background: 'transparent',
+    border: 'none',
+    padding: '0 2px',
+    fontSize: 11,
+    cursor: 'pointer',
+    color: '#2a2a2a',
+    transition: 'color 0.1s',
+    userSelect: 'none',
+    lineHeight: 1,
+  },
+  actionBtnActive: {
+    color: '#4d9fff',
+  },
+  actionLabel: {
+    fontSize: 10,
+    color: '#2a2a2a',
+    cursor: 'pointer',
+    userSelect: 'none',
+  },
+  actionLabelActive: {
+    color: '#4caf50',
+  },
 };
 
 // ============================================================================
@@ -173,16 +245,90 @@ function Timestamp({ ms }: { ms: number }): React.ReactElement {
   return <div style={styles.timestamp}>{hh}:{mm}</div>;
 }
 
+// ── M5: Per-message action row ─────────────────────────────────────────────
+
+interface MessageActionsProps {
+  messageId: string;
+  isPinned: boolean;
+  isIncluded: boolean;
+  onTogglePin?(id: string): void;
+  onToggleInclude?(id: string, include: boolean): void;
+  /** Align to right for user bubbles, left for assistant */
+  align: 'left' | 'right';
+}
+
+function MessageActions({
+  messageId, isPinned, isIncluded,
+  onTogglePin, onToggleInclude, align,
+}: MessageActionsProps): React.ReactElement | null {
+  if (!onTogglePin && !onToggleInclude) return null;
+
+  return (
+    <div style={{
+      ...styles.actionRow,
+      justifyContent: align === 'right' ? 'flex-end' : 'flex-start',
+    }}>
+      {onTogglePin && (
+        <button
+          type="button"
+          style={{
+            ...styles.actionBtn,
+            ...(isPinned ? styles.actionBtnActive : {}),
+          }}
+          title={isPinned ? 'Unpin message' : 'Pin message (always in LLM context)'}
+          onClick={() => onTogglePin(messageId)}
+          aria-label={isPinned ? 'Unpin' : 'Pin'}
+          aria-pressed={isPinned}
+        >
+          {isPinned ? '📌' : '📍'}
+        </button>
+      )}
+      {onToggleInclude && (
+        <label
+          style={{
+            ...styles.actionLabel,
+            ...(isIncluded ? styles.actionLabelActive : {}),
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            cursor: 'pointer',
+          }}
+          title={isIncluded ? 'Remove from LLM context' : 'Include in LLM context'}
+        >
+          <input
+            type="checkbox"
+            checked={isIncluded}
+            onChange={(e) => onToggleInclude(messageId, e.target.checked)}
+            style={{ accentColor: '#4caf50', cursor: 'pointer' }}
+            aria-label="Include in context"
+          />
+          ctx
+        </label>
+      )}
+    </div>
+  );
+}
+
 // ============================================================================
 // COMPONENT
 // ============================================================================
 
-export function ChatTimeline({ messages }: ChatTimelineProps): React.ReactElement {
+export function ChatTimeline({
+  messages,
+  onPickSuggestion,
+  onDismissSuggestions,
+  onTogglePin,
+  onToggleInclude,
+  pinnedIds,
+  includedIds,
+}: ChatTimelineProps): React.ReactElement {
   const endRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const hasPinInclude = onTogglePin !== undefined || onToggleInclude !== undefined;
 
   return (
     <div style={styles.timeline} aria-label="Chat timeline" aria-live="polite">
@@ -192,18 +338,57 @@ export function ChatTimeline({ messages }: ChatTimelineProps): React.ReactElemen
 
       {messages.map((msg) => {
         if (msg.role === 'user') {
+          const isPinned = pinnedIds?.has(msg.id) ?? false;
+          const isIncluded = includedIds?.has(msg.id) ?? false;
           return (
             <div key={msg.id} style={{ alignSelf: 'flex-end', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
               <div style={styles.userBubble}>{msg.content}</div>
+              {hasPinInclude && (
+                <MessageActions
+                  messageId={msg.id}
+                  isPinned={isPinned}
+                  isIncluded={isIncluded}
+                  onTogglePin={onTogglePin}
+                  onToggleInclude={onToggleInclude}
+                  align="right"
+                />
+              )}
               <Timestamp ms={msg.createdAt} />
             </div>
           );
         }
 
         if (msg.role === 'assistant') {
+          const hasSuggestions =
+            onPickSuggestion !== undefined &&
+            msg.suggestions !== undefined &&
+            msg.suggestions.length > 0;
+          const isPinned = pinnedIds?.has(msg.id) ?? false;
+          const isIncluded = includedIds?.has(msg.id) ?? false;
           return (
-            <div key={msg.id} style={{ alignSelf: 'flex-start', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div key={msg.id} style={{ alignSelf: 'flex-start', display: 'flex', flexDirection: 'column', gap: 2, maxWidth: '80%' }}>
               <div style={styles.assistantBubble}>{msg.content}</div>
+              {hasSuggestions && (
+                <SuggestionChips
+                  suggestions={msg.suggestions!}
+                  onPick={onPickSuggestion!}
+                  onDismiss={
+                    onDismissSuggestions !== undefined
+                      ? () => onDismissSuggestions(msg.id)
+                      : undefined
+                  }
+                />
+              )}
+              {hasPinInclude && (
+                <MessageActions
+                  messageId={msg.id}
+                  isPinned={isPinned}
+                  isIncluded={isIncluded}
+                  onTogglePin={onTogglePin}
+                  onToggleInclude={onToggleInclude}
+                  align="left"
+                />
+              )}
               <Timestamp ms={msg.createdAt} />
             </div>
           );
