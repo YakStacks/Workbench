@@ -5,24 +5,36 @@ module.exports.register = (api) => {
     inputSchema: {
       type: 'object',
       properties: {
-        filePath: { 
-          type: 'string', 
-          description: 'Path to CSV file' 
+        filePath: {
+          type: 'string',
+          description: 'Path to CSV file or asset_id of an uploaded CSV'
+        },
+        asset_id: {
+          type: 'string',
+          description: 'Asset ID of an uploaded CSV file (alternative to filePath)'
         },
         question: {
           type: 'string',
           description: 'Question about the data (e.g., "What are the top 5 sales?", "Average age?")'
         }
-      },
-      required: ['filePath']
+      }
     },
     run: async (input) => {
       const fs = require('fs');
       const path = require('path');
-      
+
+      // Determine file path: asset_id resolved by middleware → filePath
+      const resolvedPath = input.__asset_path || input.filePath;
+      if (!resolvedPath) {
+        return {
+          content: 'No CSV source provided. Supply filePath or asset_id.',
+          error: 'Missing input'
+        };
+      }
+
       try {
         // Read CSV file
-        const csvContent = fs.readFileSync(input.filePath, 'utf-8');
+        const csvContent = fs.readFileSync(resolvedPath, 'utf-8');
         const lines = csvContent.split('\n').filter(l => l.trim());
         
         if (lines.length === 0) {
@@ -42,7 +54,7 @@ module.exports.register = (api) => {
         
         // Create summary
         const summary = {
-          file: path.basename(input.filePath),
+          file: path.basename(resolvedPath),
           rows: rows.length,
           columns: headers.length,
           headers: headers,
@@ -63,7 +75,7 @@ module.exports.register = (api) => {
         return {
           content: `Failed to analyze CSV: ${error.message}`,
           error: error.message,
-          metadata: { filePath: input.filePath }
+          metadata: { filePath: resolvedPath }
         };
       }
     }

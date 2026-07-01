@@ -1,0 +1,11 @@
+{
+  "name": "@workbench-apps/maestro",
+  "version": "0.1.0",
+  "description": "Maestro — tool execution workspace for Workbench",
+  "type": "module",
+  "main": "index.tsx",
+  "workbenchApp": {
+    "id": "maestro",
+    "minShellVersion": "0.1.0"
+  }
+}

@@ -1,0 +1,121 @@
+/**
+ * Workbench Shell — Renderer Entry Point
+ *
+ * Responsibilities:
+ * 1. Register all apps with the AppRegistry
+ * 2. Bootstrap a default Butler workspace on first clean launch
+ * 3. Mount the ShellLayout with page components
+ *
+ * Nothing else belongs here.
+ * No heavy business logic. No ongoing state management.
+ */
+
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { registerApp } from '../appRegistry';
+import { MaestroApp } from './apps/maestro';
+import { ButlerApp } from './apps/butler';
+import PipewrenchApp from '@workbench-apps/pipewrench';
+import { ShellLayout } from './layout/ShellLayout';
+import { HomePage } from './pages/HomePage';
+import { BenchPanel } from './components/BenchPanel';
+import { createRuntime } from '../runtime/createRuntime';
+import { RuntimeContext } from '../runtime/runtimeContext';
+import { setRuntime } from './runtime/runtimeSingleton';
+import { useWorkspaceStore, waitForHydration } from './state/workspaceStore';
+import { useShellStore } from './state/shellStore';
+import { useSettingsStore, waitForSettings } from './state/settingsStore';
+import { registerBuiltInTools } from './tools/toolStore';
+
+// ============================================================================
+// REGISTER APPS
+// ============================================================================
+
+registerApp(MaestroApp);
+registerApp(ButlerApp);
+registerApp(PipewrenchApp);
+
+// ============================================================================
+// REGISTER BUILT-IN TOOLS (COLD state — no auto-start)
+// ============================================================================
+// This populates the ToolRegistry with manifests only.
+// No tool modules are loaded, no processes started.
+// Tools become WARM only when explicitly mounted by user/agent action.
+
+registerBuiltInTools();
+
+// ============================================================================
+// RUNTIME SINGLETON
+// ============================================================================
+
+// Created once at app launch. Never re-created. Never stored in Zustand.
+// All components access it via useRuntime() through RuntimeContext.
+// Non-React code (e.g. applyTemplate) accesses it via runtimeSingleton.
+const runtime = createRuntime();
+setRuntime(runtime);
+
+// ============================================================================
+// BOOTSTRAP — auto-create Butler workspace on first clean launch
+// ============================================================================
+
+async function maybeBootstrap(): Promise<void> {
+  // Wait for disk hydration before checking state
+  await Promise.all([waitForHydration(), waitForSettings()]);
+
+  const settings = useSettingsStore.getState();
+
+  // Only run once per installation.
+  if (settings.hasBootstrapped) return;
+
+  const workspaces = useWorkspaceStore.getState().workspaces;
+  if (workspaces.length > 0) {
+    // Existing data — mark bootstrapped and leave state alone
+    settings.setHasBootstrapped(true);
+    return;
+  }
+
+  // Fresh install: create default Butler workspace
+  settings.setHasBootstrapped(true);
+
+  const ws = await ButlerApp.createWorkspace();
+  useWorkspaceStore.getState().upsertWorkspace({
+    id: ws.id,
+    appId: ws.appId,
+    title: ws.title,
+    state: ws.state,
+    lastOpened: new Date().toISOString(),
+  });
+  useShellStore.getState().openTab(ws);
+}
+
+// ============================================================================
+// PAGE MAP
+// ============================================================================
+
+const pages = {
+  home: <HomePage />,
+  bench: <BenchPanel />,
+};
+
+// ============================================================================
+// MOUNT
+// ============================================================================
+
+const container = document.getElementById('root');
+if (!container) {
+  throw new Error('[Shell] Mount failed: #root element not found.');
+}
+
+// Run bootstrap before first paint (stores are synchronous; createWorkspace is async).
+// We render immediately and let bootstrap update store state (Zustand subscribers re-render).
+maybeBootstrap().catch((err) => {
+  console.warn('[Shell] Bootstrap failed:', err);
+});
+
+createRoot(container).render(
+  <React.StrictMode>
+    <RuntimeContext.Provider value={runtime}>
+      <ShellLayout pages={pages} />
+    </RuntimeContext.Provider>
+  </React.StrictMode>
+);

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    // noUnusedLocals / noUnusedParameters intentionally omitted:
+    // Core's Phase 1 runner stubs have unused parameter names and
+    // TypeScript applies these checks to transitive imports too.
+    // Core must not be modified to fix Shell-level config choices.
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      // Core sub-path aliases (specific before barrel)
+      "@workbench/core/events": ["../../src/core/events.ts"],
+      "@workbench/core/runner": ["../../src/core/runner.ts"],
+      "@workbench/core": ["../../src/core/index.ts"],
+      // Shell sub-path aliases for use by apps in /apps/*
+      "@workbench/shell/types": ["./src/types.ts"],
+      "@workbench/shell/runtime": ["./src/runtime/runtimeContext.ts"],
+      // Per-app aliases
+      "@workbench-apps/maestro": ["../../apps/maestro/index.tsx"],
+      "@workbench-apps/butler": ["../../apps/butler/index.tsx"],
+      "@workbench-apps/pipewrench": ["../../apps/pipewrench/index.tsx"]
+    }
+  },
+  "include": ["src", "../../apps"]
+}

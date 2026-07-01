@@ -1,0 +1,11 @@
+{
+  "name": "@workbench-apps/pipewrench",
+  "version": "0.1.0",
+  "description": "Pipewrench — system probe and rule runner for Workbench",
+  "type": "module",
+  "main": "index.tsx",
+  "workbenchApp": {
+    "id": "pipewrench",
+    "minShellVersion": "0.1.0"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@workbench-apps/butler",
+  "version": "0.1.0",
+  "description": "Butler — conversational workspace for Workbench",
+  "type": "module",
+  "main": "index.tsx",
+  "workbenchApp": {
+    "id": "butler",
+    "minShellVersion": "0.1.0"
+  }
+}

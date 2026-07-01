@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node", "electron"]
+  },
+  "include": [
+    "main.ts",
+    "preload.ts",
+    "doctor.ts",
+    "permissions.ts",
+    "run-manager.ts",
+    "process-registry.ts",
+    "secrets-manager.ts",
+    "tool-manifest.ts",
+    "dry-run.ts",
+    "memory-manager.ts",
+    "tool-dispatch.ts",
+    "environment-detection.ts"
+  ]
+}

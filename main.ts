@@ -7,15 +7,49 @@ import {
   Tray,
   Menu,
   nativeImage,
+  dialog,
 } from "electron";
 import path from "path";
+import util from "util";
 import fs from "fs";
 import net from "net";
 import { spawn, ChildProcess } from "child_process";
 import Store from "electron-store";
 import axios from "axios";
+import { DoctorEngine, DoctorReport } from "./doctor";
+import { PermissionManager, ToolPermissions, PermissionCategory, PermissionAction } from "./permissions";
+import { RunManager } from "./src/runtime/run-manager";
+import { ProcessRegistry } from "./src/runtime/process-registry";
+import { SecretsManager } from "./secrets-manager";
+import { ToolManifestRegistry, ToolManifest } from "./tool-manifest";
+import { PreviewManager, PreviewBuilder } from "./dry-run";
+import { MemoryManager } from "./memory-manager";
+import { ToolDispatcher, ToolUsageRecord, ChainPlan } from "./src/runtime/tool-dispatch";
+import { EnvironmentDetector } from "./environment-detection";
+import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from "./guardrails";
+import { AssetManager } from "./asset-manager";
+import { SessionsManager } from "./src/runtime/sessions-manager";
+import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics, eventBus, createTimestamp } from "./src/core";
+import os from "os";
+import { ensureDir, readJson, writeJsonAtomic } from "./storage";
 
 const store = new Store();
+const permissionManager = new PermissionManager(store);
+const runManager = new RunManager(store);
+const processRegistry = new ProcessRegistry();
+const secretsManager = new SecretsManager(store);
+const manifestRegistry = new ToolManifestRegistry();
+const previewManager = new PreviewManager();
+const memoryManager = new MemoryManager(store);
+const savedToolUsage = (store.get("toolUsageData") as Record<string, ToolUsageRecord>) || undefined;
+const toolDispatcher = new ToolDispatcher(permissionManager, previewManager, undefined, savedToolUsage);
+const environmentDetector = new EnvironmentDetector();
+const schemaValidator = new SchemaValidator();
+const commandGuardrails = new CommandGuardrails();
+const loopDetector = new LoopDetector();
+let pathSandbox: PathSandbox;
+let assetManager: AssetManager;
+let sessionsManager: SessionsManager;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let plugins: any[] = [];
@@ -23,6 +57,67 @@ let tools: Map<string, any> = new Map();
 
 // Add isQuitting flag to app
 let isQuitting = false;
+
+// Load product branding from product.json if present
+function loadProductConfig(): { title: string } {
+  const locations = [
+    path.join(process.resourcesPath || '', '..', 'product.json'),
+    path.join(app.getAppPath(), '..', 'product.json'),
+    path.join(app.getAppPath(), 'product.json'),
+  ];
+  for (const loc of locations) {
+    try {
+      if (fs.existsSync(loc)) {
+        const cfg = JSON.parse(fs.readFileSync(loc, 'utf-8'));
+        if (cfg?.branding?.title) return { title: cfg.branding.title };
+      }
+    } catch {}
+  }
+  return { title: 'Workbench' };
+}
+const productConfig = loadProductConfig();
+
+type FeatureFlagKey =
+  | "L_TOOL_HEALTH_SIGNALS"
+  | "M_SMART_AUTO_DIAGNOSTICS"
+  | "N_PERMISSION_PROFILES"
+  | "N_RUN_TIMELINE"
+  | "N_EXPORT_RUN_BUNDLE"
+  | "V2_GUARDRAILS"
+  | "V2_ASSET_SYSTEM"
+  | "V2_AUTO_DOCTOR"
+  | "V2_SESSION_LOGS"
+  | "V3_SMART_DISPATCH"
+  | "V3_DISAMBIGUATION"
+  | "V3_CHAIN_PLANNING"
+  | "V3_USAGE_TRACKING";
+
+type FeatureFlags = Record<FeatureFlagKey, boolean>;
+
+const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
+  L_TOOL_HEALTH_SIGNALS: false,
+  M_SMART_AUTO_DIAGNOSTICS: false,
+  N_PERMISSION_PROFILES: false,
+  N_RUN_TIMELINE: false,
+  N_EXPORT_RUN_BUNDLE: false,
+  V2_GUARDRAILS: true,
+  V2_ASSET_SYSTEM: true,
+  V2_AUTO_DOCTOR: true,
+  V2_SESSION_LOGS: true,
+  V3_SMART_DISPATCH: true,
+  V3_DISAMBIGUATION: true,
+  V3_CHAIN_PLANNING: true,
+  V3_USAGE_TRACKING: true,
+};
+
+function getFeatureFlags(): FeatureFlags {
+  const stored = (store.get("featureFlags") as Partial<FeatureFlags>) || {};
+  return { ...DEFAULT_FEATURE_FLAGS, ...stored };
+}
+
+function isFeatureEnabled(flag: FeatureFlagKey): boolean {
+  return Boolean(getFeatureFlags()[flag]);
+}
 
 // Standard tool response format
 interface ToolResponse {
@@ -59,6 +154,48 @@ function normalizeToolOutput(output: any): ToolResponse {
   };
 }
 
+/**
+ * V2: Resolve asset_id references in tool input to sandbox file paths.
+ * Scans top-level input fields for values matching 'asset_XXX' pattern
+ * and resolves them to safe sandbox paths. Also handles explicit
+ * 'asset_id' field by adding a resolved '__asset_path' field.
+ */
+function resolveAssetReferences(input: any): any {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !assetManager) {
+    return input;
+  }
+
+  const resolved = { ...input };
+  const ASSET_ID_PATTERN = /^asset_\d+_[a-z0-9]+$/;
+
+  // If there's an explicit asset_id field, resolve it to __asset_path
+  if (resolved.asset_id && typeof resolved.asset_id === 'string') {
+    const safePath = assetManager.resolvePath(resolved.asset_id);
+    if (safePath) {
+      resolved.__asset_path = safePath;
+      // Also get metadata for tools that need MIME info
+      const meta = assetManager.get(resolved.asset_id);
+      if (meta) {
+        resolved.__asset_metadata = meta;
+      }
+    }
+  }
+
+  // Scan path-like fields and resolve asset_id values
+  const pathFields = ['path', 'filePath', 'file_path', 'file', 'source', 'input_file'];
+  for (const field of pathFields) {
+    if (resolved[field] && typeof resolved[field] === 'string' && ASSET_ID_PATTERN.test(resolved[field])) {
+      const safePath = assetManager.resolvePath(resolved[field]);
+      if (safePath) {
+        resolved[`__original_${field}`] = resolved[field]; // Keep original for logging
+        resolved[field] = safePath; // Replace with safe path
+      }
+    }
+  }
+
+  return resolved;
+}
+
 // MCP Server connections
 interface MCPServer {
   name: string;
@@ -71,23 +208,30 @@ interface MCPServer {
 let mcpServers: Map<string, MCPServer> = new Map();
 
 function createWindow() {
+  // Resolve icon path
+  const iconFileName = "icon.ico";
   let iconPath: string;
   if (app.isPackaged) {
     // For Windows, use .ico file
-    iconPath = path.join(process.resourcesPath, "icon.ico");
+    iconPath = path.join(process.resourcesPath, iconFileName);
   } else {
-    iconPath = path.join(app.getAppPath(), "icon.ico");
+    iconPath = path.join(app.getAppPath(), iconFileName);
   }
 
   // Fallback if icon not found
   if (!fs.existsSync(iconPath)) {
-    console.log("[createWindow] Icon not found at:", iconPath);
-    iconPath = "";
+    console.log("[createWindow] Icon not found at:", iconPath, "- trying fallback");
+    iconPath = path.join(app.getAppPath(), "icon.ico");
+    if (!fs.existsSync(iconPath)) {
+      console.log("[createWindow] Fallback icon also not found");
+      iconPath = "";
+    }
   }
 
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: productConfig.title,
     ...(iconPath && { icon: iconPath }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -95,11 +239,25 @@ function createWindow() {
       contextIsolation: true,
     },
   });
-  if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  
+  // Set window for RunManager
+  runManager.setWindow(mainWindow);
+  
+  // Load content based on environment
+  if (!app.isPackaged) {
+    // Development mode - connect to Vite dev server
+    mainWindow.loadURL("http://localhost:5173");
+    // Open DevTools in development
+    mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadURL("http://localhost:5173/");
+    // Production mode - load from built files
+    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
   }
+
+  // Show the window after it's ready
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+  });
 
   // Minimize to tray instead of closing
   mainWindow.on("close", (event) => {
@@ -111,12 +269,24 @@ function createWindow() {
 }
 
 function createTray() {
+  // Resolve tray icon
+  const iconFileName = "icon.ico";
   let iconPath: string;
   if (app.isPackaged) {
-    // Use the same icon.ico that's embedded in the exe
-    iconPath = path.join(process.resourcesPath, "icon.ico");
+    iconPath = path.join(process.resourcesPath, iconFileName);
   } else {
-    iconPath = path.join(app.getAppPath(), "build", "icon.png");
+    iconPath = path.join(app.getAppPath(), iconFileName);
+  }
+
+  // Fallback: try .png version of the product icon
+  if (!fs.existsSync(iconPath)) {
+    const pngPath = iconPath.replace(/\.ico$/, ".png");
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    } else {
+      // Final fallback to default build icon
+      iconPath = path.join(app.getAppPath(), "build", "icon.png");
+    }
   }
 
   console.log("[createTray] Looking for icon at:", iconPath);
@@ -139,7 +309,7 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: "Show Workbench",
+      label: `Show ${productConfig.title}`,
       click: () => {
         mainWindow?.show();
         mainWindow?.focus();
@@ -155,7 +325,7 @@ function createTray() {
     },
   ]);
 
-  tray.setToolTip("Workbench");
+  tray.setToolTip(productConfig.title);
   tray.setContextMenu(contextMenu);
 
   // Double-click to show window
@@ -166,6 +336,21 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  // Initialize path sandbox and asset manager
+  const workspaceRoot = (store.get('workingDir') as string) || app.getPath('home');
+  const safePaths = (store.get('safePaths') as string[]) || [];
+  pathSandbox = new PathSandbox(workspaceRoot, safePaths);
+
+  const assetSandboxDir = path.join(app.getPath('userData'), 'assets');
+  assetManager = new AssetManager(store, assetSandboxDir);
+  sessionsManager = new SessionsManager(store);
+
+  // Load persisted doctor report history
+  const savedDoctorHistory = store.get('doctorReportHistory') as DoctorReport[] | undefined;
+  if (savedDoctorHistory && Array.isArray(savedDoctorHistory)) {
+    getDoctorEngine().loadHistory(savedDoctorHistory);
+  }
+
   createWindow();
   createTray();
   loadPlugins();
@@ -181,6 +366,30 @@ app.on("window-all-closed", () => {
     }
   });
   if (process.platform !== "darwin") app.quit();
+});
+
+// Cleanup processes before quit
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    console.log('[app] Starting cleanup before quit...');
+    event.preventDefault();
+    isQuitting = true;
+    
+    // Kill all child processes
+    await processRegistry.gracefulShutdown(5000);
+    
+    // Disconnect MCP clients
+    mcpClients.forEach(client => {
+      try {
+        client.disconnect();
+      } catch (error) {
+        console.error('[app] Error disconnecting MCP client:', error);
+      }
+    });
+    
+    console.log('[app] Cleanup complete, quitting...');
+    app.quit();
+  }
 });
 
 // ============================================================================
@@ -226,6 +435,7 @@ function loadPlugins() {
             registerTool: (tool: any) => {
               // Store source folder for delete functionality
               tool._sourceFolder = folder;
+              tool._sourcePath = pluginPath;
               console.log(
                 "[loadPlugins] Registered tool:",
                 tool.name,
@@ -233,13 +443,20 @@ function loadPlugins() {
                 folder,
               );
               tools.set(tool.name, tool);
+
+              // Ensure every tool has explicit permission metadata
+              permissionManager.registerToolPermissions(
+                tool.name,
+                tool.permissions || {},
+              );
             },
             getPluginsDir: () => pluginsDir,
             reloadPlugins: () => loadPlugins(),
           });
         }
       } catch (e) {
-        console.error("[loadPlugins] Error loading plugin:", folder, e);
+        const errMsg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        console.error(`[loadPlugins] Error loading plugin: ${folder} - ${errMsg}`);
       }
     }
   });
@@ -253,27 +470,44 @@ function registerBuiltinTools() {
   // File System Tools
   tools.set("builtin.readFile", {
     name: "builtin.readFile",
-    description: "Read contents of a file",
+    description: "Read contents of a file. Accepts a file path or an asset_id from uploaded files.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path to read" },
+        asset_id: { type: "string", description: "Asset ID of an uploaded file (alternative to path)" },
         encoding: {
           type: "string",
           description: "Encoding (default: utf-8)",
           default: "utf-8",
         },
       },
-      required: ["path"],
     },
-    run: async (input: { path: string; encoding?: string }) => {
-      const safePath = resolveSafePath(input.path);
-      assertPathSafe(safePath);
+    run: async (input: { path?: string; asset_id?: string; encoding?: string; __asset_path?: string }) => {
+      let safePath: string;
+
+      // Priority: asset_id → __asset_path (resolved by middleware) → raw path
+      if (input.asset_id && assetManager) {
+        const resolved = assetManager.resolvePath(input.asset_id);
+        if (!resolved) throw new Error(`Asset not found: ${input.asset_id}`);
+        safePath = resolved;
+      } else if (input.__asset_path) {
+        safePath = input.__asset_path;
+      } else if (input.path) {
+        safePath = resolveSafePath(input.path);
+        assertPathSafe(safePath);
+      } else {
+        throw new Error("Either path or asset_id is required");
+      }
+
       const content = fs.readFileSync(safePath, {
         encoding: (input.encoding || "utf-8") as BufferEncoding,
       });
       return { content, path: safePath, size: content.length };
     },
+  });
+  permissionManager.registerToolPermissions("builtin.readFile", {
+    filesystem: { actions: ["read"] },
   });
 
   tools.set("builtin.writeFile", {
@@ -311,6 +545,9 @@ function registerBuiltinTools() {
       };
     },
   });
+  permissionManager.registerToolPermissions("builtin.writeFile", {
+    filesystem: { actions: ["write"] },
+  });
 
   tools.set("builtin.listDir", {
     name: "builtin.listDir",
@@ -336,8 +573,11 @@ function registerBuiltinTools() {
         0,
         3,
       );
-      return { path: safePath, entries };
+    return { path: safePath, entries };
     },
+  });
+  permissionManager.registerToolPermissions("builtin.listDir", {
+    filesystem: { actions: ["read"] },
   });
 
   tools.set("builtin.fileExists", {
@@ -414,21 +654,33 @@ function registerBuiltinTools() {
         const isWindows = process.platform === "win32";
         const shell = isWindows ? "cmd.exe" : "/bin/sh";
         const shellArg = isWindows ? "/c" : "-c";
+        const runId = (input as any).__runId as string | undefined;
 
         const proc = spawn(shell, [shellArg, input.command], {
           cwd,
           timeout: input.timeout || 30000,
           env: process.env,
         });
+        processRegistry.register(proc, {
+          runId,
+          toolName: "builtin.shell",
+          command: input.command,
+          type: "tool",
+        });
+        if (runId && proc.pid) {
+          runManager.setProcessId(runId, proc.pid);
+        }
 
         let stdout = "";
         let stderr = "";
 
         proc.stdout?.on("data", (data) => {
           stdout += data.toString();
+          if (proc.pid) processRegistry.recordActivity(proc.pid);
         });
         proc.stderr?.on("data", (data) => {
           stderr += data.toString();
+          if (proc.pid) processRegistry.recordActivity(proc.pid);
         });
 
         proc.on("close", (code) => {
@@ -446,6 +698,9 @@ function registerBuiltinTools() {
         });
       });
     },
+  });
+  permissionManager.registerToolPermissions("builtin.shell", {
+    process: { actions: ["spawn"] },
   });
 
   console.log("[registerBuiltinTools] Registered builtin tools");
@@ -493,7 +748,7 @@ function registerBuiltinTools() {
         },
       },
     },
-    run: async (input: { limit?: number }) => {
+    run: async (input: { limit?: number; __runId?: string }) => {
       return new Promise((resolve) => {
         const limit = input.limit || 20;
         const isWindows = process.platform === "win32";
@@ -506,6 +761,15 @@ function registerBuiltinTools() {
             timeout: 10000,
           },
         );
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.processes",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -530,7 +794,7 @@ function registerBuiltinTools() {
     name: "builtin.diskSpace",
     description: "Check disk space usage",
     inputSchema: { type: "object", properties: {} },
-    run: async () => {
+    run: async (input: { __runId?: string } = {}) => {
       return new Promise((resolve) => {
         const isWindows = process.platform === "win32";
         const cmd = isWindows
@@ -544,6 +808,15 @@ function registerBuiltinTools() {
             timeout: 10000,
           },
         );
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.diskSpace",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -623,13 +896,22 @@ function registerBuiltinTools() {
     name: "builtin.installedApps",
     description: "List installed applications (Windows only)",
     inputSchema: { type: "object", properties: {} },
-    run: async () => {
+    run: async (input: { __runId?: string } = {}) => {
       if (process.platform !== "win32") {
         return { error: "This tool only works on Windows" };
       }
       return new Promise((resolve) => {
         const cmd = "wmic product get name,version";
         const proc = spawn("cmd.exe", ["/c", cmd], { timeout: 30000 });
+        processRegistry.register(proc, {
+          runId: input.__runId,
+          toolName: "builtin.installedApps",
+          command: cmd,
+          type: "tool",
+        });
+        if (input.__runId && proc.pid) {
+          runManager.setProcessId(input.__runId, proc.pid);
+        }
 
         let output = "";
         proc.stdout?.on("data", (data) => {
@@ -652,32 +934,283 @@ function registerBuiltinTools() {
       });
     },
   });
+
+  // ──────────────────────────────────────────────────────────────
+  // V2: Asset-aware tools
+  // ──────────────────────────────────────────────────────────────
+
+  tools.set("builtin.readAsset", {
+    name: "builtin.readAsset",
+    description: "Read an uploaded asset by its asset_id. Returns text content for text-based files, or base64 for binary files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of the uploaded file",
+        },
+      },
+      required: ["asset_id"],
+    },
+    run: async (input: { asset_id: string }) => {
+      if (!assetManager) throw new Error("Asset manager not initialized");
+
+      const meta = assetManager.get(input.asset_id);
+      if (!meta) {
+        return { content: `Asset not found: ${input.asset_id}`, error: "Asset not found" };
+      }
+
+      const filePath = assetManager.resolvePath(input.asset_id);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return { content: "Asset file missing from sandbox", error: "File missing" };
+      }
+
+      const isText = meta.mime_type.startsWith("text/") ||
+        ["application/json", "application/xml", "image/svg+xml"].includes(meta.mime_type);
+
+      if (isText) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        return {
+          content,
+          metadata: {
+            asset_id: meta.asset_id,
+            filename: meta.filename,
+            mime_type: meta.mime_type,
+            size: meta.size,
+            encoding: "utf-8",
+          },
+        };
+      }
+
+      // Binary files: return base64
+      const buffer = fs.readFileSync(filePath);
+      return {
+        content: `[Binary file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes)]`,
+        metadata: {
+          asset_id: meta.asset_id,
+          filename: meta.filename,
+          mime_type: meta.mime_type,
+          size: meta.size,
+          encoding: "base64",
+          base64: buffer.toString("base64"),
+        },
+      };
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.readAsset", {
+    filesystem: { actions: ["read"] },
+  });
+
+  tools.set("builtin.extractPdf", {
+    name: "builtin.extractPdf",
+    description: "Extract text content from a PDF file. Accepts asset_id or file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of an uploaded PDF",
+        },
+        path: {
+          type: "string",
+          description: "File path to a PDF (asset_id preferred)",
+        },
+      },
+    },
+    run: async (input: { asset_id?: string; path?: string; __asset_path?: string }) => {
+      let pdfPath: string | null = null;
+      let sourceLabel = "";
+
+      // Priority: asset_id → __asset_path (from resolution) → raw path
+      if (input.asset_id && assetManager) {
+        pdfPath = assetManager.resolvePath(input.asset_id);
+        sourceLabel = `asset:${input.asset_id}`;
+      } else if (input.__asset_path) {
+        pdfPath = input.__asset_path;
+        sourceLabel = `asset-resolved`;
+      } else if (input.path) {
+        pdfPath = resolveSafePath(input.path);
+        assertPathSafe(pdfPath);
+        sourceLabel = `file:${input.path}`;
+      }
+
+      if (!pdfPath) {
+        return { content: "No PDF source provided. Supply asset_id or path.", error: "Missing input" };
+      }
+
+      if (!fs.existsSync(pdfPath)) {
+        return { content: `PDF file not found: ${sourceLabel}`, error: "File not found" };
+      }
+
+      try {
+        const pdfParse = require("pdf-parse");
+        const buffer = fs.readFileSync(pdfPath);
+        const data = await pdfParse(buffer);
+
+        return {
+          content: data.text || "[No text content extracted]",
+          metadata: {
+            source: sourceLabel,
+            pages: data.numpages,
+            info: data.info,
+            textLength: (data.text || "").length,
+          },
+        };
+      } catch (e: any) {
+        return {
+          content: `Failed to extract PDF text: ${e.message}`,
+          error: e.message,
+          metadata: { source: sourceLabel },
+        };
+      }
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.extractPdf", {
+    filesystem: { actions: ["read"] },
+  });
+
+  tools.set("builtin.analyzeAsset", {
+    name: "builtin.analyzeAsset",
+    description: "Analyze an uploaded asset: extract text from PDFs, parse CSVs, read text files. Returns structured content ready for LLM processing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: {
+          type: "string",
+          description: "The asset_id of the uploaded file",
+        },
+        question: {
+          type: "string",
+          description: "Optional question about the asset content",
+        },
+      },
+      required: ["asset_id"],
+    },
+    run: async (input: { asset_id: string; question?: string }) => {
+      if (!assetManager) throw new Error("Asset manager not initialized");
+
+      const meta = assetManager.get(input.asset_id);
+      if (!meta) {
+        return { content: `Asset not found: ${input.asset_id}`, error: "Asset not found" };
+      }
+
+      const filePath = assetManager.resolvePath(input.asset_id);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return { content: "Asset file missing from sandbox", error: "File missing" };
+      }
+
+      let extractedText = "";
+      let analysisType = "";
+
+      // Route by MIME type
+      if (meta.mime_type === "application/pdf") {
+        // PDF extraction
+        try {
+          const pdfParse = require("pdf-parse");
+          const buffer = fs.readFileSync(filePath);
+          const data = await pdfParse(buffer);
+          extractedText = data.text || "[No text content]";
+          analysisType = "pdf";
+        } catch (e: any) {
+          return { content: `PDF extraction failed: ${e.message}`, error: e.message };
+        }
+      } else if (meta.mime_type === "text/csv") {
+        // CSV parsing
+        const raw = fs.readFileSync(filePath, "utf-8");
+        const lines = raw.split("\n").filter(l => l.trim());
+        const headers = lines[0] ? lines[0].split(",").map(h => h.trim()) : [];
+        const rows = lines.slice(1).map(line => line.split(",").map(c => c.trim()));
+
+        extractedText = `CSV Data:\nHeaders: ${headers.join(", ")}\nRows: ${rows.length}\n\nSample (first 20 rows):\n`;
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          extractedText += rows[i].join(", ") + "\n";
+        }
+        analysisType = "csv";
+      } else if (meta.mime_type.startsWith("text/") || ["application/json", "application/xml"].includes(meta.mime_type)) {
+        // Text files
+        extractedText = fs.readFileSync(filePath, "utf-8");
+        analysisType = "text";
+      } else if (meta.mime_type.startsWith("image/")) {
+        extractedText = `[Image file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes). Image content analysis requires a vision model.]`;
+        analysisType = "image";
+      } else {
+        extractedText = `[Binary file: ${meta.filename} (${meta.mime_type}, ${meta.size} bytes). Cannot extract text from this file type.]`;
+        analysisType = "binary";
+      }
+
+      // Build prompt for LLM if there's a question
+      let content = `File: ${meta.filename} (${meta.mime_type})\n\n${extractedText}`;
+      if (input.question) {
+        content = `File: ${meta.filename} (${meta.mime_type})\n\nContent:\n${extractedText}\n\nQuestion: ${input.question}`;
+      }
+
+      return {
+        content,
+        metadata: {
+          asset_id: meta.asset_id,
+          filename: meta.filename,
+          mime_type: meta.mime_type,
+          size: meta.size,
+          analysisType,
+          textLength: extractedText.length,
+          suggestedRole: input.question ? "writer_cheap" : undefined,
+        },
+      };
+    },
+  });
+  permissionManager.registerToolPermissions("builtin.analyzeAsset", {
+    filesystem: { actions: ["read"] },
+  });
+
+  // Ensure builtin tools always have declared permission metadata.
+  tools.forEach((_tool, toolName) => {
+    if (
+      toolName.startsWith("builtin.") &&
+      !permissionManager.getToolPermissions(toolName)
+    ) {
+      permissionManager.registerToolPermissions(toolName, {});
+    }
+  });
 }
 
 function resolveSafePath(inputPath: string): string {
+  const normalized = inputPath.trim();
   // Allow absolute paths or resolve relative to user's home
-  if (path.isAbsolute(inputPath)) {
-    return inputPath;
+  if (path.isAbsolute(normalized)) {
+    return path.resolve(normalized);
   }
   const workingDir = (store.get("workingDir") as string) || app.getPath("home");
-  return path.resolve(workingDir, inputPath);
+  return path.resolve(workingDir, normalized);
+}
+
+function normalizePathForComparison(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  const normalized = path.normalize(resolved);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isPathWithinRoot(targetPath: string, rootPath: string): boolean {
+  const target = normalizePathForComparison(targetPath);
+  const root = normalizePathForComparison(rootPath);
+  if (target === root) return true;
+  const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  return target.startsWith(rootWithSep);
 }
 
 function isPathSafe(targetPath: string): boolean {
   const safePaths = (store.get("safePaths") as string[]) || [];
   const workingDir = store.get("workingDir") as string;
+  const resolvedTarget = path.resolve(targetPath);
 
   // If no safe paths configured, allow workingDir and home
   if (safePaths.length === 0) {
-    const allowedRoots = [workingDir, app.getPath("home")].filter(Boolean);
-    return allowedRoots.some((root) => targetPath.startsWith(root));
+    const allowedRoots = [workingDir, app.getPath("home"), process.cwd()].filter(Boolean);
+    return allowedRoots.some((root) => isPathWithinRoot(resolvedTarget, root));
   }
 
   // Check if path is within any safe path
-  const resolved = path.resolve(targetPath);
   return safePaths.some((safePath) => {
-    const resolvedSafe = path.resolve(safePath);
-    return resolved.startsWith(resolvedSafe);
+    return isPathWithinRoot(resolvedTarget, safePath);
   });
 }
 
@@ -849,6 +1382,13 @@ class MCPClient {
           shell: false,
           detached: false, // Keep process attached
         });
+        if (this.process?.pid) {
+          processRegistry.register(this.process, {
+            toolName: this.name,
+            command: `${command} ${args.join(" ")}`.trim(),
+            type: "mcp",
+          });
+        }
 
         // Prevent stdin from auto-closing
         if (this.process.stdin) {
@@ -1394,6 +1934,45 @@ class MCPProxyClient {
 
 const mcpClients: Map<string, MCPClient | MCPProxyClient> = new Map();
 
+function createMCPClient(config: {
+  name: string;
+  command: string;
+  args?: string[];
+  transport?: "stdio" | "pipewrench";
+}): MCPClient | MCPProxyClient {
+  const transport = config.transport || "stdio";
+  const proxyPort = store.get("pipewrenchPort", 9999) as number;
+  if (transport === "pipewrench") {
+    return new MCPProxyClient(
+      config.name,
+      config.command,
+      config.args || [],
+      proxyPort,
+    );
+  }
+  return new MCPClient(config.name, config.command, config.args || []);
+}
+
+function registerMCPTools(
+  client: MCPClient | MCPProxyClient,
+  serverName: string,
+): void {
+  client.tools.forEach((tool) => {
+    const toolName = `mcp.${serverName}.${tool.name}`;
+    tools.set(toolName, {
+      name: toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      mcpServer: serverName,
+      mcpToolName: tool.name,
+      run: async (input: any) => client.callTool(tool.name, input),
+    });
+
+    // MCP tools are external; we still register explicit metadata.
+    permissionManager.registerToolPermissions(toolName, {});
+  });
+}
+
 function loadMCPServers() {
   const serverConfigs = (store.get("mcpServers") as any[]) || [];
   console.log("[loadMCPServers] Loading MCP servers:", serverConfigs.length);
@@ -1401,29 +1980,13 @@ function loadMCPServers() {
   serverConfigs.forEach(async (config) => {
     if (!config.name || !config.command) return;
 
-    const client = new MCPClient(
-      config.name,
-      config.command,
-      config.args || [],
-    );
+    const client = createMCPClient(config);
     mcpClients.set(config.name, client);
 
     try {
       await client.connect();
       // Register MCP tools with mcp. prefix
-      client.tools.forEach((tool) => {
-        const toolName = `mcp.${config.name}.${tool.name}`;
-        tools.set(toolName, {
-          name: toolName,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          mcpServer: config.name,
-          mcpToolName: tool.name,
-          run: async (input: any) => {
-            return await client.callTool(tool.name, input);
-          },
-        });
-      });
+      registerMCPTools(client, config.name);
       console.log(
         `[MCP] Connected to ${config.name}, registered ${client.tools.length} tools`,
       );
@@ -1433,9 +1996,397 @@ function loadMCPServers() {
   });
 }
 
+type PermissionProfileDecision = "allow" | "ask" | "deny";
+type ToolPermissionProfile = Partial<
+  Record<PermissionAction, PermissionProfileDecision>
+>;
+
+function getPermissionProfileDecision(
+  toolName: string,
+  action: PermissionAction,
+): PermissionProfileDecision | undefined {
+  const profiles =
+    (store.get("permissionProfiles") as Record<string, ToolPermissionProfile>) ||
+    {};
+  const exact = profiles[toolName];
+  const wildcard = profiles["*"];
+  return exact?.[action] ?? wildcard?.[action];
+}
+
+function enforceToolPermissions(toolName: string): void {
+  const permissions = permissionManager.getToolPermissions(toolName);
+
+  // Tools must declare metadata explicitly.
+  if (!permissions) {
+    throw new Error(`Permission metadata missing for tool: ${toolName}`);
+  }
+
+  const categories: PermissionCategory[] = ["filesystem", "network", "process"];
+  for (const category of categories) {
+    const categoryPerms = permissions[category];
+    if (!categoryPerms) continue;
+
+    for (const action of categoryPerms.actions) {
+      if (isFeatureEnabled("N_PERMISSION_PROFILES")) {
+        const profileDecision = getPermissionProfileDecision(toolName, action);
+        if (profileDecision === "allow") {
+          continue;
+        }
+        if (profileDecision === "deny") {
+          throw new Error(`Permission denied by profile for ${category}:${action}`);
+        }
+        if (profileDecision === "ask") {
+          throw new Error(`PERMISSION_REQUIRED:${toolName}`);
+        }
+      }
+
+      const check = permissionManager.checkPermission(toolName, category, action);
+      if (!check.allowed) {
+        if (check.needsPrompt) {
+          throw new Error(`PERMISSION_REQUIRED:${toolName}`);
+        }
+        throw new Error(`Permission denied for ${category}:${action}`);
+      }
+    }
+  }
+}
+
+type HealthSignalStatus = "pass" | "warn" | "fail";
+
+interface ToolHealthSignals {
+  enabled: boolean;
+  toolName: string;
+  totalRuns: number;
+  completed: number;
+  failed: number;
+  timedOut: number;
+  killed: number;
+  timeoutRate: number;
+  frequentTimeout: boolean;
+  timeoutHints: string[];
+  knownIssues: string[];
+  mcpStatus?: {
+    transport: string;
+    rawStatus: string;
+    status: HealthSignalStatus;
+    detail: string;
+  };
+}
+
+interface SafeFixChange {
+  key: string;
+  before: any;
+  after: any;
+}
+
+interface SafeFixPreviewPayload {
+  fixId: string;
+  title: string;
+  description: string;
+  changes: SafeFixChange[];
+}
+
+interface DiagnosticSuggestion {
+  classifier: "PATH" | "permissions" | "AV" | "network_timeout" | "invalid_config";
+  doctorSections: string[];
+  explanation: string;
+  suggestions: string[];
+  safeFixes: Array<{
+    fixId: string;
+    title: string;
+    description: string;
+  }>;
+}
+
+const pendingSafeFixPreviews: Map<
+  string,
+  { fixId: string; createdAt: number; changes: SafeFixChange[] }
+> = new Map();
+
+const TOOL_TIMEOUT_HINTS: Array<{ pattern: RegExp; hints: string[] }> = [
+  {
+    pattern: /^builtin\.shell$/,
+    hints: [
+      "Reduce command output volume.",
+      "Increase tool timeout in tool input if safe.",
+      "Run command in a narrower working directory.",
+    ],
+  },
+  {
+    pattern: /^mcp\./,
+    hints: [
+      "Check MCP server status in Settings.",
+      "If using PipeWrench transport, verify proxy health and port.",
+      "Reconnect the MCP server and retry.",
+    ],
+  },
+  {
+    pattern: /^builtin\.(processes|diskSpace|installedApps)$/,
+    hints: [
+      "Retry when system load is lower.",
+      "Limit scope/size of requested data.",
+    ],
+  },
+];
+
+function getKnownIssuesForTool(toolName: string): string[] {
+  const fromConfig =
+    ((store.get("toolKnownIssues") as Record<string, string[]>) || {})[toolName] ||
+    [];
+  const manifest = manifestRegistry.get(toolName) as any;
+  const fromManifest = Array.isArray(manifest?.knownIssues)
+    ? manifest.knownIssues
+    : [];
+  return Array.from(
+    new Set(
+      [...fromManifest, ...fromConfig]
+        .map((s) => (typeof s === "string" ? s.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getTimeoutHintsForTool(toolName: string): string[] {
+  const match = TOOL_TIMEOUT_HINTS.find((m) => m.pattern.test(toolName));
+  if (match) return match.hints;
+  return [
+    "Try a smaller input payload.",
+    "Verify local system resources and retry.",
+  ];
+}
+
+function toHealthStatus(
+  raw: "disconnected" | "connecting" | "connected" | "error",
+): HealthSignalStatus {
+  if (raw === "connected") return "pass";
+  if (raw === "error") return "fail";
+  return "warn";
+}
+
+function getMCPHealthStatusForTool(toolName: string) {
+  if (!toolName.startsWith("mcp.")) return undefined;
+  const parts = toolName.split(".");
+  if (parts.length < 3) return undefined;
+
+  const serverName = parts[1];
+  const client = mcpClients.get(serverName);
+  const rawStatus =
+    (client?.status as "disconnected" | "connecting" | "connected" | "error") ||
+    "disconnected";
+  const serverConfig =
+    ((store.get("mcpServers") as any[]) || []).find((s) => s.name === serverName) ||
+    {};
+  const transport = serverConfig.transport || "stdio";
+
+  return {
+    transport,
+    rawStatus,
+    status: toHealthStatus(rawStatus),
+    detail:
+      transport === "pipewrench"
+        ? `PipeWrench transport is ${rawStatus}`
+        : `MCP transport is ${rawStatus}`,
+  };
+}
+
+function computeToolHealthSignals(toolName: string): ToolHealthSignals {
+  const runs = runManager.getAllRuns().filter((r) => r.toolName === toolName);
+  const terminal = runs.filter((r) =>
+    ["completed", "failed", "timed-out", "killed"].includes(r.state),
+  );
+  const completed = terminal.filter((r) => r.state === "completed").length;
+  const failed = terminal.filter((r) => r.state === "failed").length;
+  const timedOut = terminal.filter((r) => r.state === "timed-out").length;
+  const killed = terminal.filter((r) => r.state === "killed").length;
+  const timeoutRate = terminal.length > 0 ? timedOut / terminal.length : 0;
+  const frequentTimeout =
+    timedOut >= 2 && terminal.length >= 3 && timeoutRate >= 0.3;
+
+  return {
+    enabled: true,
+    toolName,
+    totalRuns: terminal.length,
+    completed,
+    failed,
+    timedOut,
+    killed,
+    timeoutRate,
+    frequentTimeout,
+    timeoutHints: frequentTimeout ? getTimeoutHintsForTool(toolName) : [],
+    knownIssues: getKnownIssuesForTool(toolName),
+    mcpStatus: getMCPHealthStatusForTool(toolName),
+  };
+}
+
+function buildDiagnosticSuggestions(
+  toolName: string,
+  errorText: string,
+): DiagnosticSuggestion[] {
+  const text = `${toolName} ${errorText}`.toLowerCase();
+  const suggestions: DiagnosticSuggestion[] = [];
+
+  const pushSuggestion = (suggestion: DiagnosticSuggestion) => {
+    if (!suggestions.some((s) => s.classifier === suggestion.classifier)) {
+      suggestions.push(suggestion);
+    }
+  };
+
+  if (
+    /(command not found|is not recognized|enoent|path|cannot find)/i.test(text)
+  ) {
+    pushSuggestion({
+      classifier: "PATH",
+      doctorSections: ["PATH Sanity", "Process Spawn Test"],
+      explanation: "The failure pattern looks like a PATH or binary resolution issue.",
+      suggestions: [
+        "Run Doctor and review PATH Sanity.",
+        "Verify required commands are installed and available to GUI apps.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (/(permission denied|eacces|eperm|access denied)/i.test(text)) {
+    pushSuggestion({
+      classifier: "permissions",
+      doctorSections: ["Config Directory Permissions"],
+      explanation: "The failure pattern indicates a permissions/access problem.",
+      suggestions: [
+        "Review safe paths and tool permissions.",
+        "Try running with narrower file targets.",
+      ],
+      safeFixes: [
+        {
+          fixId: "fix:add-working-dir-to-safe-paths",
+          title: "Add working directory to safe paths",
+          description: "Limited config-only change; no files are modified.",
+        },
+      ],
+    });
+  }
+
+  if (/(defender|antivirus|av|blocked by security|quarantine)/i.test(text)) {
+    pushSuggestion({
+      classifier: "AV",
+      doctorSections: ["Antivirus/Defender", "Process Spawn Test"],
+      explanation: "The failure may be caused by antivirus/endpoint security interference.",
+      suggestions: [
+        "Run Doctor and review Antivirus/Defender section.",
+        "Consider adding Workbench folder exclusions if policy allows.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (
+    /(timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network)/i.test(
+      text,
+    )
+  ) {
+    const toolHints = getTimeoutHintsForTool(toolName);
+    pushSuggestion({
+      classifier: "network_timeout",
+      doctorSections: ["Localhost Network", "Proxy/Firewall"],
+      explanation: "The failure pattern suggests a network or timeout issue.",
+      suggestions: [
+        ...toolHints,
+        "Check proxy/firewall settings and local network diagnostics.",
+      ],
+      safeFixes: [],
+    });
+  }
+
+  if (
+    /(no model configured|api key|invalid|bad request|misconfig|configuration|missing)/i.test(
+      text,
+    )
+  ) {
+    pushSuggestion({
+      classifier: "invalid_config",
+      doctorSections: ["PATH Sanity", "Proxy/Firewall"],
+      explanation: "The failure pattern suggests an invalid or incomplete configuration.",
+      suggestions: [
+        "Review Settings values for model/api endpoint/api key.",
+        "Re-run Doctor after configuration updates.",
+      ],
+      safeFixes: [
+        {
+          fixId: "fix:set-default-api-endpoint",
+          title: "Set default API endpoint",
+          description:
+            "Sets `apiEndpoint` to `https://openrouter.ai/api/v1` only if needed.",
+        },
+      ],
+    });
+  }
+
+  return suggestions;
+}
+
+function createSafeFixPreview(fixId: string): SafeFixPreviewPayload | null {
+  const cfg = store.store as any;
+
+  if (fixId === "fix:set-default-api-endpoint") {
+    const before = cfg.apiEndpoint || "";
+    const after = "https://openrouter.ai/api/v1";
+    if (before === after) return null;
+    return {
+      fixId,
+      title: "Set default API endpoint",
+      description: "Config-only update. Reversible by restoring previous value.",
+      changes: [{ key: "apiEndpoint", before, after }],
+    };
+  }
+
+  if (fixId === "fix:add-working-dir-to-safe-paths") {
+    const workingDir = cfg.workingDir || app.getPath("home");
+    const before = Array.isArray(cfg.safePaths) ? cfg.safePaths : [];
+    if (!workingDir || before.includes(workingDir)) return null;
+    const after = [...before, workingDir];
+    return {
+      fixId,
+      title: "Add working directory to safe paths",
+      description: "Config-only update. Reversible by removing the added path.",
+      changes: [{ key: "safePaths", before, after }],
+    };
+  }
+
+  return null;
+}
+
+function applySafeFix(fixId: string, changes: SafeFixChange[]): {
+  success: boolean;
+  error?: string;
+} {
+  try {
+    if (fixId === "fix:set-default-api-endpoint") {
+      const change = changes.find((c) => c.key === "apiEndpoint");
+      if (!change) return { success: false, error: "Preview mismatch for apiEndpoint" };
+      store.set("apiEndpoint", change.after);
+      return { success: true };
+    }
+
+    if (fixId === "fix:add-working-dir-to-safe-paths") {
+      const change = changes.find((c) => c.key === "safePaths");
+      if (!change || !Array.isArray(change.after)) {
+        return { success: false, error: "Preview mismatch for safePaths" };
+      }
+      store.set("safePaths", change.after);
+      return { success: true };
+    }
+
+    return { success: false, error: "Unknown fix ID" };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
 // ============================================================================
 // IPC HANDLERS
 // ============================================================================
+
+// Product config
+ipcMain.handle("product:config", () => productConfig);
 
 // Config
 ipcMain.handle("config:get", () => store.store);
@@ -1451,43 +2402,55 @@ ipcMain.handle("plugins:reload", () => {
 });
 
 ipcMain.handle("plugins:save", async (_e, pluginName: string, code: string) => {
-  const pluginsDir =
-    (store.get("pluginsDir") as string) || path.join(__dirname, "plugins");
-  const safeName = pluginName
-    .replace(/[^a-zA-Z0-9_-]/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!safeName) throw new Error("Invalid plugin name");
+  try {
+    const pluginsDir =
+      (store.get("pluginsDir") as string) || path.join(__dirname, "plugins");
+    
+    console.log(`[plugins:save] Request to save "${pluginName}" to "${pluginsDir}"`);
 
-  const pluginPath = path.join(pluginsDir, safeName);
-
-  // Check if path exists as a file and remove it
-  if (fs.existsSync(pluginPath)) {
-    const stat = fs.statSync(pluginPath);
-    if (stat.isFile()) {
-      fs.unlinkSync(pluginPath);
+    if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isFile()) {
+      throw new Error(`Plugins directory configuration is invalid (is a file): ${pluginsDir}`);
     }
+
+    const safeName = pluginName
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!safeName) throw new Error("Invalid plugin name");
+
+    const pluginPath = path.join(pluginsDir, safeName);
+
+    // Check if path exists as a file and remove it
+    if (fs.existsSync(pluginPath)) {
+      const stat = fs.statSync(pluginPath);
+      if (stat.isFile()) {
+        fs.unlinkSync(pluginPath);
+      }
+    }
+
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(pluginPath)) {
+      fs.mkdirSync(pluginPath, { recursive: true });
+    }
+
+    let cleanCode = code;
+    const fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
+    if (fenceMatch) {
+      cleanCode = fenceMatch[1].trim();
+    }
+
+    fs.writeFileSync(path.join(pluginPath, "index.js"), cleanCode, "utf-8");
+    fs.writeFileSync(
+      path.join(pluginPath, "package.json"),
+      '{\n  "type": "commonjs"\n}\n',
+      "utf-8",
+    );
+
+    loadPlugins();
+    return { success: true, path: pluginPath, name: safeName };
+  } catch (e: any) {
+    console.error(`[plugins:save] Failed for "${pluginName}":`, e);
+    throw e;
   }
-
-  // Create directory if it doesn't exist
-  if (!fs.existsSync(pluginPath)) {
-    fs.mkdirSync(pluginPath, { recursive: true });
-  }
-
-  let cleanCode = code;
-  const fenceMatch = code.match(/```(?:javascript|js)?\s*\n([\s\S]*?)```/);
-  if (fenceMatch) {
-    cleanCode = fenceMatch[1].trim();
-  }
-
-  fs.writeFileSync(path.join(pluginPath, "index.js"), cleanCode, "utf-8");
-  fs.writeFileSync(
-    path.join(pluginPath, "package.json"),
-    '{\n  "type": "commonjs"\n}\n',
-    "utf-8",
-  );
-
-  loadPlugins();
-  return { success: true, path: pluginPath, name: safeName };
 });
 
 // Delete a plugin
@@ -1518,6 +2481,7 @@ ipcMain.handle("tools:list", () => {
     inputSchema: t.inputSchema,
     category: t.name.split(".")[0],
     _sourceFolder: t._sourceFolder,
+    _sourcePath: t._sourcePath,
   }));
 });
 
@@ -1530,26 +2494,179 @@ ipcMain.handle("tools:refresh", () => {
     inputSchema: t.inputSchema,
     category: t.name.split(".")[0],
     _sourceFolder: t._sourceFolder,
+    _sourcePath: t._sourcePath,
   }));
 });
+
+// Tool Health Signals (L) - optional, local-only
+ipcMain.handle("toolHealth:get", (_e, toolName: string) => {
+  if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+    return { enabled: false, toolName };
+  }
+  return computeToolHealthSignals(toolName);
+});
+
+ipcMain.handle("toolHealth:addKnownIssue", (_e, toolName: string, note: string) => {
+  if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const trimmed = (note || "").trim();
+  if (!trimmed) {
+    return { success: false, error: "Note cannot be empty" };
+  }
+  const allIssues =
+    (store.get("toolKnownIssues") as Record<string, string[]>) || {};
+  const current = Array.isArray(allIssues[toolName]) ? allIssues[toolName] : [];
+  allIssues[toolName] = Array.from(new Set([...current, trimmed]));
+  store.set("toolKnownIssues", allIssues);
+  return { success: true, issues: allIssues[toolName] };
+});
+
+ipcMain.handle(
+  "toolHealth:removeKnownIssue",
+  (_e, toolName: string, index: number) => {
+    if (!isFeatureEnabled("L_TOOL_HEALTH_SIGNALS")) {
+      return { success: false, error: "Feature disabled" };
+    }
+    const allIssues =
+      (store.get("toolKnownIssues") as Record<string, string[]>) || {};
+    const current = Array.isArray(allIssues[toolName]) ? allIssues[toolName] : [];
+    if (index < 0 || index >= current.length) {
+      return { success: false, error: "Issue index out of range" };
+    }
+    current.splice(index, 1);
+    allIssues[toolName] = current;
+    store.set("toolKnownIssues", allIssues);
+    return { success: true, issues: current };
+  },
+);
 
 ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 
-  // Safety: Tool timeout (30 seconds)
-  const TOOL_TIMEOUT = 30000;
+  // Phase 1: Emit tool requested event
+  eventBus.emit({
+    type: 'tool:requested',
+    toolName: name,
+    timestamp: createTimestamp()
+  });
+
+  // Phase 1: Runner routing (guardrail - ensures all tools go through runner system)
+  const toolSpec: RunnerToolSpec = {
+    name: tool.name,
+    input: input
+  };
+  const selectedRunner = runnerRegistry.findRunner(toolSpec);
+  if (!selectedRunner) {
+    console.error(`[tools:run] No runner available for tool: ${name}`);
+    throw new Error(`No runner available for tool: ${name}`);
+  }
+  // ASSERTION: Phase 1 - must be ShellRunner
+  if (selectedRunner.name !== 'shell') {
+    console.error(`[tools:run] PHASE 1 VIOLATION: Non-shell runner selected: ${selectedRunner.name}`);
+  }
+  console.log(`[tools:run] Tool "${name}" → Runner "${selectedRunner.name}"`);
+
+  // V2: Schema validation before execution
+  if (tool.inputSchema) {
+    const validation = schemaValidator.validateToolInput(input || {}, tool.inputSchema);
+    if (!validation.valid) {
+      throw new Error(`Schema validation failed: ${validation.errors.join('; ')}`);
+    }
+  }
+
+  // V2: Guardrails - check for dangerous commands
+  const actionType = commandGuardrails.classifyAction(name, input);
+  if (actionType === 'terminal_command') {
+    const cmdCheck = commandGuardrails.checkCommand(
+      input?.command || '',
+      input?.args || []
+    );
+    if (!cmdCheck.allowed) {
+      throw new Error(`Blocked by guardrails: ${cmdCheck.reason}`);
+    }
+  }
+
+  // V2: Path sandbox validation for file operations
+  if ((actionType === 'file_write' || actionType === 'file_delete') && pathSandbox) {
+    const filePath = input?.path || input?.filePath || '';
+    if (filePath) {
+      const pathCheck = pathSandbox.isPathAllowed(filePath);
+      if (!pathCheck.allowed) {
+        throw new Error(`Path blocked by sandbox: ${pathCheck.reason}`);
+      }
+    }
+  }
+
+  // V2: Loop detection
+  if (loopDetector.isInLoop(name, JSON.stringify(input || {}).substring(0, 200))) {
+    throw new Error(loopDetector.getLoopSuggestion(name));
+  }
+
+  // Concurrency cap check
+  if (!processRegistry.canSpawn()) {
+    throw new Error(
+      `Concurrency limit reached (${processRegistry.getCount()} processes running). Wait for existing tools to finish or kill some first.`
+    );
+  }
+
+  // Create run tracking
+  const riskLevel = commandGuardrails.assessRisk(name, actionType, input);
+  const runId = runManager.createRun(name, input, 'user');
+
+  try {
+    enforceToolPermissions(name);
+  } catch (permissionError: any) {
+    const message = permissionError?.message || "Permission denied";
+    runManager.failRun(
+      runId,
+      message.startsWith("PERMISSION_REQUIRED:")
+        ? "Permission required"
+        : message,
+    );
+    throw permissionError;
+  }
+
+  // Start the run
+  runManager.startRun(runId);
+  runManager.setApprovalInfo(runId, riskLevel, 'user');
+
+  // Phase 1: Emit tool started event
+  eventBus.emit({
+    type: 'tool:started',
+    toolName: name,
+    runId,
+    timestamp: createTimestamp()
+  });
+
+  let runInput =
+    name.startsWith("builtin.")
+      ? input && typeof input === "object" && !Array.isArray(input)
+        ? { ...input, __runId: runId }
+        : { __runId: runId }
+      : input;
+
+  // V2: Asset resolution - resolve asset_id references to sandbox paths
+  runInput = resolveAssetReferences(runInput);
+
+  // Per-tool timeout: check manifest, fallback to global default (30s)
+  const DEFAULT_TOOL_TIMEOUT = 30000;
+  const manifest = manifestRegistry.get(name) as any;
+  const TOOL_TIMEOUT = (manifest?.timeoutMs && manifest.timeoutMs > 0)
+    ? manifest.timeoutMs
+    : DEFAULT_TOOL_TIMEOUT;
   const MAX_OUTPUT_SIZE = 500000; // 500KB max output
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
-      () => reject(new Error("Tool execution timeout (30s limit)")),
+      () => reject(new Error(`Tool execution timeout (${Math.round(TOOL_TIMEOUT / 1000)}s limit)`)),
       TOOL_TIMEOUT,
     );
   });
 
   try {
-    const rawOutput = await Promise.race([tool.run(input), timeoutPromise]);
+    const rawOutput = await Promise.race([tool.run(runInput), timeoutPromise]);
 
     const normalized = normalizeToolOutput(rawOutput);
 
@@ -1568,10 +2685,65 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
       };
     }
 
-    return normalized;
+    // Complete the run
+    const snippet = typeof normalized.content === 'string'
+      ? normalized.content.slice(0, 200)
+      : JSON.stringify(normalized.content).slice(0, 200);
+    runManager.completeRun(runId, normalized, snippet);
+
+    // V3: Record successful tool usage for adaptive scoring
+    if (isFeatureEnabled("V3_USAGE_TRACKING")) {
+      toolDispatcher.recordToolUsage(name, JSON.stringify(input).slice(0, 200), true);
+      store.set("toolUsageData", toolDispatcher.getUsageData());
+    }
+
+    // Phase 1: Wrap result with verification (preserves all existing fields)
+    const verifiedResult = wrapToolResult(normalized, name);
+    console.log(`[tools:run] Verification: ${verifiedResult.verification.status} for tool "${name}"`);
+    
+    // Phase 1: Emit tool verified event
+    eventBus.emit({
+      type: 'tool:verified',
+      toolName: name,
+      runId,
+      status: verifiedResult.verification.status,
+      timestamp: createTimestamp()
+    });
+    
+    return verifiedResult;
   } catch (error: any) {
+    // Mark run as failed or timed out
+    if (error.message.includes("timeout")) {
+      runManager.timeoutRun(runId);
+    } else {
+      runManager.failRun(runId, error.message);
+    }
+
+    // V3: Record failed tool usage
+    if (isFeatureEnabled("V3_USAGE_TRACKING")) {
+      toolDispatcher.recordToolUsage(name, JSON.stringify(input).slice(0, 200), false);
+      store.set("toolUsageData", toolDispatcher.getUsageData());
+    }
+
+    // V2: Record failure for loop detection
+    loopDetector.recordFailure(name, error.message);
+
+    // V2: Auto-trigger Doctor on qualifying failures
+    const doctorEngine = getDoctorEngine();
+    const triggerEvent = doctorEngine.shouldAutoTrigger(error.message);
+    if (triggerEvent) {
+      // Fire-and-forget, non-blocking
+      doctorEngine.autoTrigger(triggerEvent, `${name}: ${error.message}`).then(result => {
+        if (result.triggered && result.report && mainWindow) {
+          mainWindow.webContents.send('doctor:autoReport', result.report);
+          // Persist report history
+          store.set('doctorReportHistory', doctorEngine.getReportHistory());
+        }
+      }).catch(() => { /* ignore auto-doctor errors */ });
+    }
+
     // Friendly error handling
-    return normalizeToolOutput({
+    const errorResult = normalizeToolOutput({
       content: error.message.includes("timeout")
         ? "Tool execution timed out. Please try again or simplify your request."
         : `Tool error: ${error.message}`,
@@ -1580,8 +2752,24 @@ ipcMain.handle("tools:run", async (_e, name: string, input: any) => {
         tool: name,
         input,
         timestamp: new Date().toISOString(),
+        riskLevel,
       },
     });
+    
+    // Phase 1: Wrap error result with verification
+    const verifiedErrorResult = wrapToolResult(errorResult, name);
+    console.log(`[tools:run] Verification: ${verifiedErrorResult.verification.status} for tool "${name}" (error case)`);
+    
+    // Phase 1: Emit tool failed event
+    eventBus.emit({
+      type: 'tool:failed',
+      toolName: name,
+      runId,
+      reason: error.message,
+      timestamp: createTimestamp()
+    });
+    
+    return verifiedErrorResult;
   }
 });
 
@@ -1612,10 +2800,25 @@ function calculateCost(
     "anthropic/claude-3-haiku": { prompt: 0.25, completion: 1.25 },
     "openai/gpt-4o": { prompt: 2.5, completion: 10 },
     "openai/gpt-4o-mini": { prompt: 0.15, completion: 0.6 },
+    // Free models (OpenRouter free tier)
+    "google/gemini-flash-1.5": { prompt: 0, completion: 0 },
+    "google/gemini-pro-1.5": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3.2-3b-instruct:free": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3.1-8b-instruct:free": { prompt: 0, completion: 0 },
+    "meta-llama/llama-3-8b-instruct:free": { prompt: 0, completion: 0 },
+    "phi-3-mini-128k-instruct:free": { prompt: 0, completion: 0 },
+    "qwen/qwen-2-7b-instruct:free": { prompt: 0, completion: 0 },
+    "mistralai/mistral-7b-instruct:free": { prompt: 0, completion: 0 },
     default: { prompt: 1, completion: 2 },
   };
 
-  const rates = pricing[model] || pricing["default"];
+  // Check if model ID contains ":free" suffix (OpenRouter convention for free models)
+  const isFreeModel = model.includes(":free");
+  
+  const rates = isFreeModel 
+    ? { prompt: 0, completion: 0 }
+    : (pricing[model] || pricing["default"]);
+    
   return (
     (promptTokens * rates.prompt) / 1_000_000 +
     (completionTokens * rates.completion) / 1_000_000
@@ -1767,6 +2970,29 @@ function processTemplateVariables(text: string): string {
     .replace(/\{\{clipboard\}\}/g, clipboard.readText());
 }
 
+// Filter out model thinking/reasoning blocks
+function filterThinkingBlocks(text: string): string {
+  // Remove various thinking block patterns
+  let filtered = text;
+  
+  // Remove <thinking>...</thinking> blocks (Claude-style)
+  filtered = filtered.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  
+  // Remove <reasoning>...</reasoning> blocks
+  filtered = filtered.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+  
+  // Remove <analysis>...</analysis> blocks
+  filtered = filtered.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
+  
+  // Remove <internal_thoughts>...</internal_thoughts> blocks
+  filtered = filtered.replace(/<internal_thoughts>[\s\S]*?<\/internal_thoughts>/gi, '');
+  
+  // Clean up any remaining multiple newlines
+  filtered = filtered.replace(/\n{3,}/g, '\n\n').trim();
+  
+  return filtered;
+}
+
 // Streaming task runner
 ipcMain.handle(
   "task:runStream",
@@ -1886,6 +3112,46 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
       let fullContent = "";
       let promptTokens = 0;
       let completionTokens = 0;
+      let requestCost = 0;
+      let costTracked = false;
+      let doneSent = false;
+
+      const trackCostOnce = () => {
+        if (costTracked) return;
+        requestCost = calculateCost(
+          roleConfig.model,
+          promptTokens,
+          completionTokens,
+        );
+        sessionCosts.total += requestCost;
+        sessionCosts.requests += 1;
+        if (!sessionCosts.byModel[roleConfig.model]) {
+          sessionCosts.byModel[roleConfig.model] = {
+            cost: 0,
+            requests: 0,
+            tokens: { prompt: 0, completion: 0 },
+          };
+        }
+        sessionCosts.byModel[roleConfig.model].cost += requestCost;
+        sessionCosts.byModel[roleConfig.model].requests += 1;
+        sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
+        sessionCosts.byModel[roleConfig.model].tokens.completion +=
+          completionTokens;
+        costTracked = true;
+      };
+
+      const emitDoneOnce = () => {
+        if (doneSent) return;
+        doneSent = true;
+        // Filter out thinking blocks before sending final content
+        const filteredContent = filterThinkingBlocks(fullContent);
+        mainWindow?.webContents.send("stream:done", {
+          requestId,
+          content: filteredContent,
+          cost: requestCost,
+          tokens: { prompt: promptTokens, completion: completionTokens },
+        });
+      };
 
       res.data.on("data", (chunk: Buffer) => {
         const lines = chunk
@@ -1896,40 +3162,18 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
         for (const line of lines) {
           const data = line.replace("data:", "").trim();
           if (data === "[DONE]") {
-            // Track costs
-            const cost = calculateCost(
-              roleConfig.model,
-              promptTokens,
-              completionTokens,
-            );
-            sessionCosts.total += cost;
-            sessionCosts.requests += 1;
-            if (!sessionCosts.byModel[roleConfig.model]) {
-              sessionCosts.byModel[roleConfig.model] = {
-                cost: 0,
-                requests: 0,
-                tokens: { prompt: 0, completion: 0 },
-              };
-            }
-            sessionCosts.byModel[roleConfig.model].cost += cost;
-            sessionCosts.byModel[roleConfig.model].requests += 1;
-            sessionCosts.byModel[roleConfig.model].tokens.prompt +=
-              promptTokens;
-            sessionCosts.byModel[roleConfig.model].tokens.completion +=
-              completionTokens;
-
-            mainWindow?.webContents.send("stream:done", {
-              requestId,
-              content: fullContent,
-              cost,
-              tokens: { prompt: promptTokens, completion: completionTokens },
-            });
+            trackCostOnce();
+            emitDoneOnce();
             return;
           }
 
           try {
             const parsed = JSON.parse(data);
+            
+            // Some models send reasoning/thinking in separate fields - ignore those
+            // Only use the actual content field, not reasoning_content or thinking
             const delta = parsed.choices?.[0]?.delta?.content || "";
+            
             if (delta) {
               fullContent += delta;
               mainWindow?.webContents.send("stream:chunk", {
@@ -1950,34 +3194,8 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
       });
 
       res.data.on("end", () => {
-        // Track costs even if no [DONE] received
-        if (promptTokens > 0 || completionTokens > 0) {
-          const cost = calculateCost(
-            roleConfig.model,
-            promptTokens,
-            completionTokens,
-          );
-          sessionCosts.total += cost;
-          sessionCosts.requests += 1;
-          if (!sessionCosts.byModel[roleConfig.model]) {
-            sessionCosts.byModel[roleConfig.model] = {
-              cost: 0,
-              requests: 0,
-              tokens: { prompt: 0, completion: 0 },
-            };
-          }
-          sessionCosts.byModel[roleConfig.model].cost += cost;
-          sessionCosts.byModel[roleConfig.model].requests += 1;
-          sessionCosts.byModel[roleConfig.model].tokens.prompt += promptTokens;
-          sessionCosts.byModel[roleConfig.model].tokens.completion +=
-            completionTokens;
-        }
-        mainWindow?.webContents.send("stream:done", {
-          requestId,
-          content: fullContent,
-          cost: sessionCosts.total,
-          tokens: { prompt: promptTokens, completion: completionTokens },
-        });
+        trackCostOnce();
+        emitDoneOnce();
       });
 
       res.data.on("error", (err: Error) => {
@@ -1989,24 +3207,62 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
 
       return { started: true, requestId };
     } catch (e: any) {
+      let errorData = e.response?.data;
+      
+      // If data is a stream (circular structure), read it to get the actual error
+      if (errorData && typeof errorData.pipe === 'function') {
+        try {
+          const chunks = [];
+          for await (const chunk of errorData) {
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+          }
+          const rawParams = Buffer.concat(chunks).toString('utf8');
+          try {
+             errorData = JSON.parse(rawParams);
+          } catch {
+             errorData = rawParams;
+          }
+        } catch (streamErr) {
+          errorData = '[Stream Read Failed]';
+        }
+      }
+
       const errorDetails = {
         status: e.response?.status,
         statusText: e.response?.statusText,
-        data: e.response?.data,
+        data: errorData,
         message: e.message,
       };
       console.error(
         "[task:runStream] Full error:",
-        JSON.stringify(errorDetails, null, 2),
+        util.inspect(errorDetails, { depth: null, colors: false })
       );
 
       let errorMessage = "Request failed";
-      if (e.response?.data?.error?.message) {
-        errorMessage = e.response.data.error.message;
-      } else if (e.response?.status === 404) {
-        errorMessage = `Model not found: ${roleConfig.model}. Please check the model ID in Settings.`;
-      } else if (e.response?.status === 400) {
-        errorMessage = `Bad request. The model "${roleConfig.model}" may not support this request format.`;
+      let detailedMsg = "";
+      
+      if (typeof errorData === 'object' && errorData?.error?.message) {
+          detailedMsg = errorData.error.message;
+      } else if (typeof errorData === 'string') {
+          detailedMsg = errorData;
+      } else if (errorData) {
+          try { detailedMsg = JSON.stringify(errorData); } catch {}
+      }
+
+      errorMessage = `[${e.response?.status || 'Unknown'}] ${detailedMsg || e.message || 'Request failed'}`;
+      
+      // Fallbacks for specific status codes if no message found
+      if (!detailedMsg) {
+          if (e.response?.status === 429) {
+            errorMessage = `[429] Rate limit exceeded for model "${roleConfig.model}". Free tier models have limited requests. Try again in a moment or use a different model.`;
+          } else if (e.response?.status === 404) {
+            errorMessage = `[404] Model not found: ${roleConfig.model}.`;
+          } else if (e.response?.status === 400) {
+            errorMessage = `[400] Bad request to model "${roleConfig.model}".`;
+          }
+      } else if (e.response?.status === 429 && !detailedMsg.toLowerCase().includes('rate limit')) {
+        // Enhance 429 message even if we got some detail
+        errorMessage = `[429] Rate limit exceeded. ${detailedMsg}. Try again in a moment or use a different model.`;
       }
 
       mainWindow?.webContents.send("stream:error", {
@@ -2057,6 +3313,8 @@ ipcMain.handle(
       try {
         // Interpolate context variables in input
         const resolvedInput = interpolateContext(step.input, context);
+
+        enforceToolPermissions(step.tool);
 
         console.log(`[chain:run] Step ${i + 1}: ${step.tool}`);
         const result = await tool.run(resolvedInput);
@@ -2176,23 +3434,8 @@ ipcMain.handle(
     servers.push(config);
     store.set("mcpServers", servers);
 
-    // Create client based on transport type
     const transport = config.transport || "stdio";
-    const proxyPort = store.get("pipewrenchPort", 9999) as number;
-
-    let client: MCPClient | MCPProxyClient;
-
-    if (transport === "pipewrench") {
-      console.log(`[mcp:add] Using PipeWrench proxy on port ${proxyPort}`);
-      client = new MCPProxyClient(
-        config.name,
-        config.command,
-        config.args || [],
-        proxyPort,
-      );
-    } else {
-      client = new MCPClient(config.name, config.command, config.args || []);
-    }
+    const client = createMCPClient(config);
 
     mcpClients.set(config.name, client);
 
@@ -2201,15 +3444,7 @@ ipcMain.handle(
       await client.connect();
       console.log("[mcp:add] Connected! Tools:", client.tools.length);
 
-      client.tools.forEach((tool) => {
-        const toolName = `mcp.${config.name}.${tool.name}`;
-        tools.set(toolName, {
-          name: toolName,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          run: async (input: any) => client.callTool(tool.name, input),
-        });
-      });
+      registerMCPTools(client, config.name);
       return { success: true, toolCount: client.tools.length, transport };
     } catch (e: any) {
       console.error("[mcp:add] Connection failed:", e.message);
@@ -2249,17 +3484,1048 @@ ipcMain.handle("mcp:reconnect", async (_e, name: string) => {
   client.disconnect();
   try {
     await client.connect();
-    client.tools.forEach((tool) => {
-      const toolName = `mcp.${name}.${tool.name}`;
-      tools.set(toolName, {
-        name: toolName,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        run: async (input: any) => client.callTool(tool.name, input),
-      });
-    });
+    registerMCPTools(client, name);
     return { success: true, toolCount: client.tools.length };
   } catch (e: any) {
     return { success: false, error: e.message };
+  }
+});
+
+// ============================================================================
+// DOCTOR ENGINE - System Diagnostics
+// ============================================================================
+
+// Doctor engine instance
+let doctorEngine: DoctorEngine | null = null;
+let lastDoctorReport: DoctorReport | null = null;
+
+function getDoctorEngine(): DoctorEngine {
+  if (!doctorEngine) {
+    const configDir = app.getPath("userData");
+    const version = app.getVersion();
+    doctorEngine = new DoctorEngine(configDir, version);
+  }
+  return doctorEngine;
+}
+
+// Run all diagnostics
+// Phase 1: Core doctor diagnostics (callable from anywhere)
+ipcMain.handle("doctor:runCore", async () => {
+  console.log("[doctor:runCore] Running foundation diagnostics...");
+  const report = await coreDiagnostics(app.getVersion());
+  console.log("[doctor:runCore] Complete:", report.summary);
+  
+  // Phase 1: Emit doctor run event
+  eventBus.emit({
+    type: 'doctor:run',
+    trigger: 'manual',
+    timestamp: createTimestamp(),
+    summary: report.summary
+  });
+  
+  return report;
+});
+
+// Legacy doctor handler (uses DoctorEngine class)
+// TODO Phase 2: Migrate fully to core diagnostics
+ipcMain.handle("doctor:run", async () => {
+  console.log("[doctor:run] Running diagnostics...");
+  const engine = getDoctorEngine();
+  lastDoctorReport = await engine.runAll();
+  console.log("[doctor:run] Complete:", lastDoctorReport.summary);
+  return lastDoctorReport;
+});
+
+// Get last report
+ipcMain.handle("doctor:getLastReport", () => {
+  return lastDoctorReport;
+});
+
+// Get report as text (sanitized)
+ipcMain.handle("doctor:getReportText", (_e, sanitize: boolean = true) => {
+  if (!lastDoctorReport) return null;
+  const engine = getDoctorEngine();
+  return engine.formatReportText(lastDoctorReport, sanitize);
+});
+
+// Export report to file
+ipcMain.handle("doctor:export", async (_e, sanitize: boolean = true) => {
+  if (!lastDoctorReport) {
+    throw new Error("No diagnostic report available. Run diagnostics first.");
+  }
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Doctor Report",
+    defaultPath: `workbench-doctor-${new Date().toISOString().split("T")[0]}.txt`,
+    filters: [
+      { name: "Text Files", extensions: ["txt"] },
+      { name: "JSON Files", extensions: ["json"] },
+    ],
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  const engine = getDoctorEngine();
+  let content: string;
+
+  if (filePath.endsWith(".json")) {
+    const report = sanitize ? engine.sanitizeReport(lastDoctorReport) : lastDoctorReport;
+    content = JSON.stringify(report, null, 2);
+  } else {
+    content = engine.formatReportText(lastDoctorReport, sanitize);
+  }
+
+  fs.writeFileSync(filePath, content, "utf-8");
+  return { success: true, filePath };
+});
+
+// Auto-Diagnostics - basic suggestions always enabled (V2.0 Trust Core).
+// Safe-fix preview flow is gated behind M_SMART_AUTO_DIAGNOSTICS.
+ipcMain.handle(
+  "doctor:suggestFailure",
+  (_e, toolName: string, errorText: string) => {
+    const suggestions = buildDiagnosticSuggestions(toolName || "", errorText || "");
+    const smartEnabled = isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS");
+    // Strip safeFixes when M flag is off so safe-fix UI stays hidden
+    const cleaned = smartEnabled
+      ? suggestions
+      : suggestions.map((s) => ({ ...s, safeFixes: [] }));
+    return {
+      enabled: true,
+      suggestions: cleaned,
+    };
+  },
+);
+
+ipcMain.handle("safeFix:preview", (_e, fixId: string) => {
+  if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const preview = createSafeFixPreview(fixId);
+  if (!preview) {
+    return { success: false, error: "No applicable safe fix changes found" };
+  }
+  const token = `safe_fix_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  pendingSafeFixPreviews.set(token, {
+    fixId,
+    createdAt: Date.now(),
+    changes: preview.changes,
+  });
+  return { success: true, token, preview };
+});
+
+ipcMain.handle("safeFix:apply", (_e, token: string) => {
+  if (!isFeatureEnabled("M_SMART_AUTO_DIAGNOSTICS")) {
+    return { success: false, error: "Feature disabled" };
+  }
+  const pending = pendingSafeFixPreviews.get(token);
+  if (!pending) {
+    return { success: false, error: "Preview token missing or expired" };
+  }
+  pendingSafeFixPreviews.delete(token);
+  return applySafeFix(pending.fixId, pending.changes);
+});
+
+// ============================================================================
+// PERMISSION SYSTEM IPC HANDLERS
+// ============================================================================
+
+// Register tool permissions when loading plugins
+ipcMain.handle("permissions:register", (_e, toolName: string, permissions: ToolPermissions) => {
+  permissionManager.registerToolPermissions(toolName, permissions);
+  return { success: true };
+});
+
+// Check if tool has permission for an action
+ipcMain.handle("permissions:check", (_e, toolName: string, category: PermissionCategory, action: PermissionAction) => {
+  return permissionManager.checkPermission(toolName, category, action);
+});
+
+// Get tool's declared permissions
+ipcMain.handle("permissions:getToolPermissions", (_e, toolName: string) => {
+  const permissions = permissionManager.getToolPermissions(toolName);
+  if (!permissions) return null;
+  return {
+    permissions,
+    formatted: permissionManager.formatPermissionsForDisplay(permissions),
+    isDestructive: permissionManager.isDestructive(toolName),
+  };
+});
+
+// Grant permission (one-time or permanent)
+ipcMain.handle("permissions:grant", (_e, toolName: string, category: PermissionCategory, permanent: boolean) => {
+  permissionManager.grantPermission(toolName, category, permanent);
+  return { success: true };
+});
+
+// Deny permission
+ipcMain.handle("permissions:deny", (_e, toolName: string, category: PermissionCategory, permanent: boolean) => {
+  permissionManager.denyPermission(toolName, category, permanent);
+  return { success: true };
+});
+
+// Get tool's current policy
+ipcMain.handle("permissions:getPolicy", (_e, toolName: string) => {
+  return permissionManager.getToolPolicy(toolName);
+});
+
+// Reset tool policy
+ipcMain.handle("permissions:resetPolicy", (_e, toolName: string) => {
+  permissionManager.resetToolPolicy(toolName);
+  return { success: true };
+});
+
+// Reset all policies
+ipcMain.handle("permissions:resetAll", () => {
+  permissionManager.resetAllPolicies();
+  return { success: true };
+});
+
+// ============================================================================
+// SESSION MANAGEMENT
+// ============================================================================
+
+// Get all sessions metadata
+ipcMain.handle("sessions:getAll", () => {
+  try {
+    const sessions = sessionsManager.getAllSessionMetadata();
+    return { success: true, sessions };
+  } catch (error: any) {
+    console.error('[sessions:getAll] Error:', error);
+    return { success: false, error: error.message, sessions: [] };
+  }
+});
+
+// Get current session
+ipcMain.handle("sessions:getCurrent", () => {
+  try {
+    const session = sessionsManager.getCurrentSession();
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:getCurrent] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Get session by ID
+ipcMain.handle("sessions:getById", (_e, sessionId: string) => {
+  try {
+    const session = sessionsManager.getSession(sessionId);
+    if (!session) {
+      return { success: false, error: 'Session not found' };
+    }
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:getById] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Create new session
+ipcMain.handle("sessions:create", (_e, name?: string) => {
+  try {
+    const session = sessionsManager.createSession(name);
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:create] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Switch to session
+ipcMain.handle("sessions:switch", (_e, sessionId: string) => {
+  try {
+    const success = sessionsManager.setCurrentSession(sessionId);
+    if (!success) {
+      return { success: false, error: 'Session not found' };
+    }
+    const session = sessionsManager.getSession(sessionId);
+    return { success: true, session };
+  } catch (error: any) {
+    console.error('[sessions:switch] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Rename session
+ipcMain.handle("sessions:rename", (_e, sessionId: string, newName: string) => {
+  try {
+    const success = sessionsManager.renameSession(sessionId, newName);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:rename] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete session
+ipcMain.handle("sessions:delete", (_e, sessionId: string) => {
+  try {
+    const success = sessionsManager.deleteSession(sessionId);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:delete] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session chat history
+ipcMain.handle("sessions:updateHistory", (_e, sessionId: string, history: any[]) => {
+  try {
+    const success = sessionsManager.updateChatHistory(sessionId, history);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateHistory] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session mode
+ipcMain.handle("sessions:updateMode", (_e, sessionId: string, mode: 'read' | 'propose' | 'execute') => {
+  try {
+    const success = sessionsManager.updateMode(sessionId, mode);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateMode] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session model
+ipcMain.handle("sessions:updateModel", (_e, sessionId: string, model: string) => {
+  try {
+    const success = sessionsManager.updateModel(sessionId, model);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateModel] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Update session provider
+ipcMain.handle("sessions:updateProvider", (_e, sessionId: string, provider: string) => {
+  try {
+    const success = sessionsManager.updateProvider(sessionId, provider);
+    return { success };
+  } catch (error: any) {
+    console.error('[sessions:updateProvider] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// ============================================================================
+// CHAT HISTORY PERSISTENCE (Legacy - kept for backward compat)
+// ============================================================================
+
+// Save chat history
+ipcMain.handle("chat:save", (_e, history: any[]) => {
+  try {
+    // Save to current session
+    const sessionId = sessionsManager.getCurrentSessionId();
+    if (sessionId) {
+      sessionsManager.updateChatHistory(sessionId, history);
+    }
+    return { success: true };
+  } catch (error: any) {
+    console.error('[chat:save] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Load chat history
+ipcMain.handle("chat:load", () => {
+  try {
+    // Load from current session
+    const session = sessionsManager.getCurrentSession();
+    return { success: true, history: session.chatHistory };
+  } catch (error: any) {
+    console.error('[chat:load] Error:', error);
+    return { success: false, error: error.message, history: [] };
+  }
+});
+
+// Clear chat history
+ipcMain.handle("chat:clear", () => {
+  try {
+    // Clear current session history
+    const sessionId = sessionsManager.getCurrentSessionId();
+    if (sessionId) {
+      sessionsManager.updateChatHistory(sessionId, []);
+    }
+    return { success: true };
+  } catch (error: any) {
+    console.error('[chat:clear] Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// ============================================================================
+// RUN MANAGER - EXECUTION TRACKING
+// ============================================================================
+
+// Get active runs
+ipcMain.handle("runs:getActive", () => {
+  return runManager.getActiveRuns();
+});
+
+// Get run history
+ipcMain.handle("runs:getHistory", (_e, limit?: number) => {
+  return runManager.getHistory(limit);
+});
+
+// Get all runs
+ipcMain.handle("runs:getAll", () => {
+  return runManager.getAllRuns();
+});
+
+// Get specific run
+ipcMain.handle("runs:get", (_e, runId: string) => {
+  return runManager.getRun(runId);
+});
+
+// Get run statistics
+ipcMain.handle("runs:getStats", () => {
+  return runManager.getStats();
+});
+
+// Kill a run (graceful: SIGTERM then SIGKILL after 3s)
+ipcMain.handle("runs:kill", async (_e, runId: string) => {
+  const run = runManager.getRun(runId);
+  if (!run) return { success: false, error: 'Run not found' };
+
+  // Graceful kill: SIGTERM → wait 3s → SIGKILL remaining
+  const killed = await processRegistry.gracefulKillRun(runId, 3000);
+  console.log(`[runs:kill] Killed ${killed} processes for run ${runId}`);
+
+  runManager.killRun(runId);
+  return { success: true, processesKilled: killed };
+});
+
+// Clear run history
+ipcMain.handle("runs:clearHistory", () => {
+  runManager.clearHistory();
+  return { success: true };
+});
+
+// Clear all runs
+ipcMain.handle("runs:clearAll", () => {
+  runManager.clearAll();
+  return { success: true };
+});
+
+// Get interrupted runs (for crash recovery)
+ipcMain.handle("runs:getInterrupted", () => {
+  return runManager.getInterruptedRuns();
+});
+
+// Export run bundle (N) - optional, read-only support artifact for issue filing
+ipcMain.handle("runs:exportBundle", async (_e, runId?: string) => {
+  if (!isFeatureEnabled("N_EXPORT_RUN_BUNDLE")) {
+    return { success: false, error: "Feature disabled" };
+  }
+
+  const allRuns = runManager.getAllRuns();
+  const selectedRuns =
+    runId && runId.trim()
+      ? allRuns.filter((r) => r.runId === runId)
+      : runManager.getHistory(200);
+
+  const bundle = {
+    exportedAt: new Date().toISOString(),
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    runId: runId || null,
+    runCount: selectedRuns.length,
+    stats: runManager.getStats(),
+    runs: selectedRuns,
+    doctorReport: lastDoctorReport
+      ? getDoctorEngine().sanitizeReport(lastDoctorReport)
+      : null,
+  };
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Run Bundle",
+    defaultPath: `workbench-run-bundle-${new Date().toISOString().split("T")[0]}.json`,
+    filters: [{ name: "JSON Files", extensions: ["json"] }],
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(bundle, null, 2), "utf-8");
+  return { success: true, filePath, runCount: selectedRuns.length };
+});
+
+// ============================================================================
+// V2: DOCTOR REPORT HISTORY IPC
+// ============================================================================
+
+ipcMain.handle("doctor:getHistory", () => {
+  const engine = getDoctorEngine();
+  return engine.getReportHistory();
+});
+
+// ============================================================================
+// V2: GUARDRAILS IPC
+// ============================================================================
+
+ipcMain.handle("guardrails:validateSchema", (_e, input: any, schema: any) => {
+  return schemaValidator.validateToolInput(input, schema);
+});
+
+ipcMain.handle("guardrails:checkCommand", (_e, command: string, args: string[]) => {
+  return commandGuardrails.checkCommand(command, args);
+});
+
+ipcMain.handle("guardrails:checkPath", (_e, filePath: string) => {
+  if (!pathSandbox) return { allowed: true, riskLevel: 'low' };
+  return pathSandbox.isPathAllowed(filePath);
+});
+
+ipcMain.handle("guardrails:assessRisk", (_e, toolName: string, input: any) => {
+  const actionType = commandGuardrails.classifyAction(toolName, input);
+  return {
+    actionType,
+    riskLevel: commandGuardrails.assessRisk(toolName, actionType, input),
+    proposal: commandGuardrails.createProposal(toolName, actionType, input),
+  };
+});
+
+// ============================================================================
+// V2: ASSET MANAGER IPC HANDLERS
+// ============================================================================
+
+ipcMain.handle("assets:ingest", async (_e, sourcePath: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+  return await assetManager.ingest(sourcePath);
+});
+
+ipcMain.handle("assets:ingestBuffer", async (_e, bufferData: ArrayBuffer, filename: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+  const buffer = Buffer.from(bufferData);
+  return await assetManager.ingestBuffer(buffer, filename);
+});
+
+ipcMain.handle("assets:list", () => {
+  if (!assetManager) return { assets: [], total: 0 };
+  return assetManager.list();
+});
+
+ipcMain.handle("assets:get", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  return assetManager.get(assetId);
+});
+
+ipcMain.handle("assets:open", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  const result = assetManager.open(assetId);
+  if (!result) return null;
+  // Return metadata + base64 content for renderer
+  return {
+    metadata: result.metadata,
+    content: result.content.toString('base64'),
+    contentType: result.metadata.mime_type,
+  };
+});
+
+ipcMain.handle("assets:delete", (_e, assetId: string) => {
+  if (!assetManager) return false;
+  return assetManager.delete(assetId);
+});
+
+ipcMain.handle("assets:export", async (_e, assetId: string) => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+
+  const meta = assetManager.get(assetId);
+  if (!meta) throw new Error("Asset not found");
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Asset",
+    defaultPath: meta.filename,
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  const success = assetManager.export(assetId, filePath);
+  return { success, filePath };
+});
+
+ipcMain.handle("assets:resolvePath", (_e, assetId: string) => {
+  if (!assetManager) return null;
+  return assetManager.resolvePath(assetId);
+});
+
+ipcMain.handle("assets:upload", async () => {
+  if (!assetManager) throw new Error("Asset manager not initialized");
+
+  const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow!, {
+    title: "Upload Asset",
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Supported Files', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'txt', 'csv', 'json', 'xml', 'html', 'md', 'yaml', 'yml', 'log', 'wav', 'mp3'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+
+  if (canceled || !filePaths || filePaths.length === 0) {
+    return { success: false, canceled: true, assets: [] };
+  }
+
+  const results: any[] = [];
+  for (const fp of filePaths) {
+    try {
+      const meta = await assetManager.ingest(fp);
+      results.push({ success: true, metadata: meta });
+    } catch (e: any) {
+      results.push({ success: false, filename: path.basename(fp), error: e.message });
+    }
+  }
+
+  return { success: true, assets: results };
+});
+
+// ============================================================================
+// V2: SESSION LOG PERSISTENCE IPC
+// ============================================================================
+
+ipcMain.handle("logs:getSessionLog", () => {
+  return {
+    runs: runManager.getAllRuns(),
+    doctorReports: getDoctorEngine().getReportHistory(),
+    sessionId: assetManager?.getSessionId() || 'unknown',
+    timestamp: new Date().toISOString(),
+  };
+});
+
+ipcMain.handle("logs:exportSessionLog", async () => {
+  const log = {
+    runs: runManager.getAllRuns(),
+    doctorReports: getDoctorEngine().getReportHistory(),
+    sessionId: assetManager?.getSessionId() || 'unknown',
+    exportedAt: new Date().toISOString(),
+    platform: `${process.platform} ${process.arch}`,
+    version: app.getVersion(),
+  };
+
+  const { filePath, canceled } = await dialog.showSaveDialog(mainWindow!, {
+    title: "Export Session Log",
+    defaultPath: `workbench-session-${new Date().toISOString().split("T")[0]}.json`,
+    filters: [{ name: "JSON Files", extensions: ["json"] }],
+  });
+
+  if (canceled || !filePath) return { success: false, canceled: true };
+
+  fs.writeFileSync(filePath, JSON.stringify(log, null, 2), "utf-8");
+  return { success: true, filePath };
+});
+
+// ============================================================================
+// SECRETS MANAGER IPC HANDLERS
+// ============================================================================
+
+// Check if secure storage is available
+ipcMain.handle("secrets:isAvailable", () => {
+  return {
+    available: secretsManager.isSecureStorageAvailable(),
+    backend: secretsManager.getStorageBackend(),
+  };
+});
+
+// Store a new secret
+ipcMain.handle("secrets:store", async (_e, name: string, value: string, type: string, tags?: string[]) => {
+  try {
+    const handle = await secretsManager.storeSecret(name, value, type as any, tags);
+    return { success: true, handle };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Get secret value (requires explicit user action)
+ipcMain.handle("secrets:get", async (_e, secretId: string) => {
+  try {
+    const secret = await secretsManager.getSecret(secretId);
+    return { success: true, secret };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete secret
+ipcMain.handle("secrets:delete", async (_e, secretId: string) => {
+  const success = await secretsManager.deleteSecret(secretId);
+  return { success };
+});
+
+// List all secrets (metadata only)
+ipcMain.handle("secrets:list", () => {
+  return secretsManager.listSecrets();
+});
+
+// Update secret metadata
+ipcMain.handle("secrets:updateMetadata", (_e, secretId: string, updates: any) => {
+  const success = secretsManager.updateSecretMetadata(secretId, updates);
+  return { success };
+});
+
+// Find secrets by tool
+ipcMain.handle("secrets:findByTool", (_e, toolName: string) => {
+  return secretsManager.findSecretsByTool(toolName);
+});
+
+// Redact secrets from text/object
+ipcMain.handle("secrets:redact", (_e, data: any) => {
+  if (typeof data === 'string') {
+    return secretsManager.redactSecrets(data);
+  } else {
+    return secretsManager.redactSecretsFromObject(data);
+  }
+});
+
+// ============================================================================
+// TOOL MANIFEST IPC HANDLERS
+// ============================================================================
+
+// Register tool manifest
+ipcMain.handle("manifest:register", (_e, manifest: ToolManifest) => {
+  return manifestRegistry.register(manifest);
+});
+
+// Get tool manifest
+ipcMain.handle("manifest:get", (_e, toolName: string) => {
+  return manifestRegistry.get(toolName);
+});
+
+// List all manifests
+ipcMain.handle("manifest:list", () => {
+  return manifestRegistry.list();
+});
+
+// Check tool compatibility
+ipcMain.handle("manifest:checkCompatibility", (_e, toolName: string) => {
+  return manifestRegistry.checkCompatibility(toolName);
+});
+
+// Get tool info for display
+ipcMain.handle("manifest:getToolInfo", (_e, toolName: string) => {
+  return manifestRegistry.getToolInfo(toolName);
+});
+
+// Find tools by tag
+ipcMain.handle("manifest:findByTag", (_e, tag: string) => {
+  return manifestRegistry.findByTag(tag);
+});
+
+// Find tools by stability
+ipcMain.handle("manifest:findByStability", (_e, stability: string) => {
+  return manifestRegistry.findByStability(stability as any);
+});
+
+// ============================================================================
+// PREVIEW / DRY-RUN IPC HANDLERS
+// ============================================================================
+
+// Get preview history
+ipcMain.handle("preview:getHistory", (_e, limit?: number) => {
+  return previewManager.getHistory(limit);
+});
+
+// Approve preview
+ipcMain.handle("preview:approve", (_e, index: number) => {
+  return previewManager.approvePreview(index);
+});
+
+// Get specific preview
+ipcMain.handle("preview:get", (_e, index: number) => {
+  return previewManager.getPreview(index);
+});
+
+// Format preview for display
+ipcMain.handle("preview:format", (_e, preview: any) => {
+  return previewManager.formatPreview(preview);
+});
+
+// Clear preview history
+ipcMain.handle("preview:clear", () => {
+  previewManager.clearHistory();
+  return { success: true };
+});
+
+// ============================================================================
+// USER MEMORY IPC HANDLERS
+// ============================================================================
+
+// Remember something
+ipcMain.handle("memory:remember", (_e, category: string, key: string, value: any, options?: any) => {
+  const memory = memoryManager.remember(category as any, key, value, options);
+  return { success: true, memory };
+});
+
+// Recall something
+ipcMain.handle("memory:recall", (_e, category: string, key: string) => {
+  const memory = memoryManager.recall(category as any, key);
+  return memory;
+});
+
+// Forget something
+ipcMain.handle("memory:forget", (_e, memoryId: string) => {
+  const success = memoryManager.forget(memoryId);
+  return { success };
+});
+
+// Forget all
+ipcMain.handle("memory:forgetAll", () => {
+  memoryManager.forgetAll();
+  return { success: true };
+});
+
+// Update memory
+ipcMain.handle("memory:update", (_e, memoryId: string, updates: any) => {
+  const success = memoryManager.update(memoryId, updates);
+  return { success };
+});
+
+// List all memories
+ipcMain.handle("memory:listAll", () => {
+  return memoryManager.listAll();
+});
+
+// List by category
+ipcMain.handle("memory:listByCategory", (_e, category: string) => {
+  return memoryManager.listByCategory(category as any);
+});
+
+// Search memories
+ipcMain.handle("memory:search", (_e, query: string) => {
+  return memoryManager.search(query);
+});
+
+// Get most used
+ipcMain.handle("memory:getMostUsed", (_e, limit?: number) => {
+  return memoryManager.getMostUsed(limit);
+});
+
+// Get recently used
+ipcMain.handle("memory:getRecentlyUsed", (_e, limit?: number) => {
+  return memoryManager.getRecentlyUsed(limit);
+});
+
+// Get statistics
+ipcMain.handle("memory:getStats", () => {
+  return memoryManager.getStats();
+});
+
+// Enable/disable memory system
+ipcMain.handle("memory:setEnabled", (_e, enabled: boolean) => {
+  memoryManager.setEnabled(enabled);
+  return { success: true };
+});
+
+// Check if enabled
+ipcMain.handle("memory:isEnabled", () => {
+  return memoryManager.isEnabled();
+});
+
+// Convenience: Remember preference
+ipcMain.handle("memory:rememberPreference", (_e, key: string, value: any) => {
+  const memory = memoryManager.rememberPreference(key, value);
+  return { success: true, memory };
+});
+
+// Convenience: Recall preference
+ipcMain.handle("memory:recallPreference", (_e, key: string) => {
+  return memoryManager.recallPreference(key);
+});
+
+// ============================================================================
+// TOOL DISPATCH IPC HANDLERS
+// ============================================================================
+
+// Create dispatch plan from natural language
+ipcMain.handle("dispatch:createPlan", async (_e, query: string, context?: any) => {
+  const availableManifests = manifestRegistry.list();
+  const plan = await toolDispatcher.createDispatchPlan(query, availableManifests, context);
+  return plan;
+});
+
+// Suggest relevant tools
+ipcMain.handle("dispatch:suggest", (_e, context: string, limit?: number) => {
+  const availableManifests = manifestRegistry.list();
+  return toolDispatcher.suggestTools(context, availableManifests, limit);
+});
+
+// Format dispatch plan for confirmation
+ipcMain.handle("dispatch:formatPlan", (_e, plan: any) => {
+  return toolDispatcher.formatPlanForConfirmation(plan);
+});
+
+// ============================================================================
+// V3 TOOL SELECTION INTELLIGENCE IPC HANDLERS
+// ============================================================================
+
+// V3: Rank all tools by relevance to a query
+ipcMain.handle("dispatch:rankTools", (_e, query: string) => {
+  const availableManifests = manifestRegistry.list();
+  return toolDispatcher.rankTools(query, availableManifests);
+});
+
+// V3: Record tool usage for adaptive scoring
+ipcMain.handle("dispatch:recordUsage", (_e, toolName: string, query: string, success: boolean) => {
+  if (!isFeatureEnabled("V3_USAGE_TRACKING")) return;
+  toolDispatcher.recordToolUsage(toolName, query, success);
+  // Persist usage data
+  store.set("toolUsageData", toolDispatcher.getUsageData());
+});
+
+// V3: Get tool usage data
+ipcMain.handle("dispatch:getUsageData", () => {
+  return toolDispatcher.getUsageData();
+});
+
+// V3: Disambiguate between tool candidates
+ipcMain.handle("dispatch:disambiguate", (_e, query: string) => {
+  if (!isFeatureEnabled("V3_DISAMBIGUATION")) return null;
+  const availableManifests = manifestRegistry.list();
+  const candidates = toolDispatcher.rankTools(query, availableManifests).slice(0, 5);
+  return toolDispatcher.disambiguate(query, candidates);
+});
+
+// V3: Resolve disambiguation by user choice
+ipcMain.handle("dispatch:resolveDisambiguation", (_e, disambiguation: any, selectedIndex: number) => {
+  return toolDispatcher.resolveDisambiguation(disambiguation, selectedIndex);
+});
+
+// V3: Build a simple rule-based chain plan
+ipcMain.handle("dispatch:buildChain", (_e, query: string) => {
+  if (!isFeatureEnabled("V3_CHAIN_PLANNING")) return null;
+  return toolDispatcher.buildSimpleChain(query, tools);
+});
+
+// V3: Parse chain plan from LLM response
+ipcMain.handle("dispatch:parseChain", (_e, llmResponse: string) => {
+  if (!isFeatureEnabled("V3_CHAIN_PLANNING")) return null;
+  return toolDispatcher.parseChainPlan(llmResponse, tools);
+});
+
+// V3: Validate a chain plan
+ipcMain.handle("dispatch:validateChain", (_e, plan: any) => {
+  return toolDispatcher.validateChain(plan, tools);
+});
+
+// V3: Format chain plan for display
+ipcMain.handle("dispatch:formatChain", (_e, plan: any) => {
+  return toolDispatcher.formatChainPlan(plan);
+});
+
+// V3: Get/update dispatch config
+ipcMain.handle("dispatch:getConfig", () => {
+  return toolDispatcher.getConfig();
+});
+
+ipcMain.handle("dispatch:updateConfig", (_e, updates: any) => {
+  toolDispatcher.updateConfig(updates);
+  return toolDispatcher.getConfig();
+});
+
+// ============================================================================
+// ENVIRONMENT DETECTION IPC HANDLERS
+// ============================================================================
+
+// Get environment info
+ipcMain.handle("environment:getInfo", async () => {
+  return await environmentDetector.getEnvironmentInfo();
+});
+
+// Format environment info
+ipcMain.handle("environment:format", async (_e, info: any) => {
+  return environmentDetector.formatEnvironmentInfo(info);
+});
+
+// Get unsupported message
+ipcMain.handle("environment:getUnsupportedMessage", (_e, info: any) => {
+  return environmentDetector.getUnsupportedMessage(info);
+});
+
+// Get lockdown warning
+ipcMain.handle("environment:getLockdownWarning", (_e, info: any) => {
+  return environmentDetector.getLockdownWarning(info);
+});
+
+// Check environment on startup
+(async () => {
+  const envInfo = await environmentDetector.getEnvironmentInfo();
+  console.log('[Environment] Platform:', envInfo.platform, 'Arch:', envInfo.arch);
+  console.log('[Environment] Supported:', envInfo.supported);
+  
+  if (envInfo.risks.length > 0) {
+    console.log('[Environment] Risks detected:');
+    envInfo.risks.forEach(risk => {
+      console.log(`  [${risk.level.toUpperCase()}] ${risk.category}: ${risk.message}`);
+    });
+  }
+  
+  if (!envInfo.supported) {
+    console.warn('[Environment] Running on unsupported platform!');
+  }
+})();
+
+// Clear interrupted runs
+ipcMain.handle("runs:clearInterrupted", () => {
+  runManager.clearInterruptedRuns();
+  return { success: true };
+});
+
+// Check if there are interrupted runs
+ipcMain.handle("runs:hasInterrupted", () => {
+  return runManager.hasInterruptedRuns();
+});
+
+// ── Shell Storage (workspaces, chat, artifacts, settings) ──────────────────
+// Narrow key/value IPC for the Shell renderer.  Only whitelisted keys allowed;
+// no arbitrary file paths are accessible from the renderer.
+const WORKBENCH_DIR = path.join(os.homedir(), '.workbench');
+const ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings']);
+const KEY_TO_FILE: Record<string, string> = {
+  workspaces: 'workspaces.v1.json',
+  chat: 'chat.v1.json',
+  artifacts: 'artifacts.v1.json',
+  settings: 'settings.v1.json',
+};
+
+ipcMain.handle('workbench:storage:get', async (_e, { key }: { key: string }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    await ensureDir(WORKBENCH_DIR);
+    const value = await readJson(path.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null);
+    return { ok: true, value };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('workbench:storage:set', async (_e, { key, value }: { key: string; value: unknown }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    await ensureDir(WORKBENCH_DIR);
+    await writeJsonAtomic(path.join(WORKBENCH_DIR, KEY_TO_FILE[key]), value);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('workbench:storage:delete', async (_e, { key }: { key: string }) => {
+  if (!ALLOWED_STORAGE_KEYS.has(key)) return { ok: false, error: 'Invalid key' };
+  try {
+    const fp = path.join(WORKBENCH_DIR, KEY_TO_FILE[key]);
+    await fs.promises.unlink(fp).catch(() => { /* already absent — ignore */ });
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
   }
 });
