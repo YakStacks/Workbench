@@ -47,6 +47,13 @@ electron_1.contextBridge.exposeInMainWorld('workbench', {
     runChain: function (steps) {
         return electron_1.ipcRenderer.invoke('chain:run', steps);
     },
+    // Agent execution
+    runAgent: function (instruction, options) {
+        return electron_1.ipcRenderer.invoke('agent:run', instruction, options !== null && options !== void 0 ? options : {});
+    },
+    onAgentTrace: function (cb) {
+        electron_1.ipcRenderer.on('agent:trace', function (_e, data) { return cb(data); });
+    },
     // MCP Management
     mcp: {
         list: function () { return electron_1.ipcRenderer.invoke('mcp:list'); },
@@ -344,4 +351,12 @@ electron_1.contextBridge.exposeInMainWorld('workbenchStorage', {
     get: function (key) { return electron_1.ipcRenderer.invoke('workbench:storage:get', { key: key }); },
     set: function (key, value) { return electron_1.ipcRenderer.invoke('workbench:storage:set', { key: key, value: value }); },
     del: function (key) { return electron_1.ipcRenderer.invoke('workbench:storage:delete', { key: key }); },
+});
+// Crash log — renderer forwards unhandled errors to main for persistent logging.
+// Exposed separately so renderer can detect Electron mode via window.workbenchCrash.
+electron_1.contextBridge.exposeInMainWorld('workbenchCrash', {
+    append: function (entry) {
+        return electron_1.ipcRenderer.invoke('workbench:crash:append', entry);
+    },
+    lastTs: function () { return electron_1.ipcRenderer.invoke('workbench:crash:lastTs'); },
 });

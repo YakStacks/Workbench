@@ -10,6 +10,39 @@ var __assign = (this && this.__assign) || function () {
     };
     return __assign.apply(this, arguments);
 };
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -89,8 +122,12 @@ var guardrails_1 = require("./guardrails.cjs");
 var asset_manager_1 = require("./asset-manager.cjs");
 var sessions_manager_1 = require("./src/runtime/sessions-manager.cjs");
 var core_1 = require("./src/core/index.cjs");
+var chain_executor_1 = require("./src/ahp/chain-executor.cjs");
+var mailman_1 = require("./src/mailman/index.cjs");
+var mailman_2 = require("@junkyard22/mailman");
 var os_1 = __importDefault(require("os"));
-var storage_1 = require("./storage.cjs");
+var storageModule = __importStar(require("./storage.cjs"));
+var ensureDir = storageModule.ensureDir, readJson = storageModule.readJson, writeJsonAtomic = storageModule.writeJsonAtomic, resetLastCorruptedFile = storageModule.resetLastCorruptedFile;
 var store = new electron_store_1.default();
 var permissionManager = new permissions_1.PermissionManager(store);
 var runManager = new run_manager_1.RunManager(store);
@@ -330,6 +367,94 @@ function createTray() {
         mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.focus();
     });
 }
+// ============================================================================
+// CRASH LOGGING
+// ============================================================================
+var CRASH_LOG_PATH = path_1.default.join(os_1.default.homedir(), '.workbench', 'crash.log');
+function appendCrashLog(entry) {
+    return __awaiter(this, void 0, void 0, function () {
+        var _a;
+        return __generator(this, function (_b) {
+            switch (_b.label) {
+                case 0:
+                    _b.trys.push([0, 3, , 4]);
+                    return [4 /*yield*/, fs_1.default.promises.mkdir(path_1.default.dirname(CRASH_LOG_PATH), { recursive: true })];
+                case 1:
+                    _b.sent();
+                    return [4 /*yield*/, fs_1.default.promises.appendFile(CRASH_LOG_PATH, JSON.stringify(entry) + '\n', 'utf-8')];
+                case 2:
+                    _b.sent();
+                    return [3 /*break*/, 4];
+                case 3:
+                    _a = _b.sent();
+                    return [3 /*break*/, 4];
+                case 4: return [2 /*return*/];
+            }
+        });
+    });
+}
+process.on('uncaughtException', function (err) {
+    appendCrashLog({
+        ts: Date.now(),
+        process: 'main',
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+    });
+});
+process.on('unhandledRejection', function (reason) {
+    var err = reason instanceof Error ? reason : new Error(String(reason));
+    appendCrashLog({
+        ts: Date.now(),
+        process: 'main',
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+    });
+});
+// IPC: renderer forwards crash entries to append to crash.log
+electron_1.ipcMain.handle('workbench:crash:append', function (_e, entry) { return __awaiter(void 0, void 0, void 0, function () {
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0: 
+            // Destructure only safe fields — never dump env vars or full objects
+            return [4 /*yield*/, appendCrashLog({
+                    ts: typeof entry.ts === 'number' ? entry.ts : Date.now(),
+                    process: typeof entry.process === 'string' ? entry.process : 'renderer',
+                    name: 'RendererError',
+                    message: typeof entry.message === 'string' ? entry.message : String(entry.message),
+                    stack: typeof entry.stack === 'string' ? entry.stack : undefined,
+                })];
+            case 1:
+                // Destructure only safe fields — never dump env vars or full objects
+                _a.sent();
+                return [2 /*return*/, { ok: true }];
+        }
+    });
+}); });
+// IPC: return timestamp of most recent crash entry (used to show recovery note)
+electron_1.ipcMain.handle('workbench:crash:lastTs', function () { return __awaiter(void 0, void 0, void 0, function () {
+    var content, lines, last, _a;
+    return __generator(this, function (_b) {
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 2, , 3]);
+                return [4 /*yield*/, fs_1.default.promises.readFile(CRASH_LOG_PATH, 'utf-8')];
+            case 1:
+                content = _b.sent();
+                lines = content.trim().split('\n').filter(Boolean);
+                if (!lines.length)
+                    return [2 /*return*/, null];
+                last = JSON.parse(lines[lines.length - 1]);
+                return [2 /*return*/, typeof last.ts === 'number' ? last.ts : null];
+            case 2:
+                _a = _b.sent();
+                return [2 /*return*/, null];
+            case 3: return [2 /*return*/];
+        }
+    });
+}); });
+// ============================================================================
 electron_1.app.whenReady().then(function () {
     // Initialize path sandbox and asset manager
     var workspaceRoot = store.get('workingDir') || electron_1.app.getPath('home');
@@ -1176,6 +1301,51 @@ function registerBuiltinTools() {
             permissionManager.registerToolPermissions(toolName, {});
         }
     });
+    // Builtin tools are app-level trusted code (not user plugins). Auto-grant
+    // all their declared permissions so chain execution doesn't need a dialog.
+    var builtinCategories = ["filesystem", "network", "process"];
+    tools.forEach(function (_tool, toolName) {
+        if (!toolName.startsWith("builtin."))
+            return;
+        for (var _i = 0, builtinCategories_1 = builtinCategories; _i < builtinCategories_1.length; _i++) {
+            var category = builtinCategories_1[_i];
+            var perms = permissionManager.getToolPermissions(toolName);
+            if (perms === null || perms === void 0 ? void 0 : perms[category]) {
+                permissionManager.grantPermission(toolName, category, false);
+            }
+        }
+    });
+    // Start the Mailman runtime now that the tools map is fully populated.
+    // workbench.runner is registered here and wraps the same toolRunner logic
+    // used by the chain:run IPC handler.
+    (0, mailman_1.initMailman)(function (toolName, input) { return __awaiter(_this, void 0, void 0, function () {
+        var tool;
+        return __generator(this, function (_a) {
+            tool = tools.get(toolName);
+            if (!tool)
+                throw new Error("Tool not found: ".concat(toolName));
+            enforceToolPermissions(toolName);
+            return [2 /*return*/, tool.run(input)];
+        });
+    }); }, normalizeToolOutput, function () {
+        var _a, _b, _c, _d, _f;
+        var cfg = store.store;
+        var router = cfg.router || {};
+        // Prefer dedicated agent/chat role; fall back to instruction-tuned models
+        // that support tool calling. Avoid cheap writing models (no function call support).
+        var agentModel = ((_a = router["agent"]) === null || _a === void 0 ? void 0 : _a.model) ||
+            ((_b = router["chat"]) === null || _b === void 0 ? void 0 : _b.model) ||
+            ((_c = router["coder_cheap"]) === null || _c === void 0 ? void 0 : _c.model) ||
+            ((_d = router["structurer"]) === null || _d === void 0 ? void 0 : _d.model) ||
+            ((_f = router["writer_cheap"]) === null || _f === void 0 ? void 0 : _f.model) ||
+            Object.values(router).map(function (r) { return r === null || r === void 0 ? void 0 : r.model; }).find(Boolean) ||
+            undefined;
+        return {
+            apiKey: cfg.openrouterApiKey,
+            apiEndpoint: cfg.apiEndpoint || "https://openrouter.ai/api/v1",
+            model: agentModel,
+        };
+    }, "google/gemma-4-31b-it");
 }
 function resolveSafePath(inputPath) {
     var normalized = inputPath.trim();
@@ -2195,11 +2365,20 @@ function applySafeFix(fixId, changes) {
 // IPC HANDLERS
 // ============================================================================
 // Product config
-electron_1.ipcMain.handle("product:config", function () { return productConfig; });
+electron_1.ipcMain.handle("product:config", function () { return ({ branding: productConfig }); });
 // Config
 electron_1.ipcMain.handle("config:get", function () { return store.store; });
 electron_1.ipcMain.handle("config:set", function (_e, partial) {
     store.set(partial);
+    // Keep pathSandbox in sync if safe paths or working dir changed.
+    if (pathSandbox) {
+        if ("safePaths" in partial) {
+            pathSandbox.updateSafePaths(partial.safePaths || []);
+        }
+        if ("workingDir" in partial) {
+            pathSandbox.updateWorkspaceRoot(partial.workingDir || electron_1.app.getPath("home"));
+        }
+    }
     return store.store;
 });
 // Plugins
@@ -2928,106 +3107,73 @@ electron_1.ipcMain.handle("task:runStream", function (_e, taskType, prompt, requ
         }
     });
 }); });
-// Tool chaining
+// Agent execution — LLM drives tool calls through Mailman
+electron_1.ipcMain.handle("agent:run", function (_e_1, instruction_1) {
+    var args_1 = [];
+    for (var _i = 2; _i < arguments.length; _i++) {
+        args_1[_i - 2] = arguments[_i];
+    }
+    return __awaiter(void 0, __spreadArray([_e_1, instruction_1], args_1, true), void 0, function (_e, instruction, options) {
+        var runtime, runId, allTools, selectedTools, taskPacket, reply;
+        var _a;
+        if (options === void 0) { options = {}; }
+        return __generator(this, function (_b) {
+            switch (_b.label) {
+                case 0:
+                    runtime = (0, mailman_1.getMailmanRuntime)();
+                    runId = "agent_".concat(Date.now(), "_").concat(Math.random().toString(36).slice(2, 7));
+                    allTools = Array.from(tools.values());
+                    selectedTools = allTools
+                        .filter(function (t) {
+                        return options.toolNames
+                            ? options.toolNames.includes(t.name)
+                            : !t.name.startsWith("debug.");
+                    })
+                        .map(function (t) { return ({
+                        name: t.name,
+                        description: t.description || t.name,
+                        inputSchema: t.inputSchema || { type: "object", properties: {} },
+                    }); });
+                    taskPacket = (0, mailman_2.createPacket)({
+                        type: "agent.task",
+                        sender: "workbench",
+                        target: "agent.planner",
+                        taskId: runId,
+                        payload: __assign({ instruction: instruction, tools: selectedTools, maxSteps: (_a = options.maxSteps) !== null && _a !== void 0 ? _a : 8 }, (options.model ? { model: options.model } : {})),
+                    });
+                    // Stream trace events to the renderer in real time
+                    (0, mailman_1.registerTraceCallback)(runId, function (line) {
+                        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("agent:trace", { line: line, runId: runId });
+                    });
+                    _b.label = 1;
+                case 1:
+                    _b.trys.push([1, , 3, 4]);
+                    return [4 /*yield*/, runtime.send(taskPacket)];
+                case 2:
+                    reply = _b.sent();
+                    return [2 /*return*/, reply.payload];
+                case 3:
+                    (0, mailman_1.unregisterTraceCallback)(runId);
+                    return [7 /*endfinally*/];
+                case 4: return [2 /*return*/];
+            }
+        });
+    });
+});
+// Tool chaining — AHP packet-driven execution
 electron_1.ipcMain.handle("chain:run", function (_e, steps) { return __awaiter(void 0, void 0, void 0, function () {
-    var results, context, executionLog, i, step, tool, errorMsg, resolvedInput, result, normalized, error_2;
+    var runId;
     return __generator(this, function (_a) {
-        switch (_a.label) {
-            case 0:
-                results = [];
-                context = {};
-                executionLog = [];
-                i = 0;
-                _a.label = 1;
-            case 1:
-                if (!(i < steps.length)) return [3 /*break*/, 6];
-                step = steps[i];
-                tool = tools.get(step.tool);
-                if (!tool) {
-                    errorMsg = "Tool not found: ".concat(step.tool);
-                    executionLog.push({
-                        step: i + 1,
-                        tool: step.tool,
-                        status: "failed",
-                        error: errorMsg,
-                    });
-                    return [2 /*return*/, {
-                            success: false,
-                            failedAt: i + 1,
-                            error: errorMsg,
-                            results: results,
-                            context: context,
-                            executionLog: executionLog,
-                        }];
-                }
-                _a.label = 2;
-            case 2:
-                _a.trys.push([2, 4, , 5]);
-                resolvedInput = interpolateContext(step.input, context);
-                enforceToolPermissions(step.tool);
-                console.log("[chain:run] Step ".concat(i + 1, ": ").concat(step.tool));
-                return [4 /*yield*/, tool.run(resolvedInput)];
-            case 3:
-                result = _a.sent();
-                normalized = normalizeToolOutput(result);
-                // Check if tool returned an error
-                if (normalized.error) {
-                    executionLog.push({
-                        step: i + 1,
-                        tool: step.tool,
-                        status: "failed",
-                        error: normalized.error,
-                        output: normalized,
-                    });
-                    return [2 /*return*/, {
-                            success: false,
-                            failedAt: i + 1,
-                            error: "Tool \"".concat(step.tool, "\" failed: ").concat(normalized.error),
-                            results: results,
-                            context: context,
-                            executionLog: executionLog,
-                        }];
-                }
-                results.push({ tool: step.tool, result: normalized });
-                executionLog.push({
-                    step: i + 1,
-                    tool: step.tool,
-                    status: "success",
-                    output: normalized,
-                });
-                // Store result in context for next steps
-                if (step.outputKey) {
-                    context[step.outputKey] = normalized;
-                }
-                context["step".concat(i)] = normalized;
-                context.lastResult = normalized;
-                return [3 /*break*/, 5];
-            case 4:
-                error_2 = _a.sent();
-                executionLog.push({
-                    step: i + 1,
-                    tool: step.tool,
-                    status: "failed",
-                    error: error_2.message,
-                });
-                return [2 /*return*/, {
-                        success: false,
-                        failedAt: i + 1,
-                        error: "Step ".concat(i + 1, " (").concat(step.tool, ") threw exception: ").concat(error_2.message),
-                        results: results,
-                        context: context,
-                        executionLog: executionLog,
-                    }];
-            case 5:
-                i++;
-                return [3 /*break*/, 1];
-            case 6: return [2 /*return*/, {
-                    success: true,
-                    results: results,
-                    context: context,
-                    executionLog: executionLog,
-                }];
-        }
+        runId = "chain_".concat(Date.now(), "_").concat(Math.random().toString(36).slice(2, 7));
+        return [2 /*return*/, (0, chain_executor_1.executeChainWithAHP)(steps, {
+                runId: runId,
+                source: "chain:run",
+                runtime: (0, mailman_1.getMailmanRuntime)(),
+                // Emit each Mailman trace line to the renderer in real time
+                onTrace: function (line) {
+                    mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send("chain:trace", { line: line, runId: runId });
+                },
+            })];
     });
 }); });
 function interpolateContext(input, context) {
@@ -3819,7 +3965,7 @@ electron_1.ipcMain.handle("secrets:isAvailable", function () {
 });
 // Store a new secret
 electron_1.ipcMain.handle("secrets:store", function (_e, name, value, type, tags) { return __awaiter(void 0, void 0, void 0, function () {
-    var handle, error_3;
+    var handle, error_2;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -3829,15 +3975,15 @@ electron_1.ipcMain.handle("secrets:store", function (_e, name, value, type, tags
                 handle = _a.sent();
                 return [2 /*return*/, { success: true, handle: handle }];
             case 2:
-                error_3 = _a.sent();
-                return [2 /*return*/, { success: false, error: error_3.message }];
+                error_2 = _a.sent();
+                return [2 /*return*/, { success: false, error: error_2.message }];
             case 3: return [2 /*return*/];
         }
     });
 }); });
 // Get secret value (requires explicit user action)
 electron_1.ipcMain.handle("secrets:get", function (_e, secretId) { return __awaiter(void 0, void 0, void 0, function () {
-    var secret, error_4;
+    var secret, error_3;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -3847,8 +3993,8 @@ electron_1.ipcMain.handle("secrets:get", function (_e, secretId) { return __awai
                 secret = _a.sent();
                 return [2 /*return*/, { success: true, secret: secret }];
             case 2:
-                error_4 = _a.sent();
-                return [2 /*return*/, { success: false, error: error_4.message }];
+                error_3 = _a.sent();
+                return [2 /*return*/, { success: false, error: error_3.message }];
             case 3: return [2 /*return*/];
         }
     });
@@ -4156,39 +4302,41 @@ electron_1.ipcMain.handle("runs:clearInterrupted", function () {
 electron_1.ipcMain.handle("runs:hasInterrupted", function () {
     return runManager.hasInterruptedRuns();
 });
-// ── Shell Storage (workspaces, chat, artifacts, settings) ──────────────────
+// ── Shell Storage (workspaces, chat, artifacts, settings, context) ─────────
 // Narrow key/value IPC for the Shell renderer.  Only whitelisted keys allowed;
 // no arbitrary file paths are accessible from the renderer.
 var WORKBENCH_DIR = path_1.default.join(os_1.default.homedir(), '.workbench');
-var ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings']);
+var ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings', 'context']);
 var KEY_TO_FILE = {
     workspaces: 'workspaces.v1.json',
     chat: 'chat.v1.json',
     artifacts: 'artifacts.v1.json',
     settings: 'settings.v1.json',
+    context: 'context.v1.json',
 };
 electron_1.ipcMain.handle('workbench:storage:get', function (_e_1, _a) { return __awaiter(void 0, [_e_1, _a], void 0, function (_e, _b) {
-    var value, err_1;
-    var _c;
+    var value, corrupted, err_1;
+    var _c, _d;
     var key = _b.key;
-    return __generator(this, function (_d) {
-        switch (_d.label) {
+    return __generator(this, function (_f) {
+        switch (_f.label) {
             case 0:
                 if (!ALLOWED_STORAGE_KEYS.has(key))
                     return [2 /*return*/, { ok: false, error: 'Invalid key' }];
-                _d.label = 1;
+                _f.label = 1;
             case 1:
-                _d.trys.push([1, 4, , 5]);
-                return [4 /*yield*/, (0, storage_1.ensureDir)(WORKBENCH_DIR)];
+                _f.trys.push([1, 4, , 5]);
+                return [4 /*yield*/, ensureDir(WORKBENCH_DIR)];
             case 2:
-                _d.sent();
-                return [4 /*yield*/, (0, storage_1.readJson)(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null)];
+                _f.sent();
+                return [4 /*yield*/, readJson(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null)];
             case 3:
-                value = _d.sent();
-                return [2 /*return*/, { ok: true, value: value }];
+                value = _f.sent();
+                corrupted = (_c = resetLastCorruptedFile()) !== null && _c !== void 0 ? _c : undefined;
+                return [2 /*return*/, { ok: true, value: value, corrupted: corrupted }];
             case 4:
-                err_1 = _d.sent();
-                return [2 /*return*/, { ok: false, error: (_c = err_1 === null || err_1 === void 0 ? void 0 : err_1.message) !== null && _c !== void 0 ? _c : String(err_1) }];
+                err_1 = _f.sent();
+                return [2 /*return*/, { ok: false, error: (_d = err_1 === null || err_1 === void 0 ? void 0 : err_1.message) !== null && _d !== void 0 ? _d : String(err_1) }];
             case 5: return [2 /*return*/];
         }
     });
@@ -4205,10 +4353,10 @@ electron_1.ipcMain.handle('workbench:storage:set', function (_e_1, _a) { return 
                 _d.label = 1;
             case 1:
                 _d.trys.push([1, 4, , 5]);
-                return [4 /*yield*/, (0, storage_1.ensureDir)(WORKBENCH_DIR)];
+                return [4 /*yield*/, ensureDir(WORKBENCH_DIR)];
             case 2:
                 _d.sent();
-                return [4 /*yield*/, (0, storage_1.writeJsonAtomic)(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), value)];
+                return [4 /*yield*/, writeJsonAtomic(path_1.default.join(WORKBENCH_DIR, KEY_TO_FILE[key]), value)];
             case 3:
                 _d.sent();
                 return [2 /*return*/, { ok: true }];

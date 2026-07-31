@@ -57,6 +57,7 @@ import { useRuntime } from '../../../runtime/runtimeContext';
 import { parseCommand } from '../../utils/commandParser';
 import { getClient, getActiveModel } from '../../llm/getClient';
 import { buildLLMContext } from '../../llm/buildContext';
+import { BUTLER_SYSTEM_PRIMER } from '../../llm/systemPrimer';
 import { generateSuggestions } from '../../suggestions/generateSuggestions';
 import type { AssistantMessage, SystemMessage, UserMessage, ChatMessage, ToolMessage } from '../../types/chat';
 import type { Suggestion } from '../../types/suggestions';
@@ -65,9 +66,9 @@ import type { Suggestion } from '../../types/suggestions';
 // CONSTANTS
 // ============================================================================
 
-const SYSTEM_PRIMER =
-  'You are Butler inside Workbench. Be concise. ' +
-  'Suggest tools as clickable suggestions; never run tools automatically.';
+// System primer is shared with ContextPanel (Context Preview modal).
+// Canonical definition lives in llm/systemPrimer.ts.
+const SYSTEM_PRIMER = BUTLER_SYSTEM_PRIMER;
 
 const HELP_TEXT = `Available commands:
   /doctor             — run workspace diagnostics
@@ -391,7 +392,17 @@ export function ButlerChatView({ workspaceId, title }: ButlerChatViewProps): Rea
     const model = getActiveModel();
 
     let fullContent = '';
+    let _pendingContent = '';
+    let _flushTimer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
+
+    /** Flush buffered streaming content to the store (≤1 render per 80ms). */
+    function flushBuffer() {
+      if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+      if (_pendingContent === fullContent) return;
+      fullContent = _pendingContent;
+      updateAssistantMessage(workspaceId, assistantId, { content: fullContent });
+    }
 
     try {
       const generator = client.generate({
@@ -406,8 +417,10 @@ export function ButlerChatView({ workspaceId, title }: ButlerChatViewProps): Rea
       for await (const chunk of generator) {
         if (controller.signal.aborted) { stopped = true; break; }
         if (chunk.delta) {
-          fullContent += chunk.delta;
-          updateAssistantMessage(workspaceId, assistantId, { content: fullContent });
+          _pendingContent += chunk.delta;
+          if (!_flushTimer) {
+            _flushTimer = setTimeout(flushBuffer, 80);
+          }
         }
         if (chunk.done) break;
       }
@@ -415,12 +428,14 @@ export function ButlerChatView({ workspaceId, title }: ButlerChatViewProps): Rea
       if ((err as { name?: string }).name === 'AbortError') {
         stopped = true;
       } else {
+        flushBuffer(); // write anything buffered before showing error
         const errorText = err instanceof Error ? err.message : String(err);
         updateAssistantMessage(workspaceId, assistantId, {
           content: fullContent + `\n\n⚠️ Error: ${errorText}`,
         });
       }
     } finally {
+      flushBuffer(); // ensure remaining buffered content is written
       abortControllerRef.current = null;
       setIsGenerating(false);
     }

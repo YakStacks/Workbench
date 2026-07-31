@@ -56,8 +56,15 @@ contextBridge.exposeInMainWorld('workbench', {
   },
 
   // Tool chaining
-  runChain: (steps: { tool: string; input: any; outputKey?: string }[]) => 
+  runChain: (steps: { tool: string; input: any; outputKey?: string }[]) =>
     ipcRenderer.invoke('chain:run', steps),
+
+  // Agent execution
+  runAgent: (instruction: string, options?: { toolNames?: string[]; maxSteps?: number; model?: string }) =>
+    ipcRenderer.invoke('agent:run', instruction, options ?? {}),
+  onAgentTrace: (cb: (data: { line: string; runId: string }) => void) => {
+    ipcRenderer.on('agent:trace', (_e, data) => cb(data));
+  },
 
   // MCP Management
   mcp: {
@@ -326,4 +333,12 @@ contextBridge.exposeInMainWorld('workbenchStorage', {
   get: (key: string) => ipcRenderer.invoke('workbench:storage:get', { key }),
   set: (key: string, value: unknown) => ipcRenderer.invoke('workbench:storage:set', { key, value }),
   del: (key: string) => ipcRenderer.invoke('workbench:storage:delete', { key }),
+});
+
+// Crash log — renderer forwards unhandled errors to main for persistent logging.
+// Exposed separately so renderer can detect Electron mode via window.workbenchCrash.
+contextBridge.exposeInMainWorld('workbenchCrash', {
+  append: (entry: { process: string; message: string; stack?: string; ts: number }) =>
+    ipcRenderer.invoke('workbench:crash:append', entry),
+  lastTs: () => ipcRenderer.invoke('workbench:crash:lastTs'),
 });

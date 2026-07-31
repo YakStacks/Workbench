@@ -22,8 +22,11 @@ import React from 'react';
 import { useContextStore } from '../state/contextStore';
 import { useChatStore } from '../state/chatStore';
 import { getClient, getActiveModel } from '../llm/getClient';
+import { buildLLMContext } from '../llm/buildContext';
+import { BUTLER_SYSTEM_PRIMER } from '../llm/systemPrimer';
 import { useSettingsStore } from '../state/settingsStore';
 import type { UserMessage, AssistantMessage } from '../types/chat';
+import type { LLMMessage } from '../types/llm';
 
 // ============================================================================
 // TYPES
@@ -154,6 +157,84 @@ const s: Record<string, React.CSSProperties> = {
     color: '#444',
     marginLeft: 'auto',
   },
+  // Context Preview modal
+  modalBackdrop: {
+    position: 'fixed' as const,
+    inset: 0,
+    background: 'rgba(0,0,0,0.7)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9000,
+  },
+  modalBox: {
+    background: '#131313',
+    border: '1px solid #2a2a2a',
+    borderRadius: 10,
+    padding: '20px 24px',
+    width: 560,
+    maxWidth: '90vw',
+    maxHeight: '80vh',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 12,
+  },
+  modalHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
+  },
+  modalTitle: {
+    fontSize: 13,
+    color: '#c0c0c0',
+    fontWeight: 500,
+    flex: 1,
+  },
+  modalTokens: {
+    fontSize: 10,
+    color: '#444',
+    fontFamily: 'monospace',
+  },
+  modalClose: {
+    padding: '4px 10px',
+    background: '#111',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    color: '#666',
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+  modalScroll: {
+    overflowY: 'auto' as const,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8,
+  },
+  previewBlock: {
+    background: '#0d0d0d',
+    border: '1px solid #1a1a1a',
+    borderRadius: 6,
+    padding: '8px 10px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+  },
+  previewRole: {
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    color: '#444',
+  },
+  previewContent: {
+    fontSize: 11,
+    color: '#888',
+    fontFamily: 'monospace',
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+  },
 };
 
 // ============================================================================
@@ -180,6 +261,25 @@ export function ContextPanel({ workspaceId }: ContextPanelProps): React.ReactEle
   // ── Generate Summary state ────────────────────────────────────────────────
   const [isGenerating, setIsGenerating] = React.useState(false);
   const generateAbortRef = React.useRef<AbortController | null>(null);
+
+  // ── Context Preview modal ─────────────────────────────────────────────────
+  const [previewOpen, setPreviewOpen] = React.useState(false);
+  const [previewMessages, setPreviewMessages] = React.useState<LLMMessage[]>([]);
+  const [previewTokens, setPreviewTokens] = React.useState(0);
+
+  function handleOpenPreview() {
+    const { messages: msgs, approxTokens: toks } = buildLLMContext({
+      workspaceId,
+      systemPrimer: BUTLER_SYSTEM_PRIMER,
+    });
+    setPreviewMessages(msgs);
+    setPreviewTokens(toks);
+    setPreviewOpen(true);
+  }
+
+  function handleClosePreview() {
+    setPreviewOpen(false);
+  }
 
   // ── Summary estimated tokens ──────────────────────────────────────────────
   const summaryTokens = estimateTokens(summary);
@@ -315,6 +415,15 @@ export function ContextPanel({ workspaceId }: ContextPanelProps): React.ReactEle
           >
             {isGenerating ? '✕ Stop' : '✦ Generate Summary'}
           </button>
+          <button
+            type="button"
+            style={{ ...s.btn, background: '#0f1a10', borderColor: '#1e3a22', color: '#5abf6a' }}
+            onClick={handleOpenPreview}
+            aria-label="Preview context sent to LLM"
+            title="Preview the exact context that will be sent to the LLM"
+          >
+            ◉ Preview Context
+          </button>
         </div>
       </div>
 
@@ -406,6 +515,43 @@ export function ContextPanel({ workspaceId }: ContextPanelProps): React.ReactEle
           ↺ Reset Context
         </button>
       </div>
+
+      {/* ── Context Preview Modal ──────────────────────────────────────── */}
+      {previewOpen && (
+        <div style={s.modalBackdrop} onClick={handleClosePreview}>
+          <div style={s.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <span style={s.modalTitle}>Context Preview</span>
+              <span style={s.modalTokens}>~{previewTokens.toLocaleString()} tokens</span>
+              <button
+                type="button"
+                style={s.modalClose}
+                onClick={handleClosePreview}
+                aria-label="Close context preview"
+              >
+                ✕ Close
+              </button>
+            </div>
+            <div style={s.modalScroll}>
+              {previewMessages.map((msg, i) => (
+                <div key={i} style={s.previewBlock}>
+                  <span style={s.previewRole}>[{msg.role}]</span>
+                  <span style={s.previewContent}>
+                    {msg.content.length > 300
+                      ? msg.content.slice(0, 300) + '…'
+                      : msg.content}
+                  </span>
+                </div>
+              ))}
+              {previewMessages.length === 0 && (
+                <div style={{ fontSize: 11, color: '#333', fontStyle: 'italic' }}>
+                  No messages to preview.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

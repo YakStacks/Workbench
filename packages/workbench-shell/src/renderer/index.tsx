@@ -26,6 +26,105 @@ import { useWorkspaceStore, waitForHydration } from './state/workspaceStore';
 import { useShellStore } from './state/shellStore';
 import { useSettingsStore, waitForSettings } from './state/settingsStore';
 import { registerBuiltInTools } from './tools/toolStore';
+import { flushAll } from './storage/storageClient';
+import { useChatStore } from './state/chatStore';
+import { v4 as uuidv4 } from 'uuid';
+
+// ============================================================================
+// BEFORE-UNLOAD — flush any pending debounced writes before the window closes
+// ============================================================================
+
+window.addEventListener('beforeunload', () => {
+  flushAll().catch(() => { /* best effort */ });
+});
+
+// ============================================================================
+// CRASH CAPTURE — forward unhandled errors to crash.log
+// ============================================================================
+
+const CRASH_RING_KEY = 'workbench.crashlog.v1';
+const CRASH_RING_MAX = 50;
+
+function appendLocalCrashLog(entry: { ts: number; process: string; message: string; stack?: string }): void {
+  try {
+    const raw = localStorage.getItem(CRASH_RING_KEY);
+    const ring: unknown[] = raw ? (JSON.parse(raw) as unknown[]) : [];
+    ring.push(entry);
+    if (ring.length > CRASH_RING_MAX) ring.splice(0, ring.length - CRASH_RING_MAX);
+    localStorage.setItem(CRASH_RING_KEY, JSON.stringify(ring));
+  } catch { /* fail silently */ }
+}
+
+function getLocalCrashLastTs(): number | null {
+  try {
+    const raw = localStorage.getItem(CRASH_RING_KEY);
+    if (!raw) return null;
+    const ring = JSON.parse(raw) as Array<{ ts?: number }>;
+    return ring.length ? (ring[ring.length - 1].ts ?? null) : null;
+  } catch { return null; }
+}
+
+window.addEventListener('error', (e) => {
+  const entry = {
+    ts: Date.now(),
+    process: 'renderer',
+    message: e.message ?? 'Unknown error',
+    stack: (e.error as Error | undefined)?.stack,
+  };
+  if (window.workbenchCrash) {
+    window.workbenchCrash.append(entry).catch(() => { /* best effort */ });
+  } else {
+    appendLocalCrashLog(entry);
+  }
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  const entry = {
+    ts: Date.now(),
+    process: 'renderer',
+    message: err.message,
+    stack: err.stack,
+  };
+  if (window.workbenchCrash) {
+    window.workbenchCrash.append(entry).catch(() => { /* best effort */ });
+  } else {
+    appendLocalCrashLog(entry);
+  }
+});
+
+// Check for a crash in the previous session; if found, show a recovery note
+// in the Butler workspace after hydration settles (1500ms delay).
+async function checkPreviousCrash(): Promise<void> {
+  const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;
+  let lastTs: number | null = null;
+  try {
+    if (window.workbenchCrash) {
+      lastTs = await window.workbenchCrash.lastTs();
+    } else {
+      lastTs = getLocalCrashLastTs();
+    }
+  } catch { return; }
+
+  if (!lastTs || Date.now() - lastTs > TWENTY_FOUR_H) return;
+
+  setTimeout(() => {
+    const { activeTabId } = useShellStore.getState();
+    const messages = useChatStore.getState().messagesByWorkspaceId;
+    const workspaceId = activeTabId ?? Object.keys(messages)[0] ?? null;
+    if (!workspaceId) return;
+    useChatStore.getState().appendMessage({
+      id: uuidv4(),
+      workspaceId,
+      role: 'system',
+      content: "⚠️ Workbench recovered from a crash. Open Command Palette → 'Copy Diagnostics' to report.",
+      createdAt: Date.now(),
+    });
+  }, 1500);
+}
+
+checkPreviousCrash().catch(() => { /* best effort */ });
 
 // ============================================================================
 // REGISTER APPS

@@ -1,6 +1,6 @@
 {
   "name": "@workbench/shell",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "Workbench Shell — layout, app system, workspace management",
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "rc:check": "npm run build && npm run test && node ./scripts/rc-check.cjs"
   },
   "dependencies": {
     "react": "^18.0.0",

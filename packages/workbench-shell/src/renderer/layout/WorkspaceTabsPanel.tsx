@@ -7,6 +7,8 @@
  * The "Runs" tab renders RunsList (filtered log events) for this workspace.
  * The "Context" tab renders ContextPanel (Phase M) for this workspace.
  *
+ * Stability Sprint: Artifact and Run counts shown in tab labels when > 0.
+ *
  * The outer tab row is distinct from the global workspace TabBar at the top.
  */
 
@@ -16,6 +18,7 @@ import { ArtifactList } from '../components/ArtifactList';
 import { RunsList } from '../components/RunsList';
 import { ContextPanel } from '../components/ContextPanel';
 import { useShellStore } from '../state/shellStore';
+import { useArtifactStore } from '../state/artifactStore';
 
 // ============================================================================
 // TYPES
@@ -78,10 +81,18 @@ export function WorkspaceTabsPanel({ workspace }: WorkspaceTabsPanelProps): Reac
   const defaultPane = useShellStore((s) => s.workspacePaneById[workspace.id]);
   const [activeTab, setActiveTab] = React.useState<InnerTab>(defaultPane ?? 'chat');
 
+  // Counts for tab labels (lightweight selectors — no new subscriptions per render)
+  const artifactCount = useArtifactStore(
+    (s) => (s.artifactsByWorkspaceId[workspace.id] ?? []).length
+  );
+  const runCount = useShellStore(
+    (s) => s.logEvents.filter((e) => e.workspaceId === workspace.id).length
+  );
+
   const tabs: { id: InnerTab; label: string }[] = [
     { id: 'chat', label: 'Chat' },
-    { id: 'artifacts', label: 'Artifacts' },
-    { id: 'runs', label: 'Runs' },
+    { id: 'artifacts', label: artifactCount > 0 ? `Artifacts (${artifactCount})` : 'Artifacts' },
+    { id: 'runs', label: runCount > 0 ? `Runs (${runCount})` : 'Runs' },
     { id: 'context', label: 'Context' },
   ];
 

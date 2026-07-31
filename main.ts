@@ -30,8 +30,20 @@ import { SchemaValidator, CommandGuardrails, PathSandbox, LoopDetector } from ".
 import { AssetManager } from "./asset-manager";
 import { SessionsManager } from "./src/runtime/sessions-manager";
 import { runnerRegistry, ToolSpec as RunnerToolSpec, wrapToolResult, runDiagnostics as coreDiagnostics, eventBus, createTimestamp } from "./src/core";
+import { executeChainWithAHP } from "./src/ahp/chain-executor";
+import {
+  initMailman,
+  getMailmanRuntime,
+  registerTraceCallback,
+  unregisterTraceCallback,
+  type AgentTaskPayload,
+  type AgentResultPayload,
+  type AgentToolDef,
+} from "./src/mailman";
+import { createPacket } from "@junkyard22/mailman";
 import os from "os";
-import { ensureDir, readJson, writeJsonAtomic } from "./storage";
+import * as storageModule from "./storage";
+const { ensureDir, readJson, writeJsonAtomic, resetLastCorruptedFile } = storageModule;
 
 const store = new Store();
 const permissionManager = new PermissionManager(store);
@@ -334,6 +346,77 @@ function createTray() {
     mainWindow?.focus();
   });
 }
+
+// ============================================================================
+// CRASH LOGGING
+// ============================================================================
+
+const CRASH_LOG_PATH = path.join(os.homedir(), '.workbench', 'crash.log');
+
+async function appendCrashLog(entry: {
+  ts: number;
+  process: string;
+  name: string;
+  message: string;
+  stack?: string;
+}): Promise<void> {
+  try {
+    await fs.promises.mkdir(path.dirname(CRASH_LOG_PATH), { recursive: true });
+    await fs.promises.appendFile(CRASH_LOG_PATH, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch { /* best effort — never throw from crash handler */ }
+}
+
+process.on('uncaughtException', (err: Error) => {
+  appendCrashLog({
+    ts: Date.now(),
+    process: 'main',
+    name: err.name,
+    message: err.message,
+    stack: err.stack,
+  });
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  appendCrashLog({
+    ts: Date.now(),
+    process: 'main',
+    name: err.name,
+    message: err.message,
+    stack: err.stack,
+  });
+});
+
+// IPC: renderer forwards crash entries to append to crash.log
+ipcMain.handle(
+  'workbench:crash:append',
+  async (_e, entry: { process: string; message: string; stack?: string; ts: number }) => {
+    // Destructure only safe fields — never dump env vars or full objects
+    await appendCrashLog({
+      ts: typeof entry.ts === 'number' ? entry.ts : Date.now(),
+      process: typeof entry.process === 'string' ? entry.process : 'renderer',
+      name: 'RendererError',
+      message: typeof entry.message === 'string' ? entry.message : String(entry.message),
+      stack: typeof entry.stack === 'string' ? entry.stack : undefined,
+    });
+    return { ok: true };
+  }
+);
+
+// IPC: return timestamp of most recent crash entry (used to show recovery note)
+ipcMain.handle('workbench:crash:lastTs', async () => {
+  try {
+    const content = await fs.promises.readFile(CRASH_LOG_PATH, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    if (!lines.length) return null;
+    const last = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
+    return typeof last.ts === 'number' ? last.ts : null;
+  } catch {
+    return null;
+  }
+});
+
+// ============================================================================
 
 app.whenReady().then(() => {
   // Initialize path sandbox and asset manager
@@ -1171,6 +1254,52 @@ function registerBuiltinTools() {
       permissionManager.registerToolPermissions(toolName, {});
     }
   });
+
+  // Builtin tools are app-level trusted code (not user plugins). Auto-grant
+  // all their declared permissions so chain execution doesn't need a dialog.
+  const builtinCategories: PermissionCategory[] = ["filesystem", "network", "process"];
+  tools.forEach((_tool, toolName) => {
+    if (!toolName.startsWith("builtin.")) return;
+    for (const category of builtinCategories) {
+      const perms = permissionManager.getToolPermissions(toolName);
+      if (perms?.[category]) {
+        permissionManager.grantPermission(toolName, category, false);
+      }
+    }
+  });
+
+  // Start the Mailman runtime now that the tools map is fully populated.
+  // workbench.runner is registered here and wraps the same toolRunner logic
+  // used by the chain:run IPC handler.
+  initMailman(
+    async (toolName: string, input: unknown) => {
+      const tool = tools.get(toolName);
+      if (!tool) throw new Error(`Tool not found: ${toolName}`);
+      enforceToolPermissions(toolName);
+      return tool.run(input);
+    },
+    normalizeToolOutput,
+    () => {
+      const cfg = store.store as any;
+      const router = cfg.router || {};
+      // Prefer dedicated agent/chat role; fall back to instruction-tuned models
+      // that support tool calling. Avoid cheap writing models (no function call support).
+      const agentModel =
+        router["agent"]?.model ||
+        router["chat"]?.model ||
+        router["coder_cheap"]?.model ||
+        router["structurer"]?.model ||
+        router["writer_cheap"]?.model ||
+        Object.values(router).map((r: any) => r?.model).find(Boolean) ||
+        undefined;
+      return {
+        apiKey: cfg.openrouterApiKey as string | undefined,
+        apiEndpoint: (cfg.apiEndpoint as string) || "https://openrouter.ai/api/v1",
+        model: agentModel,
+      };
+    },
+    "google/gemma-4-31b-it"
+  );
 }
 
 function resolveSafePath(inputPath: string): string {
@@ -2386,12 +2515,21 @@ function applySafeFix(fixId: string, changes: SafeFixChange[]): {
 // ============================================================================
 
 // Product config
-ipcMain.handle("product:config", () => productConfig);
+ipcMain.handle("product:config", () => ({ branding: productConfig }));
 
 // Config
 ipcMain.handle("config:get", () => store.store);
 ipcMain.handle("config:set", (_e, partial) => {
   store.set(partial);
+  // Keep pathSandbox in sync if safe paths or working dir changed.
+  if (pathSandbox) {
+    if ("safePaths" in partial) {
+      pathSandbox.updateSafePaths((partial.safePaths as string[]) || []);
+    }
+    if ("workingDir" in partial) {
+      pathSandbox.updateWorkspaceRoot((partial.workingDir as string) || app.getPath("home"));
+    }
+  }
   return store.store;
 });
 
@@ -3274,109 +3412,74 @@ BE PROACTIVE. BUILD THE CODE IMMEDIATELY when asked.`,
   },
 );
 
-// Tool chaining
+// Agent execution — LLM drives tool calls through Mailman
+ipcMain.handle(
+  "agent:run",
+  async (
+    _e,
+    instruction: string,
+    options: { toolNames?: string[]; maxSteps?: number; model?: string } = {}
+  ) => {
+    const runtime = getMailmanRuntime();
+    const runId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    // Build tool list from the registry (filter to requested names if provided)
+    const allTools = Array.from(tools.values());
+    const selectedTools: AgentToolDef[] = allTools
+      .filter((t) =>
+        options.toolNames
+          ? options.toolNames.includes(t.name)
+          : !t.name.startsWith("debug.")
+      )
+      .map((t) => ({
+        name: t.name,
+        description: t.description || t.name,
+        inputSchema: t.inputSchema || { type: "object", properties: {} },
+      }));
+
+    const taskPacket = createPacket({
+      type: "agent.task",
+      sender: "workbench",
+      target: "agent.planner",
+      taskId: runId,
+      payload: {
+        instruction,
+        tools: selectedTools,
+        maxSteps: options.maxSteps ?? 8,
+        ...(options.model ? { model: options.model } : {}),
+      } as unknown as Record<string, unknown>,
+    });
+
+    // Stream trace events to the renderer in real time
+    registerTraceCallback(runId, (line: string) => {
+      mainWindow?.webContents.send("agent:trace", { line, runId });
+    });
+
+    try {
+      const reply = await runtime.send(taskPacket);
+      return reply.payload as unknown as AgentResultPayload;
+    } finally {
+      unregisterTraceCallback(runId);
+    }
+  }
+);
+
+// Tool chaining — AHP packet-driven execution
 ipcMain.handle(
   "chain:run",
-  async (_e, steps: { tool: string; input: any; outputKey?: string }[]) => {
-    const results: any[] = [];
-    const context: Record<string, any> = {};
-    const executionLog: Array<{
-      step: number;
-      tool: string;
-      status: "success" | "failed";
-      error?: string;
-      output?: any;
-    }> = [];
+  async (_e, steps: { tool: string; input: any; outputKey?: string; description?: string }[]) => {
+    const runId = `chain_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const tool = tools.get(step.tool);
+    return executeChainWithAHP(steps, {
+      runId,
+      source: "chain:run",
+      runtime: getMailmanRuntime(),
 
-      if (!tool) {
-        const errorMsg = `Tool not found: ${step.tool}`;
-        executionLog.push({
-          step: i + 1,
-          tool: step.tool,
-          status: "failed",
-          error: errorMsg,
-        });
-        return {
-          success: false,
-          failedAt: i + 1,
-          error: errorMsg,
-          results,
-          context,
-          executionLog,
-        };
-      }
-
-      try {
-        // Interpolate context variables in input
-        const resolvedInput = interpolateContext(step.input, context);
-
-        enforceToolPermissions(step.tool);
-
-        console.log(`[chain:run] Step ${i + 1}: ${step.tool}`);
-        const result = await tool.run(resolvedInput);
-        const normalized = normalizeToolOutput(result);
-
-        // Check if tool returned an error
-        if (normalized.error) {
-          executionLog.push({
-            step: i + 1,
-            tool: step.tool,
-            status: "failed",
-            error: normalized.error,
-            output: normalized,
-          });
-          return {
-            success: false,
-            failedAt: i + 1,
-            error: `Tool "${step.tool}" failed: ${normalized.error}`,
-            results,
-            context,
-            executionLog,
-          };
-        }
-
-        results.push({ tool: step.tool, result: normalized });
-        executionLog.push({
-          step: i + 1,
-          tool: step.tool,
-          status: "success",
-          output: normalized,
-        });
-
-        // Store result in context for next steps
-        if (step.outputKey) {
-          context[step.outputKey] = normalized;
-        }
-        context[`step${i}`] = normalized;
-        context.lastResult = normalized;
-      } catch (error: any) {
-        executionLog.push({
-          step: i + 1,
-          tool: step.tool,
-          status: "failed",
-          error: error.message,
-        });
-        return {
-          success: false,
-          failedAt: i + 1,
-          error: `Step ${i + 1} (${step.tool}) threw exception: ${error.message}`,
-          results,
-          context,
-          executionLog,
-        };
-      }
-    }
-
-    return {
-      success: true,
-      results,
-      context,
-      executionLog,
-    };
+      // Emit each Mailman trace line to the renderer in real time
+      onTrace: (line: string) => {
+        mainWindow?.webContents.send("chain:trace", { line, runId });
+      },
+    });
   },
 );
 
@@ -4485,16 +4588,17 @@ ipcMain.handle("runs:hasInterrupted", () => {
   return runManager.hasInterruptedRuns();
 });
 
-// ── Shell Storage (workspaces, chat, artifacts, settings) ──────────────────
+// ── Shell Storage (workspaces, chat, artifacts, settings, context) ─────────
 // Narrow key/value IPC for the Shell renderer.  Only whitelisted keys allowed;
 // no arbitrary file paths are accessible from the renderer.
 const WORKBENCH_DIR = path.join(os.homedir(), '.workbench');
-const ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings']);
+const ALLOWED_STORAGE_KEYS = new Set(['workspaces', 'chat', 'artifacts', 'settings', 'context']);
 const KEY_TO_FILE: Record<string, string> = {
   workspaces: 'workspaces.v1.json',
   chat: 'chat.v1.json',
   artifacts: 'artifacts.v1.json',
   settings: 'settings.v1.json',
+  context: 'context.v1.json',
 };
 
 ipcMain.handle('workbench:storage:get', async (_e, { key }: { key: string }) => {
@@ -4502,7 +4606,9 @@ ipcMain.handle('workbench:storage:get', async (_e, { key }: { key: string }) => 
   try {
     await ensureDir(WORKBENCH_DIR);
     const value = await readJson(path.join(WORKBENCH_DIR, KEY_TO_FILE[key]), null);
-    return { ok: true, value };
+    // Surface corruption signal to renderer so it can show a recovery note
+    const corrupted = resetLastCorruptedFile() ?? undefined;
+    return { ok: true, value, corrupted };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? String(err) };
   }

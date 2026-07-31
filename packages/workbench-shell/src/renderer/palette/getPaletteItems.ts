@@ -25,6 +25,7 @@ import { useChatStore } from '../state/chatStore';
 import { useSettingsStore } from '../state/settingsStore';
 import { getClient, getActiveModel } from '../llm/getClient';
 import { getApp } from '../../appRegistry';
+import { buildDiagnostics, APP_VERSION } from '../diagnostics/buildDiagnostics';
 
 // ============================================================================
 // TEMPLATES
@@ -260,6 +261,100 @@ function buildCommandItems(): PaletteItem[] {
             content: `⚠️ Test failed: ${errorText}`,
           });
         }
+      },
+    },
+    // ── Diagnostics & Release ──────────────────────────────────────────────
+    {
+      id: 'cmd:copy-diagnostics',
+      category: 'Commands' as const,
+      title: 'Copy Diagnostics',
+      subtitle: 'Copy app snapshot (no secrets) to clipboard',
+      keywords: ['diagnostics', 'debug', 'copy', 'snapshot', 'report', 'export'],
+      action: async () => {
+        const snap = buildDiagnostics();
+        const workspaceId = useShellStore.getState().activeTabId;
+        try {
+          await navigator.clipboard.writeText(JSON.stringify(snap, null, 2));
+          if (workspaceId) {
+            useChatStore.getState().appendMessage({
+              id: uuidv4(),
+              workspaceId,
+              role: 'system',
+              content: '✓ Diagnostics copied to clipboard.',
+              createdAt: Date.now(),
+            });
+          }
+        } catch {
+          if (workspaceId) {
+            useChatStore.getState().appendMessage({
+              id: uuidv4(),
+              workspaceId,
+              role: 'system',
+              content: '⚠️ Copy failed — clipboard not available.',
+              createdAt: Date.now(),
+            });
+          }
+        }
+      },
+    },
+    {
+      id: 'cmd:copy-logs',
+      category: 'Commands' as const,
+      title: 'Copy Recent Logs (last 200)',
+      subtitle: 'Copy sanitized runtime log to clipboard',
+      keywords: ['logs', 'events', 'copy', 'export', 'debug', 'runtime'],
+      action: async () => {
+        const { logEvents } = useShellStore.getState();
+        // Strip potentially sensitive input/output fields — keep only metadata
+        const sanitized = logEvents
+          .slice(-200)
+          .map(({ type, timestamp, label, workspaceId: wsId }) => ({
+            type,
+            timestamp,
+            label,
+            workspaceId: wsId,
+          }));
+        const workspaceId = useShellStore.getState().activeTabId;
+        try {
+          await navigator.clipboard.writeText(JSON.stringify(sanitized, null, 2));
+          if (workspaceId) {
+            useChatStore.getState().appendMessage({
+              id: uuidv4(),
+              workspaceId,
+              role: 'system',
+              content: `✓ Recent logs (${sanitized.length}) copied to clipboard.`,
+              createdAt: Date.now(),
+            });
+          }
+        } catch {
+          if (workspaceId) {
+            useChatStore.getState().appendMessage({
+              id: uuidv4(),
+              workspaceId,
+              role: 'system',
+              content: '⚠️ Copy failed — clipboard not available.',
+              createdAt: Date.now(),
+            });
+          }
+        }
+      },
+    },
+    {
+      id: 'cmd:show-version',
+      category: 'Commands' as const,
+      title: 'Show Version',
+      subtitle: `Workbench Shell v${APP_VERSION}`,
+      keywords: ['version', 'about', 'info', 'release'],
+      action: () => {
+        const workspaceId = useShellStore.getState().activeTabId;
+        if (!workspaceId) return;
+        useChatStore.getState().appendMessage({
+          id: uuidv4(),
+          workspaceId,
+          role: 'system',
+          content: `Workbench Shell v${APP_VERSION}`,
+          createdAt: Date.now(),
+        });
       },
     },
   ];

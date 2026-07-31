@@ -91,7 +91,7 @@ export const useArtifactStore = create<ArtifactStoreState>((set, get) => ({
       if (raw) {
         const migrated = JSON.parse(raw) as Record<string, Artifact[]>;
         useArtifactStore.setState({ artifactsByWorkspaceId: migrated });
-        await storageSet('artifacts', migrated);
+        storageSet('artifacts', migrated);
       }
     } catch {
       // localStorage unavailable or unparseable — start fresh

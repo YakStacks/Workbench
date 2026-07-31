@@ -4,14 +4,13 @@ import { resolve } from 'path';
 
 // Root Vite config — serves/builds the Workbench Shell renderer.
 //
-// Vite root is set to packages/workbench-shell so it uses that package's
-// index.html and src/renderer/index.tsx as the entry point.
-// All aliases are resolved from the monorepo root (__dirname here).
-// Build output goes to root dist/ so the existing Electron main.ts and
-// electron-builder config work without modification.
+// MAILMAN TEST BUILD: root is temporarily pointed at the classic src/App.tsx
+// UI (the 2.0.0-dev Chains UI) so the chain:run IPC handler can be exercised
+// interactively. Switch root back to 'packages/workbench-shell' for the
+// Maestro shell build.
 export default defineConfig({
   plugins: [react()],
-  root: resolve(__dirname, 'packages/workbench-shell'),
+  root: __dirname,
   base: './',
   build: {
     outDir: resolve(__dirname, 'dist'),

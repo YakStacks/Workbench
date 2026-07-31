@@ -10,6 +10,7 @@
 import { useSettingsStore } from '../state/settingsStore';
 import type { LLMClient } from '../types/llm';
 import { mockClient } from './clients/mockClient';
+import { noKeyClient } from './clients/noKeyClient';
 import { makeOpenAIClient } from './clients/openaiClient';
 import { makeAnthropicClient } from './clients/anthropicClient';
 
@@ -23,15 +24,15 @@ export function getClient(): LLMClient {
   switch (llmProvider) {
     case 'openai':
       if (!openaiApiKey) {
-        console.warn('[getClient] OpenAI provider selected but no API key set — using mock');
-        return mockClient;
+        // Surface guidance in the chat timeline instead of logging to console
+        return noKeyClient;
       }
       return makeOpenAIClient(openaiApiKey);
 
     case 'anthropic':
       if (!anthropicApiKey) {
-        console.warn('[getClient] Anthropic provider selected but no API key set — using mock');
-        return mockClient;
+        // Surface guidance in the chat timeline instead of logging to console
+        return noKeyClient;
       }
       return makeAnthropicClient(anthropicApiKey);
 

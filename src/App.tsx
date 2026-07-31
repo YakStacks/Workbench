@@ -2693,7 +2693,41 @@ function ChainsTab({ tools, presets, setPresets }: {
         outputText += 'Results:\n';
         outputText += JSON.stringify(result.results, null, 2);
       }
-      
+
+      if (result.ahpTrace && result.ahpTrace.length > 0) {
+        outputText += '\n\n📡 AHP Packet Trace:\n';
+        result.ahpTrace.forEach((event: any) => {
+          const time = event.timestamp.slice(11, 23); // HH:mm:ss.mmm
+          const id   = event.packetId.slice(0, 8);
+          const d    = event.details ?? {};
+          switch (event.event) {
+            case 'packet.created':
+              outputText += `  [${time}] CREATED          ${id}  target=${d.target}\n`;
+              break;
+            case 'packet.status_changed':
+              outputText += `  [${time}] ${String(d.from).toUpperCase().padEnd(20)} → ${String(d.to).toUpperCase().padEnd(20)}  (${id})\n`;
+              break;
+            case 'tool.invoked':
+              outputText += `  [${time}] TOOL_INVOKE      ${d.toolName}  (${id})\n`;
+              break;
+            case 'tool.returned':
+              outputText += `  [${time}] TOOL_RETURN      ${d.toolName}  status=${d.toolStatus}  (${id})\n`;
+              break;
+            case 'packet.child_created':
+              outputText += `  [${time}] CHILD_CREATED    child=${String(d.childPacketId).slice(0, 8)}  target=${d.childTarget}\n`;
+              break;
+            case 'packet.child_resolved':
+              outputText += `  [${time}] CHILD_RESOLVED   child=${String(d.childPacketId).slice(0, 8)}  status=${d.childStatus}\n`;
+              break;
+            case 'packet.terminal':
+              outputText += `  [${time}] TERMINAL         status=${d.finalStatus}  reason=${d.terminalReason ?? '-'}  (${id})\n`;
+              break;
+            default:
+              outputText += `  [${time}] ${event.event}  (${id})\n`;
+          }
+        });
+      }
+
       setOutput(outputText);
     } catch (e: any) {
       setOutput(`❌ Chain Error: ${e.message}`);

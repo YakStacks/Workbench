@@ -21,6 +21,14 @@ const coreFiles = [
   'index', 'runner', 'verification', 'doctor', 'events'
 ];
 
+// AHP files (in src/ahp/)
+const ahpFiles = [
+  'chain-executor', 'index'
+];
+
+// Mailman files (in src/mailman/)
+const mailmanFiles = ['index', 'agent-planner', 'agent-critic'];
+
 const files = [...rootFiles, ...runtimeFiles, ...coreFiles];
 
 // Rename root files from .js to .cjs
@@ -82,6 +90,40 @@ coreFiles.forEach(file => {
   if (fs.existsSync(jsPath)) {
     fs.renameSync(jsPath, cjsPath);
     console.log(`Renamed ${file}.js to ${file}.cjs`);
+  }
+});
+
+// Rename AHP files from .js to .cjs (in src/ahp/)
+ahpFiles.forEach(file => {
+  const jsPath  = path.join(__dirname, 'src', 'ahp', `${file}.js`);
+  const cjsPath = path.join(__dirname, 'src', 'ahp', `${file}.cjs`);
+
+  if (fs.existsSync(cjsPath)) {
+    try { fs.unlinkSync(cjsPath); } catch (e) {
+      console.error(`Failed to delete existing ${cjsPath}:`, e);
+    }
+  }
+
+  if (fs.existsSync(jsPath)) {
+    fs.renameSync(jsPath, cjsPath);
+    console.log(`Renamed src/ahp/${file}.js to src/ahp/${file}.cjs`);
+  }
+});
+
+// Rename mailman files from .js to .cjs (in src/mailman/)
+mailmanFiles.forEach(file => {
+  const jsPath  = path.join(__dirname, 'src', 'mailman', `${file}.js`);
+  const cjsPath = path.join(__dirname, 'src', 'mailman', `${file}.cjs`);
+
+  if (fs.existsSync(cjsPath)) {
+    try { fs.unlinkSync(cjsPath); } catch (e) {
+      console.error(`Failed to delete existing ${cjsPath}:`, e);
+    }
+  }
+
+  if (fs.existsSync(jsPath)) {
+    fs.renameSync(jsPath, cjsPath);
+    console.log(`Renamed src/mailman/${file}.js to src/mailman/${file}.cjs`);
   }
 });
 
@@ -151,8 +193,52 @@ if (fs.existsSync(mainCjsPath)) {
       console.log(`  Updated ${searchProductConfig} to ${replaceProductConfig}`);
   }
   
+  // Fix mailman require (src/mailman/)
+  content = content.replace(/require\(["']\.\/src\/mailman['"]\)/g, 'require("./src/mailman/index.cjs")');
+  if (content.includes('require("./src/mailman/index.cjs")')) {
+    console.log('  Updated require("./src/mailman") to require("./src/mailman/index.cjs")');
+  }
+
+  // Fix AHP requires (src/ahp/)
+  ahpFiles.forEach(file => {
+    const searchDouble = `require("./src/ahp/${file}")`;
+    const replaceDouble = `require("./src/ahp/${file}.cjs")`;
+    if (content.includes(searchDouble)) {
+        content = content.split(searchDouble).join(replaceDouble);
+        console.log(`  Updated ${searchDouble} to ${replaceDouble}`);
+    }
+
+    const searchSingle = `require('./src/ahp/${file}')`;
+    const replaceSingle = `require('./src/ahp/${file}.cjs')`;
+    if (content.includes(searchSingle)) {
+        content = content.split(searchSingle).join(replaceSingle);
+        console.log(`  Updated ${searchSingle} to ${replaceSingle}`);
+    }
+  });
+
   fs.writeFileSync(mainCjsPath, content);
   console.log('Updated requires in main.cjs');
+}
+
+// Fix requires in src/mailman/index.cjs
+// index imports ./agent-planner which must resolve to ./agent-planner.cjs
+const mailmanIndexPath = path.join(__dirname, 'src', 'mailman', 'index.cjs');
+if (fs.existsSync(mailmanIndexPath)) {
+  let content = fs.readFileSync(mailmanIndexPath, 'utf8');
+  content = content.replace(/require\(["']\.\/agent-planner['"]\)/g, 'require("./agent-planner.cjs")');
+  content = content.replace(/require\(["']\.\/agent-critic['"]\)/g, 'require("./agent-critic.cjs")');
+  fs.writeFileSync(mailmanIndexPath, content);
+  console.log('Updated requires in src/mailman/index.cjs');
+}
+
+// Fix requires in src/ahp/chain-executor.cjs
+// chain-executor imports ../mailman which must resolve to ../mailman/index.cjs
+const chainExecutorPath = path.join(__dirname, 'src', 'ahp', 'chain-executor.cjs');
+if (fs.existsSync(chainExecutorPath)) {
+  let content = fs.readFileSync(chainExecutorPath, 'utf8');
+  content = content.replace(/require\(["']\.\.\/mailman['"]\)/g, 'require("../mailman/index.cjs")');
+  fs.writeFileSync(chainExecutorPath, content);
+  console.log('Updated requires in src/ahp/chain-executor.cjs');
 }
 
 // Fix requires in src/core/index.cjs

@@ -126,12 +126,24 @@ export const useContextStore = create<ContextStoreState>((set, get) => {
       const current = get().contextByWorkspaceId;
       const existing = getOrDefault(current, workspaceId);
       const isPinned = existing.pinnedMessageIds.includes(messageId);
-      const pinnedMessageIds = isPinned
-        ? existing.pinnedMessageIds.filter((id) => id !== messageId)
-        : [...existing.pinnedMessageIds, messageId];
+
+      let pinnedMessageIds: string[];
+      let includeMessageIds = existing.includeMessageIds;
+
+      if (isPinned) {
+        // Unpin — leave includeMessageIds unchanged (user's explicit choice)
+        pinnedMessageIds = existing.pinnedMessageIds.filter((id) => id !== messageId);
+      } else {
+        // Pin → also force-include so the message always enters LLM context
+        pinnedMessageIds = [...existing.pinnedMessageIds, messageId];
+        if (!includeMessageIds.includes(messageId)) {
+          includeMessageIds = [...includeMessageIds, messageId];
+        }
+      }
+
       const next: ContextMap = {
         ...current,
-        [workspaceId]: { ...existing, pinnedMessageIds },
+        [workspaceId]: { ...existing, pinnedMessageIds, includeMessageIds },
       };
       set({ contextByWorkspaceId: next });
       persist(next);

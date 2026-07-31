@@ -21,7 +21,7 @@ import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import type { ChatMessage, AssistantMessage, ToolMessage } from '../types/chat';
 import type { RuntimeEvent } from '../types/runtimeEvents';
-import { storageGet, storageSet } from '../storage/storageClient';
+import { storageGet, storageSet, consumeCorruptedFile } from '../storage/storageClient';
 
 // Old localStorage key (migration only)
 const OLD_STORAGE_KEY = 'workbench.chat.v1';
@@ -252,6 +252,9 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
 (async () => {
   const fromDisk = await storageGet<Record<string, ChatMessage[]> | null>('chat', null);
 
+  // Check if main process detected a corrupt file during this read (consumes sentinel)
+  const corruptedFile = consumeCorruptedFile();
+
   if (fromDisk != null) {
     useChatStore.setState({ messagesByWorkspaceId: fromDisk });
   } else {
@@ -261,10 +264,30 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
       if (raw) {
         const migrated = JSON.parse(raw) as Record<string, ChatMessage[]>;
         useChatStore.setState({ messagesByWorkspaceId: migrated });
-        await storageSet('chat', migrated);
+        storageSet('chat', migrated);
       }
     } catch {
       // localStorage unavailable or unparseable — start fresh
     }
+  }
+
+  // If a corrupt file was detected, append a subtle recovery note to the
+  // first available workspace's chat timeline (deferred 600ms so workspace
+  // store has time to hydrate and open the Butler workspace).
+  if (corruptedFile) {
+    const baseName = corruptedFile.split(/[/\\]/).pop() ?? corruptedFile;
+    setTimeout(() => {
+      const messages = useChatStore.getState().messagesByWorkspaceId;
+      const firstWorkspaceId = Object.keys(messages)[0];
+      if (!firstWorkspaceId) return;
+      const recoveryMsg: ChatMessage = {
+        id: uuidv4(),
+        workspaceId: firstWorkspaceId,
+        role: 'system',
+        content: `ℹ️ Recovered from a corrupted storage file. A backup was saved as \`${baseName}\`. Your data has been reset to defaults for that store.`,
+        createdAt: Date.now(),
+      };
+      useChatStore.getState().appendMessage(recoveryMsg);
+    }, 600);
   }
 })();

@@ -90,7 +90,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => ({
       if (raw) {
         const migrated = JSON.parse(raw) as PersistedWorkspace[];
         useWorkspaceStore.setState({ workspaces: migrated });
-        await storageSet('workspaces', migrated);
+        storageSet('workspaces', migrated);
       }
     } catch {
       // localStorage unavailable or unparseable — start fresh

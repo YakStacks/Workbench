@@ -20,6 +20,7 @@
     "package:all": "npm run build && electron-builder -mwl"
   },
   "dependencies": {
+    "@junkyard22/mailman": "file:../Mailman",
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@modelcontextprotocol/server-memory": "^2026.1.26",
     "axios": "^1.13.5",
